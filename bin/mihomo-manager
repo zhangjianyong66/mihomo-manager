@@ -133,7 +133,10 @@ check_status() {
         return
     fi
     local pid
-    pid=$(pgrep -f "mihomo -f config.yaml" | head -1)
+    # 匹配两种启动方式：
+    # 1. mihomo -f config.yaml (相对路径)
+    # 2. mihomo -f /完整路径/config.yaml (绝对路径)
+    pid=$(pgrep -f "mihomo.*-f.*config.yaml" | head -1)
     if [ -n "$pid" ]; then
         _CACHED_STATUS="running:$pid"
     else
