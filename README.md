@@ -9,20 +9,40 @@
 - 订阅管理：更新订阅、保存订阅 URL
 - 白名单管理：添加/移除直连域名
 - 配置管理：备份、恢复、编辑配置
+- 监控服务：自动重启异常退出的服务
 
 ## 安装
 
 ```bash
-# 克隆或下载项目
-cd ~/project
-git clone <repo-url> mihomo-manager
-
-# 运行安装脚本
+# 克隆项目
+git clone https://github.com/zhangjianyong66/mihomo-manager.git
 cd mihomo-manager
-./scripts/install.sh
 
-# 或手动安装
-ln -sf $(pwd)/bin/mihomo-manager ~/.local/bin/mm
+# 安装
+make install
+# 或
+./scripts/install.sh
+```
+
+安装后目录结构：
+```
+~/.local/bin/mm              # 命令符号链接
+~/.config/mihomo/            # 配置目录
+├── config.yaml              # 主配置文件
+├── mihomo.log               # 运行日志
+├── mihomo-monitor.log       # 监控日志
+├── subscription.url         # 订阅 URL
+└── node_speed.txt           # 节点速度记录
+~/Library/LaunchAgents/
+└── com.mihomo.monitor.plist # 监控服务
+```
+
+## 卸载
+
+```bash
+make uninstall
+# 或
+./scripts/uninstall.sh
 ```
 
 ## 使用方法
@@ -97,12 +117,17 @@ export MIHOMO_SOCKS_PORT=7891   # SOCKS 端口
 export MIHOMO_API_PORT=9090     # API 端口
 ```
 
-## 配置文件
+## 监控服务
 
-- 配置目录: `~/.config/mihomo/`
-- 主配置文件: `config.yaml`
-- 订阅 URL: `subscription.url`
-- 节点速度: `node_speed.txt`
+监控服务每 5 分钟检查一次：
+- 检查 mihomo 进程是否存在
+- 检查代理端口是否监听
+- 服务异常时自动重启
+
+查看监控日志：
+```bash
+tail -f ~/.config/mihomo/mihomo-monitor.log
+```
 
 ## 依赖
 
