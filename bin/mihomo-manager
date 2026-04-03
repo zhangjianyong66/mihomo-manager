@@ -1181,13 +1181,37 @@ PYTHON_SCRIPT
         # 备份当前配置
         backup_config
 
-        # 替换配置
-        print_info "更新配置文件..."
-        mv "$temp_file" "$CONFIG_FILE"
+        # 复制新配置
+        cp "$temp_file" "$CONFIG_FILE"
+
+        # 合并配置：保留本地端口设置（使用 sed）
+        print_info "合并端口配置..."
+
+        # 将 port: 7890 替换为 mixed-port: 10808
+        if grep -q "^port:" "$CONFIG_FILE"; then
+            # 使用 sed 删除 port 行
+            sed -i.bak '/^port:/d' "$CONFIG_FILE"
+        fi
+
+        # 确保 mixed-port 存在
+        if ! grep -q "^mixed-port:" "$CONFIG_FILE"; then
+            # 在 allow-lan 后面插入 mixed-port（使用 printf 确保换行）
+            sed -i.bak "s/^allow-lan: false/allow-lan: false\nmixed-port: 10808/" "$CONFIG_FILE"
+        fi
+
+        # 修复 external-controller
+        if grep -q "^external-controller: 0.0.0.0" "$CONFIG_FILE"; then
+            sed -i.bak 's/^external-controller: 0.0.0.0:.*/external-controller: 127.0.0.1:9090/' "$CONFIG_FILE"
+        fi
+
+        # 清理备份文件
+        rm -f "$CONFIG_FILE.bak"
+
+        rm -f "$temp_file"
         chmod 600 "$CONFIG_FILE"
 
         print_success "订阅配置已更新"
-        print_info "建议执行: mihomo-manager reload 或 mihomo-manager restart"
+        print_info "建议执行: mm reload 或 mm restart"
     fi
 }
 
