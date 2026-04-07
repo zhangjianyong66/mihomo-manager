@@ -6,47 +6,32 @@
 
 set -e
 
-# 配置
-MIHOMO_BIN="$HOME/.local/bin/mihomo"
-CONFIG_DIR="$HOME/.config/mihomo"
-CONFIG_FILE="$CONFIG_DIR/config.yaml"
-LOG_FILE="$CONFIG_DIR/mihomo-monitor.log"
-MIXED_PORT="${MIHOMO_MIXED_PORT:-10808}"
+# 加载公共库
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/common.sh"
 
 # 最大日志行数
-MAX_LOG_LINES=500
+readonly MAX_LOG_LINES=500
 
 # 记录日志
 log_message() {
     local timestamp
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "[$timestamp] $1" >> "$LOG_FILE"
-}
-
-# 检查服务是否运行
-check_service() {
-    # 匹配两种启动方式：相对路径和绝对路径
-    pgrep -f "mihomo.*-f.*config.yaml" > /dev/null 2>&1
-}
-
-# 检查端口是否监听
-check_port() {
-    lsof -Pi :$MIXED_PORT -sTCP:LISTEN -t > /dev/null 2>&1
+    echo "[$timestamp] $1" >> "$MONITOR_LOG_FILE"
 }
 
 # 启动服务
 start_service() {
     log_message "INFO: 正在启动 Mihomo 服务..."
-
+    
     cd "$CONFIG_DIR"
-    nohup "$MIHOMO_BIN" -f "$CONFIG_FILE" >> "$CONFIG_DIR/mihomo.log" 2>&1 &
-
-    # 等待启动
+    nohup "$MIHOMO_BIN" -f "$CONFIG_FILE" >> "$LOG_FILE" 2>&1 &
+    
     sleep 3
-
-    if check_service; then
+    
+    if mm_is_running; then
         local pid
-        pid=$(pgrep -f "mihomo.*-f.*config.yaml" | head -1)
+        pid=$(mm_get_pid)
         log_message "INFO: 服务启动成功 (PID: $pid)"
         return 0
     else
@@ -57,12 +42,12 @@ start_service() {
 
 # 清理旧日志
 cleanup_log() {
-    if [ -f "$LOG_FILE" ]; then
+    if [[ -f "$MONITOR_LOG_FILE" ]]; then
         local line_count
-        line_count=$(wc -l < "$LOG_FILE")
-        if [ "$line_count" -gt "$MAX_LOG_LINES" ]; then
-            tail -n "$MAX_LOG_LINES" "$LOG_FILE" > "$LOG_FILE.tmp"
-            mv "$LOG_FILE.tmp" "$LOG_FILE"
+        line_count=$(wc -l < "$MONITOR_LOG_FILE")
+        if [[ "$line_count" -gt "$MAX_LOG_LINES" ]]; then
+            tail -n "$MAX_LOG_LINES" "$MONITOR_LOG_FILE" > "$MONITOR_LOG_FILE.tmp"
+            mv "$MONITOR_LOG_FILE.tmp" "$MONITOR_LOG_FILE"
         fi
     fi
 }
@@ -71,13 +56,13 @@ cleanup_log() {
 main() {
     # 清理日志
     cleanup_log
-
+    
     log_message "INFO: 开始检查 Mihomo 服务状态"
-
+    
     # 检查进程是否存在
-    if check_service; then
+    if mm_is_running; then
         # 进程存在，再检查端口
-        if check_port; then
+        if mm_check_port "$MIXED_PORT"; then
             log_message "INFO: 服务运行正常，端口 $MIXED_PORT 监听中"
             exit 0
         else

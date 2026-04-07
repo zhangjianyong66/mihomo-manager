@@ -5,17 +5,16 @@
 
 set -e
 
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# 获取项目目录
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-INSTALL_DIR="$HOME/.local/bin"
-CONFIG_DIR="$HOME/.config/mihomo"
-LAUNCHD_DIR="$HOME/Library/LaunchAgents"
+# 加载公共库
+source "$PROJECT_DIR/scripts/lib/common.sh"
+
+# 安装配置
 SYMLINK_NAME="mm"
+INSTALL_DIR="$HOME/.local/bin"
+LAUNCHD_DIR="$HOME/Library/LaunchAgents"
 PLIST_NAME="com.mihomo.monitor.plist"
 
 echo -e "${YELLOW}========================================${NC}"
@@ -26,14 +25,14 @@ echo ""
 # 停止并卸载监控服务
 echo -e "${BLUE}[1/3] 卸载监控服务...${NC}"
 
-if [ -f "$LAUNCHD_DIR/$PLIST_NAME" ]; then
+if [[ -f "$LAUNCHD_DIR/$PLIST_NAME" ]]; then
     launchctl unload "$LAUNCHD_DIR/$PLIST_NAME" 2>/dev/null || true
     rm -f "$LAUNCHD_DIR/$PLIST_NAME"
     echo -e "  ${GREEN}✓${NC} 已移除 $PLIST_NAME"
 fi
 
 # 兼容旧版本
-if [ -f "$LAUNCHD_DIR/com.openclaw.mihomo-monitor.plist" ]; then
+if [[ -f "$LAUNCHD_DIR/com.openclaw.mihomo-monitor.plist" ]]; then
     launchctl unload "$LAUNCHD_DIR/com.openclaw.mihomo-monitor.plist" 2>/dev/null || true
     rm -f "$LAUNCHD_DIR/com.openclaw.mihomo-monitor.plist"
     echo -e "  ${GREEN}✓${NC} 已移除旧版本监控服务"
@@ -44,7 +43,7 @@ echo ""
 # 删除命令链接
 echo -e "${BLUE}[2/3] 删除命令...${NC}"
 
-if [ -L "$INSTALL_DIR/$SYMLINK_NAME" ]; then
+if [[ -L "$INSTALL_DIR/$SYMLINK_NAME" ]]; then
     rm -f "$INSTALL_DIR/$SYMLINK_NAME"
     echo -e "  ${GREEN}✓${NC} 已删除 $SYMLINK_NAME"
 else
