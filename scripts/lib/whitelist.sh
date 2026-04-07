@@ -49,7 +49,7 @@ with open('$CONFIG_FILE', 'r') as f:
 
 marker = '$WHITELIST_MARKER'
 end_marker = '$WHITELIST_END'
-new_rule = f'- DOMAIN-SUFFIX,$domain,🎯 Direct    # 白名单: 直连'
+new_rule = f'  - DOMAIN-SUFFIX,$domain,🎯 Direct    # 白名单: 直连'
 
 if marker in content:
     content = content.replace(marker, marker + '\n' + new_rule)
