@@ -265,17 +265,18 @@ import sys
 try:
     data = json.load(sys.stdin)
     proxies = data.get('proxies', {})
+    proxy = proxies.get('GLOBAL')
     
-    for name, proxy in proxies.items():
-        if proxy.get('type') == 'Selector':
-            print(f'\n📁 代理组: {name}')
-            print(f'   当前节点: {proxy.get(\"now\", \"N/A\")}')
-            print(f'   可用节点: {len(proxy.get(\"all\", []))} 个')
-            for node in proxy.get('all', [])[:20]:
-                marker = '✓' if node == proxy.get('now') else ' '
-                print(f'     [{marker}] {node}')
-            if len(proxy.get('all', [])) > 20:
-                print(f'     ... 还有 {len(proxy.get(\"all\", [])) - 20} 个节点')
+    if proxy and proxy.get('type') == 'Selector':
+        name = 'GLOBAL'
+        print(f'\n📁 代理组: {name}')
+        print(f'   当前节点: {proxy.get(\"now\", \"N/A\")}')
+        print(f'   可用节点: {len(proxy.get(\"all\", []))} 个')
+        for i, node in enumerate(proxy.get('all', []), 1):
+            marker = '✓' if node == proxy.get('now') else ' '
+            print(f'     [{marker}] {i:2}. {node}')
+    else:
+        print('未找到 GLOBAL 代理组')
 except Exception as e:
     print(f'解析错误: {e}', file=sys.stderr)
     sys.exit(1)
@@ -306,16 +307,50 @@ mm_switch_node() {
     local node_name="$1"
     
     if [[ -z "$node_name" ]]; then
-        mm_error "请指定节点名称"
+        mm_error "请指定节点名称或序号"
         return 1
     fi
-    
-    mm_info "切换节点到: $node_name"
     
     if ! mm_is_running; then
         mm_error "服务未运行"
         return 1
     fi
+    
+    # 如果是纯数字，当作 GLOBAL 组的序号处理
+    if [[ "$node_name" =~ ^[0-9]+$ ]]; then
+        local index="$node_name"
+        local response
+        response=$(curl -s "http://127.0.0.1:$API_PORT/proxies/GLOBAL" 2>/dev/null)
+        
+        if [[ -z "$response" ]]; then
+            mm_error "无法获取 GLOBAL 代理组信息"
+            return 1
+        fi
+        
+        local total
+        total=$(echo "$response" | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('all', [])))" 2>/dev/null)
+        
+        if [[ -z "$total" || "$total" -eq 0 ]]; then
+            mm_error "无法获取节点列表"
+            return 1
+        fi
+        
+        if [[ "$index" -lt 1 || "$index" -gt "$total" ]]; then
+            mm_error "序号 $index 超出范围 (1-$total)"
+            return 1
+        fi
+        
+        node_name=$(echo "$response" | python3 -c "import json,sys; data=json.load(sys.stdin); print(data.get('all', [])[$index-1])" 2>/dev/null)
+        
+        if [[ -z "$node_name" ]]; then
+            mm_error "无法找到序号 $index 对应的节点"
+            return 1
+        fi
+        
+        mm_info "根据序号 $index 找到节点: $node_name"
+    fi
+    
+    mm_info "切换节点到: $node_name"
     
     local response
     response=$(curl -s -X PUT "http://127.0.0.1:$API_PORT/proxies/GLOBAL" \
@@ -366,7 +401,7 @@ try:
     
     group_types = ['Selector', 'URLTest', 'Fallback', 'LoadBalance', 'Direct', 'Reject', 'RejectDrop', 'Pass', 'Compatible']
     
-    for node_name in all_nodes:
+    for i, node_name in enumerate(all_nodes, 1):
         if node_name in ['DIRECT', 'REJECT']:
             continue
         if node_name.startswith('官网') or node_name.startswith('有效期'):
@@ -378,7 +413,7 @@ try:
         if node_type in group_types:
             continue
         
-        print(node_name)
+        print(f'{i}:{node_name}')
 except Exception as e:
     print(f'Error: {e}', file=sys.stderr)
 ")
@@ -388,16 +423,26 @@ except Exception as e:
     echo "$nodes_list" > "$nodes_file"
     
     local first_node
-    first_node=$(echo "$nodes_list" | head -1)
+    first_node=$(echo "$nodes_list" | cut -d: -f2 | head -1)
     
     local total_nodes
     total_nodes=$(echo "$nodes_list" | wc -l | tr -d ' ')
+    
+    local total_all_nodes
+    total_all_nodes=$(echo "$proxies_response" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+proxies = data.get('proxies', {})
+global_proxy = proxies.get('GLOBAL', {})
+print(len(global_proxy.get('all', [])))
+" 2>/dev/null)
+    [[ -z "$total_all_nodes" ]] && total_all_nodes="$total_nodes"
     
     echo ""
     if [[ "$limit" -gt 0 ]]; then
         echo "正在测试节点延迟 (最多 $limit 个，每个最多 5 秒)..."
     else
-        echo "正在测试所有节点延迟 (共 $total_nodes 个，每个最多 5 秒)..."
+        echo "正在测试节点延迟 (共 $total_nodes 个可测节点，代理组共 $total_all_nodes 个，每个最多 5 秒)..."
     fi
     echo ""
     
@@ -410,10 +455,10 @@ except Exception as e:
     local test_count=0
     local success_count=0
     
-    while IFS= read -r node_name; do
+    while IFS=: read -r node_index node_name; do
         [[ -z "$node_name" ]] && continue
         
-        if [[ "$limit" -gt 0 && "$test_count" -ge "$limit" ]]; then
+        if [[ "$limit" -gt 0 && "$success_count" -ge "$limit" ]]; then
             break
         fi
         
@@ -444,7 +489,7 @@ except Exception as e:
             printf "%-30s %6s\n" "$node_name" "超时" >> "$NODE_SPEED_FILE"
         fi
         
-        echo "  [$test_count/$total_nodes] $status $node_name: $delay_str"
+        echo "  [$node_index/$total_all_nodes] $status $node_name: $delay_str"
         sleep 0.2
     done < "$nodes_file"
     
@@ -487,6 +532,8 @@ except Exception as e:
 
 # 切换到最快节点
 mm_switch_to_fastest() {
+    local limit="${1:-0}"
+    
     mm_info "自动选择最快节点..."
     
     if ! mm_is_running; then
@@ -494,7 +541,11 @@ mm_switch_to_fastest() {
         return 1
     fi
     
-    mm_test_nodes 0
+    if [[ -n "$limit" && "$limit" =~ ^[0-9]+$ && "$limit" -gt 0 ]]; then
+        mm_info "测到 $limit 个可用节点后停止..."
+    fi
+    
+    mm_test_nodes "$limit"
     
     if [[ -f "$FASTEST_NODE_FILE" ]]; then
         local fastest

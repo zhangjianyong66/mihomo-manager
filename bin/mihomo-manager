@@ -53,9 +53,9 @@ Mihomo 管理脚本
 节点管理:
   list (ls)           列出所有节点
   current (c)         显示当前节点
-  switch (swc) <节点> 切换到指定节点
+  switch (swc) <节点|序号> 切换到指定节点
   test-nodes (tn)     测试所有节点延迟
-  fastest (f)         自动切换到最快节点
+  fastest (f) [N]     自动切换到最快节点（测到 N 个可用节点后停止）
 
 订阅管理:
   update-sub (us)     更新订阅配置
@@ -90,8 +90,10 @@ Mihomo 管理脚本
   mm us -u 'https://example.com/sub' --save-url
   mm list                         # 或 mm ls
   mm switch '节点名称'            # 或 mm swc '节点名称'
+  mm switch 3                     # 或 mm swc 3 (切换到第3个节点)
   mm test-nodes                   # 或 mm tn
-  mm fastest                      # 或 mm f
+  mm fastest                      # 或 mm f（测试所有节点）
+  mm fastest 5                    # 或 mm f 5（找到 5 个可用节点后切换）
   mm whitelist add example.com    # 或 mm wl add example.com
 EOF
 }
@@ -152,6 +154,10 @@ main() {
                             break
                             ;;
                         switch|swc)
+                            extra_args="$*"
+                            break
+                            ;;
+                        fastest|f)
                             extra_args="$*"
                             break
                             ;;
@@ -225,7 +231,7 @@ main() {
         switch|swc)
             if [[ -z "$extra_args" ]]; then
                 mm_error "请指定节点名称"
-                mm_info "用法: mm switch <节点名>"
+                mm_info "用法: mm switch <节点名|序号>"
                 exit 1
             fi
             mm_switch_node "$extra_args"
@@ -234,7 +240,7 @@ main() {
             mm_test_nodes
             ;;
         fastest|f)
-            mm_switch_to_fastest
+            mm_switch_to_fastest "$extra_args"
             ;;
         
         # 订阅管理
