@@ -530,6 +530,58 @@ print(len(global_proxy.get('all', [])))
     echo "📈 统计: 测试 $test_count 个节点，成功 $success_count 个"
 }
 
+# 测试当前生效节点延迟
+mm_test_current_node() {
+    if ! mm_is_running; then
+        mm_error "服务未运行"
+        return 1
+    fi
+
+    local response
+    response=$(curl -s "http://127.0.0.1:$API_PORT/proxies/GLOBAL" 2>/dev/null)
+
+    if [[ -z "$response" ]]; then
+        mm_error "无法获取当前节点信息"
+        return 1
+    fi
+
+    local current_node
+    current_node=$(echo "$response" | python3 -c "import json,sys; print(json.load(sys.stdin).get('now',''))" 2>/dev/null)
+
+    if [[ -z "$current_node" || "$current_node" == "N/A" ]]; then
+        mm_error "未找到当前生效节点"
+        return 1
+    fi
+
+    mm_info "正在测试当前生效节点: $current_node"
+
+    local encoded_name
+    encoded_name=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$current_node''', safe=''))" 2>/dev/null)
+    if [[ -z "$encoded_name" ]]; then
+        mm_error "节点名称编码失败"
+        return 1
+    fi
+
+    local delay_response
+    delay_response=$(curl -s --max-time 5 "http://127.0.0.1:$API_PORT/proxies/${encoded_name}/delay?timeout=3000&url=http://www.gstatic.com/generate_204" 2>/dev/null)
+
+    if [[ -z "$delay_response" ]]; then
+        mm_error "测速请求失败"
+        return 1
+    fi
+
+    local delay
+    delay=$(echo "$delay_response" | python3 -c "import json,sys; print(json.load(sys.stdin).get('delay', 9999))" 2>/dev/null || echo 9999)
+
+    if [[ "$delay" =~ ^[0-9]+$ ]] && [[ "$delay" -lt 9999 ]]; then
+        mm_success "当前节点测速成功: $current_node (${delay}ms)"
+        return 0
+    fi
+
+    mm_error "当前节点测速超时或失败: $current_node"
+    return 1
+}
+
 # 切换到最快节点
 mm_switch_to_fastest() {
     local limit="${1:-0}"
