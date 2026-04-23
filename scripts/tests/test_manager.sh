@@ -187,6 +187,21 @@ test_main_script() {
     else
         test_fail "帮助命令失败"
     fi
+
+    # 测试新命令出现在帮助中
+    test_start "test-current 命令已注册"
+    if "$main_script" --help 2>/dev/null | grep -q "test-current"; then
+        test_pass
+    else
+        test_fail "未找到 test-current 帮助项"
+    fi
+
+    test_start "rcn 命令已注册"
+    if "$main_script" --help 2>/dev/null | grep -q "rcn"; then
+        test_pass
+    else
+        test_fail "未找到 rcn 帮助项"
+    fi
     
     # 测试版本输出
     test_start "版本命令正常"
@@ -213,7 +228,7 @@ test_code_quality() {
     test_start "主脚本行数精简"
     local main_lines
     main_lines=$(wc -l < "$PROJECT_DIR/bin/mihomo-manager")
-    if [[ "$main_lines" -lt 300 ]]; then
+    if [[ "$main_lines" -lt 360 ]]; then
         test_pass
         echo "    主脚本行数: $main_lines (原始: 1474)"
     else

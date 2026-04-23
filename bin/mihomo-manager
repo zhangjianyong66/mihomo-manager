@@ -27,6 +27,7 @@ source "$LIB_DIR/common.sh"
 source "$LIB_DIR/service.sh"
 source "$LIB_DIR/subscription.sh"
 source "$LIB_DIR/whitelist.sh"
+source "$LIB_DIR/routing.sh"
 
 # 注册清理函数
 mm_register_cleanup
@@ -54,6 +55,7 @@ Mihomo 管理脚本
   list (ls)           列出所有节点
   current (c)         显示当前节点
   switch (swc) <节点|序号> 切换到指定节点
+  test-current (tc)   测试当前生效节点延迟
   test-nodes (tn)     测试所有节点延迟
   fastest (f) [N]     自动切换到最快节点（测到 N 个可用节点后停止）
 
@@ -65,6 +67,7 @@ Mihomo 管理脚本
 
 白名单管理:
   whitelist (wl)      白名单管理（直连不走代理）
+  rcn                 一键配置：大陆直连，其他走代理
 
 配置管理:
   backup (bk)         备份当前配置
@@ -95,6 +98,7 @@ Mihomo 管理脚本
   mm fastest                      # 或 mm f（测试所有节点）
   mm fastest 5                    # 或 mm f 5（找到 5 个可用节点后切换）
   mm whitelist add example.com    # 或 mm wl add example.com
+  mm rcn                          # 大陆直连，其他走代理
 EOF
 }
 
@@ -236,6 +240,9 @@ main() {
             fi
             mm_switch_node "$extra_args"
             ;;
+        test-current|tc)
+            mm_test_current_node
+            ;;
         test-nodes|tn)
             mm_test_nodes
             ;;
@@ -301,6 +308,11 @@ main() {
                     mm_whitelist_add "$wl_subcmd"
                     ;;
             esac
+            ;;
+
+        # 分流管理
+        rcn|route-cn)
+            mm_route_cn_apply
             ;;
         
         # 未知命令
