@@ -126,22 +126,35 @@ mm_download_subscription() {
         # 合并配置：保留本地端口设置
         mm_info "合并端口配置..."
         
-        # 将 port: 7890 替换为 mixed-port: 10808
-        if grep -q "^port:" "$CONFIG_FILE"; then
-            sed -i.bak '/^port:/d' "$CONFIG_FILE"
-        fi
+        python3 -c "
+import re
+
+config_file = '$CONFIG_FILE'
+
+with open(config_file, 'r') as f:
+    content = f.read()
+
+# 删除 port: 行（使用 mixed-port 替代）
+content = re.sub(r'^port:.*\n?', '', content, flags=re.MULTILINE)
+
+# 确保 mixed-port 存在
+if not re.search(r'^mixed-port:', content, re.MULTILINE):
+    content = 'mixed-port: 10808\n' + content
+
+# 确保 socks-port 存在
+if not re.search(r'^socks-port:', content, re.MULTILINE):
+    content = 'socks-port: 7891\n' + content
+
+# 修复/添加 external-controller
+if re.search(r'^external-controller:', content, re.MULTILINE):
+    content = re.sub(r'^external-controller:.*', 'external-controller: 127.0.0.1:9090', content, flags=re.MULTILINE)
+else:
+    content = 'external-controller: 127.0.0.1:9090\n' + content
+
+with open(config_file, 'w') as f:
+    f.write(content)
+"
         
-        # 确保 mixed-port 存在
-        if ! grep -q "^mixed-port:" "$CONFIG_FILE"; then
-            sed -i.bak "s/^allow-lan: false/allow-lan: false\nmixed-port: 10808/" "$CONFIG_FILE"
-        fi
-        
-        # 修复 external-controller
-        if grep -q "^external-controller: 0.0.0.0" "$CONFIG_FILE"; then
-            sed -i.bak 's/^external-controller: 0.0.0.0:.*/external-controller: 127.0.0.1:9090/' "$CONFIG_FILE"
-        fi
-        
-        rm -f "$CONFIG_FILE.bak"
         chmod 600 "$CONFIG_FILE"
         
         mm_success "订阅配置已更新"
