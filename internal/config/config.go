@@ -12,6 +12,7 @@ type Paths struct {
 	ConfigFile      string
 	BackupFile      string
 	SubscriptionURL string
+	WhitelistFile   string
 	LogFile         string
 	NodeSpeedFile   string
 	FastestNodeFile string
@@ -31,6 +32,7 @@ func Load() Paths {
 		ConfigFile:      filepath.Join(configDir, "config.yaml"),
 		BackupFile:      filepath.Join(configDir, "config.yaml.bak"),
 		SubscriptionURL: filepath.Join(configDir, "subscription.url"),
+		WhitelistFile:   filepath.Join(configDir, "whitelist.yaml"),
 		LogFile:         filepath.Join(configDir, "mihomo.log"),
 		NodeSpeedFile:   filepath.Join(configDir, "node_speed.txt"),
 		FastestNodeFile: filepath.Join(configDir, "fastest_node.txt"),

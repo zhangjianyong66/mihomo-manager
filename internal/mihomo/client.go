@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -247,6 +249,10 @@ func (c *Client) DiagnoseRoute(input string) (RouteDiagnosisResult, error) {
 					res.MatchedRule, res.Target = rule, strings.TrimSpace(parts[2])
 				}
 			}
+		case "DOMAIN-WILDCARD":
+			if len(parts) >= 3 && wildcardDomainMatch(strings.TrimSpace(parts[1]), host) {
+				res.MatchedRule, res.Target = rule, strings.TrimSpace(parts[2])
+			}
 		case "GEOSITE":
 			// v1: conservative CN heuristic
 			if len(parts) >= 3 && strings.EqualFold(strings.TrimSpace(parts[1]), "CN") && isCNLikeDomain(host) {
@@ -273,7 +279,7 @@ func (c *Client) DiagnoseRoute(input string) (RouteDiagnosisResult, error) {
 	if res.Target == "" {
 		return RouteDiagnosisResult{
 			Input: input, Host: host, Confidence: "low",
-			Note: "No supported rule matched (v1 supports DOMAIN/DOMAIN-SUFFIX/GEOSITE,GEOIP,MATCH)",
+			Note: "No supported rule matched (v1 supports DOMAIN/DOMAIN-SUFFIX/DOMAIN-WILDCARD/GEOSITE,GEOIP,MATCH)",
 		}, nil
 	}
 	if up := strings.ToUpper(res.Target); up == "DIRECT" || up == "REJECT" {
@@ -628,6 +634,14 @@ func (c *Client) UpdateSubscription() error {
 	if err != nil {
 		return err
 	}
+	oldCfg, err := c.readConfigMap()
+	if err != nil {
+		return err
+	}
+	whitelistDomains, err := c.whitelistDomains(oldCfg)
+	if err != nil {
+		return err
+	}
 	body, err := c.downloadSubscriptionWithRetry(urlValue, 3)
 	if err != nil {
 		return err
@@ -672,6 +686,7 @@ func (c *Client) UpdateSubscription() error {
 		"GEOSITE,CN,🎯 直连",
 		"MATCH,GLOBAL",
 	}
+	injectWhitelistRules(cfg, whitelistDomains)
 
 	out, err := yaml.Marshal(cfg)
 	if err != nil {
@@ -866,14 +881,20 @@ func (c *Client) AddWhitelist(domain string) error {
 	if err != nil {
 		return err
 	}
-	rules := anyToStrings(cfg["rules"])
-	target := "DOMAIN-SUFFIX," + normalizeDomain(domain) + ",DIRECT"
-	for _, r := range rules {
-		if strings.Contains(r, normalizeDomain(domain)) {
-			return nil
-		}
+	domains, err := c.whitelistDomains(cfg)
+	if err != nil {
+		return err
 	}
-	cfg["rules"] = append([]string{target}, rules...)
+	n := normalizeDomain(domain)
+	if n == "" {
+		return errors.New("empty whitelist domain")
+	}
+	domains = append(domains, n)
+	domains = normalizeDomainList(domains)
+	if err := c.saveWhitelistDomains(domains); err != nil {
+		return err
+	}
+	injectWhitelistRules(cfg, domains)
 	return c.writeConfigMap(cfg)
 }
 
@@ -883,15 +904,21 @@ func (c *Client) RemoveWhitelist(domain string) error {
 		return err
 	}
 	n := normalizeDomain(domain)
-	rules := anyToStrings(cfg["rules"])
-	out := make([]string, 0, len(rules))
-	for _, r := range rules {
-		if strings.Contains(r, n) && strings.Contains(strings.ToUpper(r), "DIRECT") {
-			continue
-		}
-		out = append(out, r)
+	domains, err := c.whitelistDomains(cfg)
+	if err != nil {
+		return err
 	}
-	cfg["rules"] = out
+	out := make([]string, 0, len(domains))
+	for _, d := range domains {
+		if !strings.EqualFold(d, n) {
+			out = append(out, d)
+		}
+	}
+	out = normalizeDomainList(out)
+	if err := c.saveWhitelistDomains(out); err != nil {
+		return err
+	}
+	injectWhitelistRules(cfg, out)
 	return c.writeConfigMap(cfg)
 }
 
@@ -900,22 +927,15 @@ func (c *Client) ListWhitelist() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	rules := anyToStrings(cfg["rules"])
-	items := make([]string, 0)
-	for _, r := range rules {
-		u := strings.ToUpper(r)
-		if strings.Contains(u, "DOMAIN") && strings.Contains(u, "DIRECT") {
-			parts := strings.Split(r, ",")
-			if len(parts) > 1 {
-				items = append(items, strings.TrimSpace(parts[1]))
-			}
-		}
-	}
-	return items, nil
+	return c.whitelistDomains(cfg)
 }
 
 func (c *Client) ApplyRouteCN() error {
 	cfg, err := c.readConfigMap()
+	if err != nil {
+		return err
+	}
+	whitelistDomains, err := c.whitelistDomains(cfg)
 	if err != nil {
 		return err
 	}
@@ -941,6 +961,7 @@ func (c *Client) ApplyRouteCN() error {
 	}
 	managed := []string{"GEOSITE,CN,DIRECT", "GEOIP,CN,DIRECT,no-resolve", "MATCH,GLOBAL"}
 	cfg["rules"] = append(managed, cleaned...)
+	injectWhitelistRules(cfg, whitelistDomains)
 	if err := c.writeConfigMap(cfg); err != nil {
 		return err
 	}
@@ -1001,6 +1022,137 @@ func (c *Client) writeConfigMap(m map[string]any) error {
 	return nil
 }
 
+type whitelistConfig struct {
+	Domains []string `yaml:"domains"`
+}
+
+func (c *Client) whitelistPath() string {
+	if c.paths.WhitelistFile != "" {
+		return c.paths.WhitelistFile
+	}
+	if c.paths.ConfigDir != "" {
+		return filepath.Join(c.paths.ConfigDir, "whitelist.yaml")
+	}
+	if c.paths.ConfigFile != "" {
+		return filepath.Join(filepath.Dir(c.paths.ConfigFile), "whitelist.yaml")
+	}
+	return "whitelist.yaml"
+}
+
+func (c *Client) whitelistDomains(cfg map[string]any) ([]string, error) {
+	domains, err := c.loadWhitelistDomains()
+	if err == nil {
+		return domains, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	domains = extractWhitelistDomains(anyToStrings(cfg["rules"]))
+	if len(domains) == 0 {
+		return []string{}, nil
+	}
+	if err := c.saveWhitelistDomains(domains); err != nil {
+		return nil, err
+	}
+	return domains, nil
+}
+
+func (c *Client) loadWhitelistDomains() ([]string, error) {
+	b, err := os.ReadFile(c.whitelistPath())
+	if err != nil {
+		return nil, err
+	}
+	var cfg whitelistConfig
+	if err := yaml.Unmarshal(b, &cfg); err != nil {
+		return nil, err
+	}
+	return normalizeDomainList(cfg.Domains), nil
+}
+
+func (c *Client) saveWhitelistDomains(domains []string) error {
+	out := whitelistConfig{Domains: normalizeDomainList(domains)}
+	b, err := yaml.Marshal(out)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(c.whitelistPath()), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(c.whitelistPath(), b, 0644)
+}
+
+func extractWhitelistDomains(rules []string) []string {
+	out := make([]string, 0)
+	for _, r := range rules {
+		parts := strings.Split(strings.TrimSpace(strings.Trim(r, "\"")), ",")
+		if len(parts) < 3 {
+			continue
+		}
+		tp := strings.ToUpper(strings.TrimSpace(parts[0]))
+		if tp != "DOMAIN" && tp != "DOMAIN-SUFFIX" && tp != "DOMAIN-WILDCARD" {
+			continue
+		}
+		target := strings.TrimSpace(parts[2])
+		if !isDirectTarget(target) {
+			continue
+		}
+		out = append(out, strings.TrimSpace(parts[1]))
+	}
+	return normalizeDomainList(out)
+}
+
+func injectWhitelistRules(cfg map[string]any, domains []string) {
+	rules := anyToStrings(cfg["rules"])
+	cleaned := make([]string, 0, len(rules))
+	for _, r := range rules {
+		if isWhitelistRule(r) {
+			continue
+		}
+		cleaned = append(cleaned, r)
+	}
+	domains = normalizeDomainList(domains)
+	out := make([]string, 0, len(domains)+len(cleaned))
+	for _, d := range domains {
+		out = append(out, "DOMAIN-SUFFIX,"+d+",DIRECT")
+	}
+	out = append(out, cleaned...)
+	cfg["rules"] = out
+}
+
+func isWhitelistRule(rule string) bool {
+	parts := strings.Split(strings.TrimSpace(strings.Trim(rule, "\"")), ",")
+	if len(parts) < 3 {
+		return false
+	}
+	tp := strings.ToUpper(strings.TrimSpace(parts[0]))
+	return (tp == "DOMAIN" || tp == "DOMAIN-SUFFIX" || tp == "DOMAIN-WILDCARD") && isDirectTarget(strings.TrimSpace(parts[2]))
+}
+
+func isDirectTarget(target string) bool {
+	return strings.EqualFold(target, "DIRECT") || strings.TrimSpace(target) == "🎯 直连"
+}
+
+func normalizeDomainList(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, d := range in {
+		n := normalizeDomain(d)
+		if n == "" {
+			continue
+		}
+		key := strings.ToLower(n)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, n)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return strings.ToLower(out[i]) < strings.ToLower(out[j])
+	})
+	return out
+}
+
 func anyToStrings(v any) []string {
 	if v == nil {
 		return []string{}
@@ -1024,7 +1176,28 @@ func normalizeDomain(v string) string {
 	if i := strings.Index(v, "/"); i >= 0 {
 		v = v[:i]
 	}
-	return v
+	v = strings.TrimPrefix(v, "*.")
+	return strings.ToLower(strings.Trim(v, "."))
+}
+
+func wildcardDomainMatch(pattern, host string) bool {
+	pattern = strings.ToLower(strings.Trim(strings.TrimSpace(pattern), "."))
+	host = strings.ToLower(strings.Trim(strings.TrimSpace(host), "."))
+	var re strings.Builder
+	re.WriteString("^")
+	for _, r := range pattern {
+		switch r {
+		case '*':
+			re.WriteString(".*")
+		case '?':
+			re.WriteString(".")
+		default:
+			re.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	re.WriteString("$")
+	ok, err := regexp.MatchString(re.String(), host)
+	return err == nil && ok
 }
 
 func isCNLikeDomain(host string) bool {

@@ -11,4 +11,11 @@ Thumbs.db
 *.log
 
 # Test
-test/
+test/*.out
+*.tmp
+*.cache
+*.pid
+*.seed
+.pytest_cache/
+coverage/
+*.out
