@@ -3,6 +3,7 @@ package mihomo
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,8 +15,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -41,7 +44,7 @@ func (c *Client) ServiceStatus() string {
 }
 
 func (c *Client) Start() error {
-	cmd := exec.Command(c.paths.MihomoBin, "-d", c.paths.ConfigDir, "-f", c.paths.ConfigFile)
+	cmd := c.startCommand()
 	logFile, err := os.OpenFile(c.paths.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
@@ -49,6 +52,12 @@ func (c *Client) Start() error {
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	return cmd.Start()
+}
+
+func (c *Client) startCommand() *exec.Cmd {
+	cmd := exec.Command(c.paths.MihomoBin, "-d", c.paths.ConfigDir, "-f", c.paths.ConfigFile)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	return cmd
 }
 
 func (c *Client) Stop() error {
@@ -650,23 +659,22 @@ func (c *Client) UpdateSubscription() error {
 		return err
 	}
 
-	// Parse downloaded config and merge local port settings
-	var cfg map[string]any
-	if err := yaml.Unmarshal(body, &cfg); err != nil {
-		return fmt.Errorf("parse subscription config failed: %w", err)
-	}
-	if cfg == nil {
-		cfg = map[string]any{}
+	cfg, err := parseSubscriptionConfig(body)
+	if err != nil {
+		return err
 	}
 
-	// Remove conflicting port setting, use mixed-port instead
+	localMixedPort := anyOrDefault(oldCfg["mixed-port"], 7890)
+	localSocksPort := anyOrDefault(oldCfg["socks-port"], 7891)
+	localExternalController := anyOrDefault(oldCfg["external-controller"], "127.0.0.1:9090")
+
+	// Remove conflicting port setting, use mixed-port instead.
 	delete(cfg, "port")
-	// Ensure local port settings are preserved
-	cfg["mixed-port"] = 10808
-	cfg["socks-port"] = 7891
-	cfg["external-controller"] = "127.0.0.1:9090"
+	cfg["mixed-port"] = localMixedPort
+	cfg["socks-port"] = localSocksPort
+	cfg["external-controller"] = localExternalController
 
-	// 简化代理组和规则：国内直连，其余全部走代理
+	// 订阅更新默认不依赖 Geo 数据，避免热重载时因下载 GeoIP/GeoSite 阻塞。
 	proxyNames := make([]any, 0)
 	if proxies, ok := cfg["proxies"].([]any); ok {
 		for _, p := range proxies {
@@ -682,9 +690,7 @@ func (c *Client) UpdateSubscription() error {
 		map[string]any{"name": "🎯 直连", "type": "select", "proxies": []string{"DIRECT"}},
 	}
 	cfg["rules"] = []any{
-		"GEOIP,CN,🎯 直连,no-resolve",
-		"GEOSITE,CN,🎯 直连",
-		"MATCH,GLOBAL",
+		"MATCH,🌐 代理",
 	}
 	injectWhitelistRules(cfg, whitelistDomains)
 
@@ -698,6 +704,334 @@ func (c *Client) UpdateSubscription() error {
 		return err
 	}
 	return nil
+}
+
+func parseSubscriptionConfig(body []byte) (map[string]any, error) {
+	if proxies, ok, err := parseURIProxies(body); ok {
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"proxies": proxies}, nil
+	}
+
+	var cfg map[string]any
+	if err := yaml.Unmarshal(body, &cfg); err != nil {
+		return nil, fmt.Errorf("parse subscription config failed: %w", err)
+	}
+	if cfg == nil {
+		cfg = map[string]any{}
+	}
+	return cfg, nil
+}
+
+func parseURIProxies(body []byte) ([]any, bool, error) {
+	lines := subscriptionLines(string(body))
+	foundURI := false
+	proxies := make([]any, 0)
+	errs := make([]string, 0)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !isProxyURI(line) {
+			continue
+		}
+		foundURI = true
+		proxy, err := parseProxyURI(line)
+		if err != nil {
+			errs = append(errs, err.Error())
+			continue
+		}
+		proxies = append(proxies, proxy)
+	}
+	if !foundURI {
+		return nil, false, nil
+	}
+	if len(proxies) == 0 {
+		return nil, true, fmt.Errorf("parse subscription URI failed: %s", strings.Join(errs, "; "))
+	}
+	return proxies, true, nil
+}
+
+func subscriptionLines(content string) []string {
+	raw := strings.TrimSpace(content)
+	if decoded, ok := decodeSubscriptionBase64(raw); ok && containsProxyURI(decoded) {
+		raw = decoded
+	}
+	return strings.Split(raw, "\n")
+}
+
+func decodeSubscriptionBase64(s string) (string, bool) {
+	compact := strings.Join(strings.Fields(s), "")
+	if compact == "" {
+		return "", false
+	}
+	encodings := []*base64.Encoding{
+		base64.StdEncoding,
+		base64.RawStdEncoding,
+		base64.URLEncoding,
+		base64.RawURLEncoding,
+	}
+	for _, enc := range encodings {
+		b, err := enc.DecodeString(compact)
+		if err == nil {
+			return string(b), true
+		}
+	}
+	return "", false
+}
+
+func containsProxyURI(s string) bool {
+	for _, line := range strings.Split(s, "\n") {
+		if isProxyURI(strings.TrimSpace(line)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isProxyURI(s string) bool {
+	return strings.HasPrefix(s, "vless://") ||
+		strings.HasPrefix(s, "vmess://") ||
+		strings.HasPrefix(s, "trojan://") ||
+		strings.HasPrefix(s, "ss://")
+}
+
+func parseProxyURI(raw string) (map[string]any, error) {
+	switch {
+	case strings.HasPrefix(raw, "vless://"):
+		return parseVLESSURI(raw)
+	case strings.HasPrefix(raw, "vmess://"):
+		return parseVMessURI(raw)
+	case strings.HasPrefix(raw, "trojan://"):
+		return parseTrojanURI(raw)
+	case strings.HasPrefix(raw, "ss://"):
+		return parseSSURI(raw)
+	default:
+		return nil, fmt.Errorf("unsupported proxy URI: %s", truncate(raw, 32))
+	}
+}
+
+func parseVLESSURI(raw string) (map[string]any, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	port, err := uriPort(u, 443)
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	proxy := map[string]any{
+		"name":   uriName(u),
+		"type":   "vless",
+		"server": u.Hostname(),
+		"port":   port,
+		"uuid":   u.User.Username(),
+		"cipher": "auto",
+		"udp":    true,
+	}
+	switch q.Get("type") {
+	case "ws":
+		proxy["network"] = "ws"
+		host := q.Get("host")
+		if host == "" {
+			host = u.Hostname()
+		}
+		proxy["ws-opts"] = map[string]any{
+			"path":    defaultString(q.Get("path"), "/"),
+			"headers": map[string]any{"Host": host},
+		}
+	case "grpc":
+		proxy["network"] = "grpc"
+		proxy["grpc-opts"] = map[string]any{"grpc-service-name": defaultString(q.Get("serviceName"), q.Get("path"))}
+	case "tcp":
+		proxy["network"] = "tcp"
+	}
+	switch q.Get("security") {
+	case "tls":
+		proxy["tls"] = true
+		proxy["servername"] = defaultString(q.Get("sni"), u.Hostname())
+	case "reality":
+		proxy["tls"] = true
+		proxy["servername"] = defaultString(q.Get("sni"), u.Hostname())
+		proxy["reality-opts"] = map[string]any{"public-key": q.Get("pbk"), "short-id": q.Get("sid")}
+		proxy["client-fingerprint"] = defaultString(q.Get("fp"), "chrome")
+	}
+	if flow := q.Get("flow"); flow != "" {
+		proxy["flow"] = flow
+	}
+	return proxy, validateProxy(proxy)
+}
+
+func parseVMessURI(raw string) (map[string]any, error) {
+	encoded := strings.TrimPrefix(raw, "vmess://")
+	decoded, err := decodeBase64Payload(encoded)
+	if err != nil {
+		return nil, err
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(decoded, &cfg); err != nil {
+		return nil, err
+	}
+	port, err := strconv.Atoi(fmt.Sprint(cfg["port"]))
+	if err != nil {
+		return nil, err
+	}
+	alterID, _ := strconv.Atoi(defaultString(fmt.Sprint(cfg["aid"]), "0"))
+	proxy := map[string]any{
+		"name":    defaultString(fmt.Sprint(cfg["ps"]), "未命名节点"),
+		"type":    "vmess",
+		"server":  fmt.Sprint(cfg["add"]),
+		"port":    port,
+		"uuid":    fmt.Sprint(cfg["id"]),
+		"cipher":  defaultString(fmt.Sprint(cfg["scy"]), "auto"),
+		"alterId": alterID,
+		"udp":     true,
+	}
+	if fmt.Sprint(cfg["tls"]) == "tls" {
+		proxy["tls"] = true
+		proxy["servername"] = defaultString(fmt.Sprint(cfg["host"]), fmt.Sprint(cfg["add"]))
+	}
+	if fmt.Sprint(cfg["net"]) == "ws" {
+		proxy["network"] = "ws"
+		proxy["ws-opts"] = map[string]any{
+			"path":    defaultString(fmt.Sprint(cfg["path"]), "/"),
+			"headers": map[string]any{"Host": defaultString(fmt.Sprint(cfg["host"]), fmt.Sprint(cfg["add"]))},
+		}
+	}
+	return proxy, validateProxy(proxy)
+}
+
+func parseTrojanURI(raw string) (map[string]any, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	port, err := uriPort(u, 443)
+	if err != nil {
+		return nil, err
+	}
+	proxy := map[string]any{
+		"name":             uriName(u),
+		"type":             "trojan",
+		"server":           u.Hostname(),
+		"port":             port,
+		"password":         u.User.Username(),
+		"udp":              true,
+		"skip-cert-verify": false,
+	}
+	if sni := u.Query().Get("sni"); sni != "" {
+		proxy["sni"] = sni
+	}
+	return proxy, validateProxy(proxy)
+}
+
+func parseSSURI(raw string) (map[string]any, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	port, err := uriPort(u, 8388)
+	if err != nil {
+		return nil, err
+	}
+	user := u.User.Username()
+	if password, ok := u.User.Password(); ok {
+		user += ":" + password
+	}
+	if !strings.Contains(user, ":") {
+		decoded, err := decodeBase64Payload(user)
+		if err != nil {
+			return nil, err
+		}
+		user = string(decoded)
+	}
+	parts := strings.SplitN(user, ":", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid ss user info: %s", truncate(raw, 32))
+	}
+	proxy := map[string]any{
+		"name":     uriName(u),
+		"type":     "ss",
+		"server":   u.Hostname(),
+		"port":     port,
+		"cipher":   parts[0],
+		"password": parts[1],
+		"udp":      true,
+	}
+	return proxy, validateProxy(proxy)
+}
+
+func decodeBase64Payload(s string) ([]byte, error) {
+	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		if b, err := enc.DecodeString(s); err == nil {
+			return b, nil
+		}
+	}
+	return nil, fmt.Errorf("invalid base64 payload")
+}
+
+func uriPort(u *url.URL, fallback int) (int, error) {
+	if u.Hostname() == "" {
+		return 0, fmt.Errorf("missing host: %s", truncate(u.String(), 32))
+	}
+	if u.Port() == "" {
+		return fallback, nil
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		return 0, err
+	}
+	return port, nil
+}
+
+func uriName(u *url.URL) string {
+	name := u.Fragment
+	if decoded, err := url.QueryUnescape(name); err == nil {
+		name = decoded
+	}
+	if name == "" {
+		name = u.Hostname()
+	}
+	return name
+}
+
+func validateProxy(proxy map[string]any) error {
+	for _, key := range []string{"name", "type", "server"} {
+		if strings.TrimSpace(fmt.Sprint(proxy[key])) == "" {
+			return fmt.Errorf("missing %s in proxy", key)
+		}
+	}
+	if port, ok := proxy["port"].(int); !ok || port <= 0 {
+		return fmt.Errorf("invalid port in proxy %s", proxy["name"])
+	}
+	return nil
+}
+
+func defaultString(v, fallback string) string {
+	if v == "" || v == "<nil>" {
+		return fallback
+	}
+	return v
+}
+
+func anyOrDefault(v any, fallback any) any {
+	if v == nil {
+		return fallback
+	}
+	if s, ok := v.(string); ok && strings.TrimSpace(s) == "" {
+		return fallback
+	}
+	return v
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 func (c *Client) downloadSubscriptionWithRetry(urlValue string, attempts int) ([]byte, error) {

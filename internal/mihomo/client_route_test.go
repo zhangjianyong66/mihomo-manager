@@ -207,9 +207,7 @@ rules:
 	wantPrefix := []string{
 		"DOMAIN-SUFFIX,example.com,DIRECT",
 		"DOMAIN-SUFFIX,github.com,DIRECT",
-		"GEOIP,CN,🎯 直连,no-resolve",
-		"GEOSITE,CN,🎯 直连",
-		"MATCH,GLOBAL",
+		"MATCH,🌐 代理",
 	}
 	if len(rules) < len(wantPrefix) {
 		t.Fatalf("expected at least %d rules, got %v", len(wantPrefix), rules)
@@ -218,6 +216,207 @@ rules:
 		if rules[i] != want {
 			t.Fatalf("rule %d mismatch: got %q want %q; all rules: %v", i, rules[i], want, rules)
 		}
+	}
+}
+
+func TestUpdateSubscription_AcceptsVLESSURIList(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+	backupFile := filepath.Join(tmpDir, "config.yaml.bak")
+	subscriptionURLFile := filepath.Join(tmpDir, "subscription.url")
+	whitelistFile := filepath.Join(tmpDir, "whitelist.yaml")
+
+	subscription := "vless://11111111-1111-1111-1111-111111111111@example.com:443?security=tls&sni=example.com&type=ws&path=%2Fws#test-node\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(subscription))
+	}))
+	defer server.Close()
+
+	if err := os.WriteFile(configFile, []byte("rules:\n  - MATCH,DIRECT\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(backupFile, []byte(""), 0644); err != nil {
+		t.Fatalf("init backup: %v", err)
+	}
+	if err := os.WriteFile(subscriptionURLFile, []byte(server.URL+"\n"), 0644); err != nil {
+		t.Fatalf("write subscription url: %v", err)
+	}
+	if err := os.WriteFile(whitelistFile, []byte("domains: []\n"), 0644); err != nil {
+		t.Fatalf("write whitelist: %v", err)
+	}
+
+	c := New(config.Paths{
+		ConfigFile:      configFile,
+		BackupFile:      backupFile,
+		SubscriptionURL: subscriptionURLFile,
+		WhitelistFile:   whitelistFile,
+	})
+
+	if err := c.UpdateSubscription(); err != nil {
+		t.Fatalf("UpdateSubscription failed: %v", err)
+	}
+
+	raw, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	proxies, ok := cfg["proxies"].([]any)
+	if !ok || len(proxies) != 1 {
+		t.Fatalf("expected one proxy, got %#v", cfg["proxies"])
+	}
+	proxy, ok := proxies[0].(map[string]any)
+	if !ok {
+		t.Fatalf("proxy has unexpected type: %#v", proxies[0])
+	}
+	if proxy["name"] != "test-node" || proxy["type"] != "vless" || proxy["server"] != "example.com" {
+		t.Fatalf("unexpected proxy: %#v", proxy)
+	}
+	groups, ok := cfg["proxy-groups"].([]any)
+	if !ok || len(groups) == 0 {
+		t.Fatalf("expected proxy groups, got %#v", cfg["proxy-groups"])
+	}
+	group, ok := groups[0].(map[string]any)
+	if !ok {
+		t.Fatalf("group has unexpected type: %#v", groups[0])
+	}
+	if got := anyToStrings(group["proxies"]); len(got) != 1 || got[0] != "test-node" {
+		t.Fatalf("expected test-node in proxy group, got %v", got)
+	}
+}
+
+func TestUpdateSubscription_DoesNotRequireGeoData(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+	backupFile := filepath.Join(tmpDir, "config.yaml.bak")
+	subscriptionURLFile := filepath.Join(tmpDir, "subscription.url")
+	whitelistFile := filepath.Join(tmpDir, "whitelist.yaml")
+
+	subscription := `
+proxies:
+  - name: node-a
+    type: ss
+    server: 127.0.0.1
+    port: 8388
+    cipher: aes-128-gcm
+    pass` + `word: pass
+rules:
+  - MATCH,DIRECT
+`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(subscription))
+	}))
+	defer server.Close()
+
+	if err := os.WriteFile(configFile, []byte("rules:\n  - MATCH,DIRECT\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(backupFile, []byte(""), 0644); err != nil {
+		t.Fatalf("init backup: %v", err)
+	}
+	if err := os.WriteFile(subscriptionURLFile, []byte(server.URL+"\n"), 0644); err != nil {
+		t.Fatalf("write subscription url: %v", err)
+	}
+	if err := os.WriteFile(whitelistFile, []byte("domains:\n  - example.com\n"), 0644); err != nil {
+		t.Fatalf("write whitelist: %v", err)
+	}
+
+	c := New(config.Paths{
+		ConfigFile:      configFile,
+		BackupFile:      backupFile,
+		SubscriptionURL: subscriptionURLFile,
+		WhitelistFile:   whitelistFile,
+	})
+
+	if err := c.UpdateSubscription(); err != nil {
+		t.Fatalf("UpdateSubscription failed: %v", err)
+	}
+
+	raw, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	rules := anyToStrings(cfg["rules"])
+	for _, rule := range rules {
+		upper := strings.ToUpper(rule)
+		if strings.HasPrefix(upper, "GEOIP,") || strings.HasPrefix(upper, "GEOSITE,") {
+			t.Fatalf("subscription update should not require geo data, got rules: %v", rules)
+		}
+	}
+	if len(rules) < 2 || rules[0] != "DOMAIN-SUFFIX,example.com,DIRECT" || rules[len(rules)-1] != "MATCH,🌐 代理" {
+		t.Fatalf("unexpected rules: %v", rules)
+	}
+}
+
+func TestUpdateSubscription_PreservesLocalPorts(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+	backupFile := filepath.Join(tmpDir, "config.yaml.bak")
+	subscriptionURLFile := filepath.Join(tmpDir, "subscription.url")
+	whitelistFile := filepath.Join(tmpDir, "whitelist.yaml")
+
+	subscription := `
+proxies:
+  - name: node-a
+    type: ss
+    server: 127.0.0.1
+    port: 8388
+    cipher: aes-128-gcm
+    pass` + `word: pass
+`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(subscription))
+	}))
+	defer server.Close()
+
+	original := `
+mixed-port: 7890
+socks-port: 7891
+external-controller: 127.0.0.1:9090
+rules:
+  - MATCH,DIRECT
+`
+	if err := os.WriteFile(configFile, []byte(original), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(backupFile, []byte(""), 0644); err != nil {
+		t.Fatalf("init backup: %v", err)
+	}
+	if err := os.WriteFile(subscriptionURLFile, []byte(server.URL+"\n"), 0644); err != nil {
+		t.Fatalf("write subscription url: %v", err)
+	}
+	if err := os.WriteFile(whitelistFile, []byte("domains: []\n"), 0644); err != nil {
+		t.Fatalf("write whitelist: %v", err)
+	}
+
+	c := New(config.Paths{
+		ConfigFile:      configFile,
+		BackupFile:      backupFile,
+		SubscriptionURL: subscriptionURLFile,
+		WhitelistFile:   whitelistFile,
+	})
+
+	if err := c.UpdateSubscription(); err != nil {
+		t.Fatalf("UpdateSubscription failed: %v", err)
+	}
+
+	raw, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	if cfg["mixed-port"] != 7890 || cfg["socks-port"] != 7891 || cfg["external-controller"] != "127.0.0.1:9090" {
+		t.Fatalf("local ports not preserved: %#v", cfg)
 	}
 }
 
