@@ -9,7 +9,7 @@
 | [目录结构](./directory-structure.md) | 包职责、文件归属和新增代码位置 |
 | [开发与验证命令](./development-commands.md) | 运行、构建、测试和配置检查命令 |
 | [代码风格](./code-style.md) | Go、TUI、错误处理、配置写入和测试风格 |
-| [安装与部署](./deployment.md) | 本地安装、软链接、mihomo core 与 macOS launchd |
+| [安装与部署](./deployment.md) | 一键安装、独立 mm、mihomo core、状态与安全卸载 |
 | [重要项目约定](./project-conventions.md) | 配置路径、路由语义、订阅更新和兼容边界 |
 
 ## 开发前检查（Pre-Development Checklist）
@@ -24,7 +24,7 @@
 - 确认改动落在正确包中，没有把业务逻辑放入 `cmd/mm` 或 TUI 渲染函数。
 - 确认 Go 文件经过 `gofmt`，并通过 `go test ./...`。
 - 配置、订阅、白名单或路由变更应有临时目录驱动的回归测试，不得触碰用户真实配置。
-- 安装脚本变更需核对构建产物、软链接、macOS launchd 和卸载保留配置的行为。
+- 安装脚本变更需核对独立构建产物、core 校验、PATH 幂等、旧软链接迁移和卸载保留配置的行为。
 - 检查是否新增了路径、端口、环境变量或运行约定；如有，同步更新本目录和根 `AGENTS.md`。
 
 ## 规范边界

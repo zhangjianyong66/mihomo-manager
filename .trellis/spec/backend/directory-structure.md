@@ -34,7 +34,7 @@
 - 新增 mihomo API、配置变换、订阅解析或系统进程操作：放在 `internal/mihomo`。
 - 新增页面状态、按键、异步消息或渲染：放在 `internal/tui`，通过 `mihomo.Client` 暴露的类型和方法取数。
 - 新增 Go 测试：与被测代码同包放置为 `*_test.go`。现有示例是 `internal/mihomo/client_route_test.go` 和 `client_start_test.go`。
-- 安装、卸载和 macOS 服务集成：分别维护 `scripts/install.sh`、`scripts/uninstall.sh` 和 `launchd/`。
+- 远程引导、安装和卸载分别维护 `scripts/bootstrap.sh`、`scripts/install.sh`、`scripts/uninstall.sh`；`launchd/` 仅保留旧 macOS 兼容资产。
 
 ## 命名与组织
 
