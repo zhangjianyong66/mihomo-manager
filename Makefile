@@ -1,13 +1,12 @@
-.PHONY: install uninstall help
-
-PREFIX ?= $(HOME)/.local
+.PHONY: install uninstall test-install help
 
 help:
 	@echo "Mihomo Manager - Mihomo 代理管理工具"
 	@echo ""
 	@echo "使用方法:"
-	@echo "  make install    安装到 $(PREFIX)/bin"
-	@echo "  make uninstall  卸载"
+	@echo "  make install       安装依赖、mihomo core 和 mm"
+	@echo "  make uninstall     卸载 mm，默认保留 core 和配置"
+	@echo "  make test-install  运行隔离安装测试"
 	@echo ""
 	@echo "或直接运行:"
 	@echo "  ./scripts/install.sh    安装"
@@ -18,3 +17,6 @@ install:
 
 uninstall:
 	@./scripts/uninstall.sh
+
+test-install:
+	@./scripts/tests/test_install.sh
