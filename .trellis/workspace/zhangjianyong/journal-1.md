@@ -38,3 +38,37 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: 完成 Ubuntu Debian 一键安装流程
+
+**Date**: 2026-07-14
+**Task**: 完成 Ubuntu Debian 一键安装流程
+**Branch**: `master`
+
+### Summary
+
+实现远程一行安装、本地统一安装器、依赖与隔离 Go 准备、mihomo core 校验安装、独立 mm、PATH/配置保护、安全卸载和 13 项隔离测试，并同步 README、AGENTS.md 与 Trellis 安装部署规范。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a3b1e19` | (see git log) |
+| `a04ddd5` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
