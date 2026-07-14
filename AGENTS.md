@@ -8,6 +8,8 @@
 - 当前本机已安装 MetaCubeX/mihomo `v1.19.27` Linux amd64 v1 构建到 `~/.local/bin/mihomo`。
 - 运行命令：`mm`，默认打开交互式 TUI；可用 `mm --help` 做非交互冒烟验证。
 - 测试命令：`go test ./...`。
+- Go 版路径和端口可通过环境变量覆盖：`CONFIG_DIR` 修改配置目录，`MIHOMO_API_PORT` 修改 external-controller 端口，`EDITOR` 修改配置编辑器；`MIHOMO_BIN` 修改 core 路径。
+- `tests/test.sh` 与 `scripts/tests/test_manager.sh` 面向旧非交互式 Shell 实现或依赖本机运行状态，不作为当前 Go TUI 的默认验收命令。
 - 安装脚本会创建 `~/.config/mihomo`。当前本机有最小可运行配置 `~/.config/mihomo/config.yaml`，默认 `DIRECT` 出口；导入订阅后可由管理器更新配置。
 - 配置测试命令：`~/.local/bin/mihomo -t -f ~/.config/mihomo/config.yaml`。
 - Go 版订阅更新逻辑支持完整 YAML 配置，也支持纯文本或 base64 编码的节点 URI 列表；当前覆盖 `vless://`、`vmess://`、`trojan://`、`ss://`。
@@ -19,6 +21,7 @@
 - Go 版服务启动逻辑位于 `internal/mihomo/client.go`，启动 mihomo 时会设置新 session，避免父进程退出时清理 mihomo 子进程。
 - 仓库包含 macOS `launchd` 配置，但在 Linux 环境不会安装该 LaunchAgent。
 - 卸载命令：`make uninstall`，实际执行 `scripts/uninstall.sh`。
+- `Makefile` 的 `PREFIX` 当前只影响帮助文本，安装脚本仍固定构建到仓库 `bin/mm` 并软链接到 `~/.local/bin/mm`。
 
 # 协作约定
 
