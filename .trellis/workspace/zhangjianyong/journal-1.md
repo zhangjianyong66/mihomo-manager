@@ -72,3 +72,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: 修复 mihomo 重复节点配置
+
+**Date**: 2026-07-14
+**Task**: 修复 mihomo 重复节点配置
+**Branch**: `master`
+
+### Summary
+
+分析并修复 config.yaml 中 10 组不同参数但同名的 VLESS 节点，同步代理组引用，保留 256 个节点，创建时间戳备份，权限收紧为 600，并通过 mihomo 配置校验；同时记录当前 xray 占用 10808、mihomo 未运行的本机状态。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `312c17d` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
