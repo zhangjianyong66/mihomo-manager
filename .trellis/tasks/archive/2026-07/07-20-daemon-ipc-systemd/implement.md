@@ -95,9 +95,9 @@ go test ./internal/platform/systemd -run 'Unit|Backup|Rollback|Unavailable'
 
 - [x] `trellis-check` 通过，所有高优先级发现已修复。
 - [x] `trellis-update-spec` 记录 daemon/IPC 路径、peer UID、systemd 和测试隔离约定。
-- [ ] 父任务仅勾选 A3 已交付项，未提前声称 A4/A5/A8 能力完成。
-- [ ] 使用中文 Conventional Commit，例如 `feat(daemon): 建立 Unix socket daemon 与 systemd 用户服务`。
-- [ ] 执行 `trellis-finish-work`，归档 A3 并记录 journal。
+- [x] 父任务仅勾选 A3 已交付项，未提前声称 A4/A5/A8 能力完成。
+- [x] 使用中文 Conventional Commit，例如 `feat(daemon): 建立 Unix socket daemon 与 systemd 用户服务`。
+- [x] 执行 `trellis-finish-work`，归档 A3 并记录 journal。
 
 ## 5. 启动前审阅清单
 
