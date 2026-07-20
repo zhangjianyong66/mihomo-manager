@@ -56,12 +56,12 @@ align-v2rayn-cli（当前规划父任务）
 
 依赖：A1 的领域/应用边界。
 
-- [ ] 对无 CGO SQLite 候选做 amd64/arm64、Go 1.22、`CGO_ENABLED=0`、许可证和二进制体积验证。
-- [ ] 固定驱动版本，建立 `internal/store`、连接参数、权限检查和 schema 迁移器。
-- [ ] 实现 profile、subscription、node、operation 和 settings 的最小 schema；后续表通过迁移增加。
-- [ ] 实现事务仓储、稳定 ID、来源外键、唯一约束和删除边界。
-- [ ] 建立并发、崩溃恢复、损坏检测、备份快照和 schema 前后兼容测试。
-- [ ] 所有测试使用 `t.TempDir()`，不得读取真实用户数据库。
+- [x] 对无 CGO SQLite 候选做 amd64/arm64、Go 1.22、`CGO_ENABLED=0`、许可证和二进制体积验证。
+- [x] 固定驱动版本，建立 `internal/store`、连接参数、权限检查和 schema 迁移器。
+- [x] 实现 profile、subscription、node、operation 和 settings 的最小 schema；后续表通过迁移增加。
+- [x] 实现事务仓储、稳定 ID、来源外键、唯一约束和删除边界。
+- [x] 建立并发、崩溃恢复、损坏检测、备份快照和 schema 前后兼容测试。
+- [x] 所有测试使用 `t.TempDir()`，不得读取真实用户数据库。
 
 验收：订阅来源事务替换、失败回滚、权限 `0700/0600`、重复迁移和旧 schema 升级测试通过；安装构建仍不依赖 C 编译器。
 

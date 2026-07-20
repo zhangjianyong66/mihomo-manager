@@ -19,7 +19,8 @@
   "pr_url": null,
   "subtasks": [],
   "children": [
-    "07-20-cli-app-contract"
+    "07-20-cli-app-contract",
+    "07-20-domain-sqlite-migrations"
   ],
   "parent": null,
   "relatedFiles": [],

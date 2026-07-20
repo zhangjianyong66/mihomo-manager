@@ -8,7 +8,8 @@
 ├── internal/app/           # 应用 ports、错误/DTO、依赖装配和 TUI 启动
 ├── internal/cli/           # Cobra 工厂、输出、退出码和脱敏
 ├── internal/config/        # 路径、端口和环境变量配置
-├── internal/domain/        # 稳定 ID、core 类型和运行状态
+├── internal/domain/        # 稳定 ID、档案/订阅/节点/操作/设置领域模型
+├── internal/store/         # SQLite 仓储、嵌入式迁移、权限和恢复点
 ├── internal/mihomo/        # mihomo 进程、API、配置和订阅核心逻辑
 ├── internal/tui/           # Bubble Tea 状态机、输入处理和界面渲染
 ├── scripts/                # 安装/卸载脚本及遗留 Shell 实现
@@ -26,7 +27,8 @@
 - `cmd/mm/main.go`：注入真实 TUI runner 和进程 IO，调用 `cli.Execute()` 并执行唯一的 `os.Exit`。不要在这里定义 Cobra 树、输出或业务逻辑。
 - `internal/cli`：定义 Cobra 根命令、已实现子命令、table/json presenter、退出码和显式秘密值。不得直接读配置或调用 mihomo。
 - `internal/app`：定义按能力拆分的应用 ports、应用 DTO/错误，并装配现有 Bubble Tea TUI。新业务边界先在这里表达。
-- `internal/domain`：定义不依赖框架或 mihomo DTO 的稳定标识符、core 类型和状态。
+- `internal/domain`：定义不依赖框架、SQLite 或 mihomo DTO 的稳定标识符、core、档案、订阅、节点、操作和设置类型。
+- `internal/store`：接收显式数据库路径，负责 SQLite 打开参数、权限、迁移/恢复点和领域仓储；不读取 HOME/XDG，不由 CLI/TUI 直接调用。
 - `internal/config/config.go`：统一生成 `config.Paths`。新增运行路径或环境变量时，应在这里提供默认值并由调用方注入，避免在业务包重复拼接 `$HOME` 路径。
 - `internal/mihomo/client.go`：当前核心业务边界，负责 mihomo 子进程、external-controller HTTP API、YAML 配置、订阅解析、白名单、路由和日志读取。
 - `internal/tui/model.go`：Bubble Tea `Model`、消息类型、按键处理和视图渲染。它调用 `mihomo.Client`，不直接解析订阅或改写 YAML。
@@ -35,6 +37,7 @@
 
 - 新增 CLI 命令、参数、输出或错误映射：放在 `internal/cli`；`cmd/mm` 只做进程装配。
 - 新增稳定业务标识/状态放在 `internal/domain`；新增用例接口和跨入口 DTO 放在 `internal/app`。
+- 新增 SQLite 表只能追加 `internal/store/migrations/NNNN_name.sql`，已提交迁移不得改写；SQL/nullable/time 映射留在 `internal/store`。
 - 新增环境变量、默认路径或配置文件位置：放在 `internal/config` 的 `Paths`/`Load`。
 - 新增 mihomo API、配置变换、订阅解析或系统进程操作：放在 `internal/mihomo`。
 - 新增页面状态、按键、异步消息或渲染：放在 `internal/tui`，通过 `mihomo.Client` 暴露的类型和方法取数。
