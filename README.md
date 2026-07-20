@@ -88,6 +88,9 @@ make uninstall
 ```bash
 mm
 mm tui
+mm daemon run
+mm daemon status --output json
+mm daemon enable
 ```
 
 两个入口打开相同的交互式终端界面。非交互冒烟检查：
@@ -95,7 +98,10 @@ mm tui
 ```bash
 mm --help
 mm tui --help
+mm daemon --help
 ```
+
+`mm daemon run` 是不依赖 systemd 的前台 manager daemon。daemon 只负责 manager 状态与 IPC 基础，不会自动启动 mihomo；CLI 在 daemon 不可用时不会回退为直接写 SQLite、配置或控制 core。默认运行目录和数据库遵循 XDG，可用 `XDG_DATA_HOME`、`XDG_STATE_HOME`、`XDG_RUNTIME_DIR`、`XDG_CONFIG_HOME` 隔离测试环境。
 
 ## 快捷键
 

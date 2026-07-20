@@ -1,0 +1,13 @@
+# mihomo-manager template-version=1
+[Unit]
+Description=mihomo-manager daemon
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/mm daemon run
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=yes
+UMask=0077

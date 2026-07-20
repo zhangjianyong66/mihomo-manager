@@ -20,7 +20,8 @@
   "subtasks": [],
   "children": [
     "07-20-cli-app-contract",
-    "07-20-domain-sqlite-migrations"
+    "07-20-domain-sqlite-migrations",
+    "07-20-daemon-ipc-systemd"
   ],
   "parent": null,
   "relatedFiles": [],

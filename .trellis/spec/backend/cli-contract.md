@@ -6,7 +6,9 @@
 
 以下变化必须遵守本规范：新增 Cobra 命令、修改应用服务接口、增加 table/json 输出、增加机器错误码或输出可能含秘密的字段。
 
-目标是让 `cmd/mm` 只负责进程装配，让 CLI/TUI 最终复用 `internal/app` 用例，并保证脚本可依赖 JSON 和退出码。当前 A1 只发布 `mm` 与 `mm tui` 两个 TUI 入口，业务子命令尚未接入。
+目标是让 `cmd/mm` 只负责进程装配，让 CLI/TUI 最终复用 `internal/app` 用例，并保证脚本可依赖 JSON 和退出码。A1 发布 `mm` 与 `mm tui`，A3 增加 `mm daemon run|status|start|stop|enable|disable`；业务子命令尚未接入。
+
+daemon `run` 只向 stderr 写诊断并保持前台运行；其他 daemon 命令通过 `internal/app.DaemonService` 访问 IPC/systemd，不直接读写 SQLite、socket 或 unit 文件。daemon 不可用/协议不兼容映射退出码 5，锁冲突映射 4，路径安全/权限拒绝映射 7。
 
 ### 2. Signatures
 

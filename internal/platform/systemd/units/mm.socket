@@ -1,0 +1,13 @@
+# mihomo-manager template-version=1
+[Unit]
+Description=mihomo-manager daemon socket
+
+[Socket]
+ListenStream=%t/mihomo-manager/mm.sock
+SocketMode=0600
+DirectoryMode=0700
+Accept=no
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

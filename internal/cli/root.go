@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/zhangjianyong66/mihomo-manager/internal/app"
@@ -25,7 +27,8 @@ func (f TUIRunnerFunc) Run(ctx context.Context, streams IOStreams) error {
 }
 
 type Dependencies struct {
-	TUI TUIRunner
+	TUI    TUIRunner
+	Daemon *app.DaemonService
 }
 
 func NewRoot(deps Dependencies) *cobra.Command {
@@ -58,8 +61,87 @@ func NewRoot(deps Dependencies) *cobra.Command {
 	}
 	tuiCommand.SetFlagErrorFunc(invalidFlagError)
 	root.AddCommand(tuiCommand)
+	root.AddCommand(newDaemonCommand(deps))
 
 	return root
+}
+
+func newDaemonCommand(deps Dependencies) *cobra.Command {
+	daemonCommand := &cobra.Command{Use: "daemon", Short: "管理 mihomo-manager daemon", Args: noArgs}
+	daemonCommand.SetFlagErrorFunc(invalidFlagError)
+
+	run := &cobra.Command{Use: "run", Short: "前台运行 daemon", Args: noArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		if deps.Daemon == nil {
+			return &app.Error{Code: app.ErrorCodeInternal, Message: "daemon 服务未配置"}
+		}
+		return deps.Daemon.Run(cmd.Context(), cmd.ErrOrStderr())
+	}}
+	status := &cobra.Command{Use: "status", Short: "查询 daemon 状态", Args: noArgs}
+	addDaemonOutput(status, func(cmd *cobra.Command) error {
+		if deps.Daemon == nil {
+			return &app.Error{Code: app.ErrorCodeInternal, Message: "daemon 服务未配置"}
+		}
+		value, err := deps.Daemon.Status(cmd.Context())
+		if err != nil {
+			return err
+		}
+		return daemonPresenter(cmd).WriteResult(Result{
+			Kind: "DaemonStatus",
+			Data: func(bool) any { return value },
+			Table: func(w io.Writer, _ bool) error {
+				_, err := fmt.Fprintf(w, "状态: %s\nPID: %d\n协议版本: %d\n启动时间: %s\nSchema 版本: %d\n", value.State, value.PID, value.ProtocolVersion, value.StartedAt.Format(time.RFC3339Nano), value.SchemaVersion)
+				return err
+			},
+		})
+	})
+	daemonCommand.AddCommand(run, status)
+	for _, action := range []string{"enable", "disable", "start", "stop"} {
+		action := action
+		command := &cobra.Command{Use: action, Short: "daemon " + action, Args: noArgs}
+		addDaemonOutput(command, func(cmd *cobra.Command) error {
+			if deps.Daemon == nil {
+				return &app.Error{Code: app.ErrorCodeInternal, Message: "daemon 服务未配置"}
+			}
+			value, err := deps.Daemon.Control(cmd.Context(), action)
+			if err != nil {
+				return err
+			}
+			return daemonPresenter(cmd).WriteResult(Result{
+				Kind: "DaemonControl",
+				Data: func(bool) any { return value },
+				Table: func(w io.Writer, _ bool) error {
+					if value.Hint != "" {
+						_, err := fmt.Fprintf(w, "%s\n提示: %s\n", value.Message, value.Hint)
+						return err
+					}
+					_, err := fmt.Fprintln(w, value.Message)
+					return err
+				},
+			})
+		})
+		daemonCommand.AddCommand(command)
+	}
+	return daemonCommand
+}
+
+func addDaemonOutput(command *cobra.Command, run func(*cobra.Command) error) {
+	var format OutputFormat
+	command.Flags().Var(&format, "output", "输出格式：table 或 json")
+	command.SetFlagErrorFunc(invalidFlagError)
+	command.RunE = func(cmd *cobra.Command, args []string) error {
+		if format == "" {
+			format = OutputTable
+		}
+		if _, err := ParseOutputFormat(format.String()); err != nil {
+			return err
+		}
+		return run(cmd)
+	}
+}
+
+func daemonPresenter(cmd *cobra.Command) Presenter {
+	format := OutputFormat(cmd.Flags().Lookup("output").Value.String())
+	return NewPresenter(cmd.OutOrStdout(), cmd.ErrOrStderr(), OutputOptions{Format: format})
 }
 
 func Execute(ctx context.Context, deps Dependencies, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -70,11 +152,23 @@ func Execute(ctx context.Context, deps Dependencies, args []string, stdin io.Rea
 	root.SetErr(stderr)
 
 	if err := root.ExecuteContext(ctx); err != nil {
-		presenter := NewPresenter(stdout, stderr, OutputOptions{Format: OutputTable})
+		presenter := NewPresenter(stdout, stderr, OutputOptions{Format: requestedOutputFormat(args)})
 		_ = presenter.WriteError(err)
 		return ExitCode(err)
 	}
 	return 0
+}
+
+func requestedOutputFormat(args []string) OutputFormat {
+	for index, arg := range args {
+		if arg == "--output=json" {
+			return OutputJSON
+		}
+		if arg == "--output" && index+1 < len(args) && args[index+1] == "json" {
+			return OutputJSON
+		}
+	}
+	return OutputTable
 }
 
 func noArgs(_ *cobra.Command, args []string) error {

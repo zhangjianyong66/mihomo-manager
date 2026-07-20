@@ -6,12 +6,13 @@
 
 | 文档 | 内容 |
 |------|------|
-| [目录结构](./directory-structure.md) | 包职责、文件归属和新增代码位置 |
+| [目录结构](./directory-structure.md) | 包职责、文件归属和新增代码位置，包括 daemon/IPC/platform |
 | [开发与验证命令](./development-commands.md) | 运行、构建、测试和配置检查命令 |
 | [代码风格](./code-style.md) | Go、TUI、错误处理、配置写入和测试风格 |
 | [CLI 与应用边界契约](./cli-contract.md) | 命令工厂、应用 ports、JSON、错误、退出码和脱敏 |
 | [SQLite 领域存储契约](./storage.md) | 领域/SQL 边界、迁移、权限、错误和测试契约 |
-| [安装与部署](./deployment.md) | 一键安装、独立 mm、mihomo core、状态与安全卸载 |
+| [daemon、Unix IPC 与 systemd](./daemon-ipc.md) | XDG 路径、协议、peer UID、生命周期、幂等和 unit 回滚契约 |
+| [安装与部署](./deployment.md) | 一键安装、独立 mm、mihomo core、daemon systemd unit、状态与安全卸载 |
 | [重要项目约定](./project-conventions.md) | 配置路径、路由语义、订阅更新和兼容边界 |
 
 ## 开发前检查（Pre-Development Checklist）
@@ -22,6 +23,7 @@
 4. 修改命令、应用服务、输出或错误时阅读 [CLI 与应用边界契约](./cli-contract.md)。
 5. 修改领域持久化、SQLite schema、迁移或仓储时阅读 [SQLite 领域存储契约](./storage.md)。
 6. 完成修改后至少执行 `gofmt` 检查和 `go test ./...`，具体命令见 [开发与验证命令](./development-commands.md)。
+7. 修改 daemon、IPC、Unix socket、systemd unit 或 manager XDG 路径时阅读 [daemon、Unix IPC 与 systemd](./daemon-ipc.md)。
 
 ## 质量检查（Quality Check）
 
@@ -37,4 +39,4 @@
 
 - `.trellis/spec/guides/` 是共享思考指南，不代表本项目的具体代码结构。
 - `scripts/lib/`、`bin/mihomo-manager` 和旧 Shell 测试仍保留在仓库中，但当前产品入口已经迁移到 Go 版交互式 `mm`。
-- `internal/store` 当前是未接入 CLI/daemon 的底座；默认数据库路径装配和真实用户迁移不属于现阶段行为。
+- `internal/store` 仍只接收显式数据库路径；daemon 在运行时按 XDG 装配默认路径并拥有状态写入权，业务写 API 尚未在 A3 接入。

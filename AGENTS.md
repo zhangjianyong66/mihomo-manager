@@ -12,9 +12,12 @@
 - 运行命令：`mm` 或 `mm tui`，两者打开相同的交互式 TUI；可用 `mm --help`、`mm tui --help` 做非交互冒烟验证。
 - CLI 命令工厂、table/json 输出、结构化错误、退出码和秘密值位于 `internal/cli`；`cmd/mm` 只做真实依赖/IO 装配和进程退出。
 - 稳定 ID、mihomo core、档案、订阅、节点、操作和设置领域模型位于 `internal/domain`；按 core/profile/node/group/subscription/route/config/log 拆分的应用 ports 位于 `internal/app`，现有 TUI 尚未迁移到这些 ports。
-- `internal/store` 使用 `database/sql` 与固定的 `modernc.org/sqlite v1.36.1`（无 CGO），提供 profile/subscription/node/operation/settings 仓储和两条嵌入式迁移；store 只接收显式数据库路径，当前未接入 CLI、daemon 或默认用户目录。
+- `internal/store` 使用 `database/sql` 与固定的 `modernc.org/sqlite v1.36.1`（无 CGO），提供 profile/subscription/node/operation/settings 仓储和两条嵌入式迁移；store 只接收显式数据库路径，默认用户路径由 daemon/config 装配。
 - SQLite store 使用单连接、rollback journal、`foreign_keys=ON`、`synchronous=FULL`；状态目录/数据库权限分别收紧为 `0700`/`0600`，迁移历史以 SHA-256 防改写，已有 schema 升级前创建同目录恢复点。
 - CLI 退出码契约为：`1` 内部错误、`2` 输入错误、`3` 不存在、`4` 冲突、`5` daemon/协议不可用、`6` 校验失败、`7` 权限拒绝、`8` 上游失败；JSON API 版本为 `mm/v1`。
+- daemon 前台入口为 `mm daemon run`，状态/控制入口为 `mm daemon status|start|stop|enable|disable`；默认使用 XDG 下的 `~/.local/share/mihomo-manager/state.db`、`~/.local/state/mihomo-manager/run/mm.sock`，有 `XDG_RUNTIME_DIR` 时运行目录改为 `$XDG_RUNTIME_DIR/mihomo-manager`。
+- daemon 只监听 Unix socket，不监听 TCP；socket 父目录为 `0700`、socket/锁为 `0600`，Linux 通过 `SO_PEERCRED` 限制为当前 UID，root daemon 被拒绝。IPC 使用 `/v1/`、`MM-Protocol-Min/Max` 和 `MM-Request-ID`，流式扩展采用 NDJSON。
+- systemd user unit 模板位于 `internal/platform/systemd/units`；`mm daemon enable` 在无 systemd 用户会话时只安装并报告“已安装未启用”，不会启用 linger、sudo 或启动 mihomo core。
 - 测试命令：`go test ./...`；存储/领域变更还需执行 `GOTOOLCHAIN=go1.22.12 go test -race ./...`、`go vet ./...` 和 Linux amd64/arm64 的 `CGO_ENABLED=0` 构建；安装流程测试为 `bash scripts/tests/test_install.sh`；Shell 语法检查为 `bash -n scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh tests/*.sh`。
 - Go 版路径和端口可通过环境变量覆盖：`CONFIG_DIR` 修改配置目录，`MIHOMO_API_PORT` 修改 external-controller 端口，`EDITOR` 修改配置编辑器；`MIHOMO_BIN` 修改 core 路径。
 - `tests/test.sh` 与 `scripts/tests/test_manager.sh` 面向旧非交互式 Shell 实现或依赖本机运行状态，不作为当前 Go TUI 的默认验收命令。

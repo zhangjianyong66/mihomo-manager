@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zhangjianyong66/mihomo-manager/internal/app"
 )
@@ -15,6 +16,39 @@ type fakeTUIRunner struct {
 	calls   int
 	err     error
 	streams IOStreams
+}
+
+type fakeDaemonClient struct {
+	status app.DaemonStatus
+	err    error
+}
+
+func (f fakeDaemonClient) Status(context.Context) (app.DaemonStatus, error) { return f.status, f.err }
+
+type fakeDaemonRunner struct{ calls int }
+
+func (f *fakeDaemonRunner) Run(_ context.Context, diagnostics io.Writer) error {
+	f.calls++
+	_, _ = io.WriteString(diagnostics, "daemon diagnostic\n")
+	return nil
+}
+
+type fakeDaemonController struct{ result app.DaemonControlResult }
+
+func (f fakeDaemonController) Status(context.Context) (app.DaemonControlResult, error) {
+	return f.result, nil
+}
+func (f fakeDaemonController) Enable(context.Context) (app.DaemonControlResult, error) {
+	return f.result, nil
+}
+func (f fakeDaemonController) Disable(context.Context) (app.DaemonControlResult, error) {
+	return f.result, nil
+}
+func (f fakeDaemonController) Start(context.Context) (app.DaemonControlResult, error) {
+	return f.result, nil
+}
+func (f fakeDaemonController) Stop(context.Context) (app.DaemonControlResult, error) {
+	return f.result, nil
 }
 
 func (r *fakeTUIRunner) Run(_ context.Context, streams IOStreams) error {
@@ -85,10 +119,41 @@ func TestRootHelpOnlyListsImplementedProductCommand(t *testing.T) {
 	if !strings.Contains(help, "tui") {
 		t.Fatalf("help does not list tui: %q", help)
 	}
-	for _, future := range []string{"daemon", "profile", "subscription"} {
+	if !strings.Contains(help, "daemon") {
+		t.Fatalf("help does not list daemon: %q", help)
+	}
+	for _, future := range []string{"profile", "subscription"} {
 		if strings.Contains(help, future) {
 			t.Fatalf("help contains future command %q: %q", future, help)
 		}
+	}
+}
+
+func TestDaemonStatusJSONAndRunWriterSeparation(t *testing.T) {
+	runner := &fakeDaemonRunner{}
+	service := &app.DaemonService{
+		Client:     fakeDaemonClient{status: app.DaemonStatus{ProtocolVersion: 1, State: "running", PID: 42, StartedAt: time.Date(2026, 7, 20, 1, 2, 3, 0, time.UTC), SchemaVersion: 2}},
+		Runner:     runner,
+		Controller: fakeDaemonController{result: app.DaemonControlResult{Installed: true, Message: "ok"}},
+	}
+	var stdout, stderr bytes.Buffer
+	code := Execute(context.Background(), Dependencies{Daemon: service}, []string{"daemon", "status", "--output", "json"}, nil, &stdout, &stderr)
+	if code != 0 || !strings.Contains(stdout.String(), `"kind":"DaemonStatus"`) || stderr.Len() != 0 {
+		t.Fatalf("unexpected status result: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	code = Execute(context.Background(), Dependencies{Daemon: service}, []string{"daemon", "run"}, nil, &stdout, &stderr)
+	if code != 0 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "diagnostic") || runner.calls != 1 {
+		t.Fatalf("unexpected run result: code=%d stdout=%q stderr=%q calls=%d", code, stdout.String(), stderr.String(), runner.calls)
+	}
+}
+
+func TestDaemonProtocolErrorUsesJSONAndExitFive(t *testing.T) {
+	service := &app.DaemonService{Client: fakeDaemonClient{err: &app.Error{Category: app.ErrorCategoryDaemonUnavailable, Code: app.ErrorCodeDaemonUnavailable, Message: "daemon 协议不兼容"}}}
+	var stdout, stderr bytes.Buffer
+	code := Execute(context.Background(), Dependencies{Daemon: service}, []string{"daemon", "status", "--output=json"}, nil, &stdout, &stderr)
+	if code != ExitDaemonUnavailable || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"kind":"Error"`) {
+		t.Fatalf("unexpected protocol error: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 

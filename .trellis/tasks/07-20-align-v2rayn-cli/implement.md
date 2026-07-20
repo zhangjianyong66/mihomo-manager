@@ -33,7 +33,7 @@ align-v2rayn-cli（当前规划父任务）
 └── 3.0：Xray、sing-box 多内核
 ```
 
-当前规划审阅通过后，只创建并启动 A1。后续大版本任务在进入实施前继续拆成独立子任务，不提前创建空任务。
+规划审阅通过后按依赖创建并启动 A1、A2、A3 独立子任务；A1/A2 已归档，A3 完成质量门后归档，后续 A4 及业务迁移仍不得提前声称完成。
 
 ## 3. 2.0.0-alpha.1
 
@@ -71,13 +71,13 @@ align-v2rayn-cli（当前规划父任务）
 
 依赖：A1；A2 仅对持久状态部分构成依赖，可先用内存 store 开发协议。
 
-- [ ] 实现版本化 HTTP/JSON over Unix socket 和 NDJSON 流。
-- [ ] 实现 socket 目录/文件权限、peer UID 校验、单实例锁和协议协商。
-- [ ] 实现 CLI IPC client、daemon unavailable/版本不兼容错误和请求取消。
-- [ ] 实现 operation lock、request ID 幂等缓存和基础 daemon 状态。
-- [ ] 增加 systemd user `.socket`/`.service` 模板、安装/禁用命令和前台 `daemon run`。
-- [ ] socket 激活只能启动 manager daemon，不得自动启动 proxy core。
-- [ ] 使用临时 socket 和隔离 HOME 验证同 UID、错误 UID、并发启动、断流和 systemd 模板。
+- [x] 实现版本化 HTTP/JSON over Unix socket 和 NDJSON 流。
+- [x] 实现 socket 目录/文件权限、peer UID 校验、单实例锁和协议协商。
+- [x] 实现 CLI IPC client、daemon unavailable/版本不兼容错误和请求取消。
+- [x] 实现 operation lock、request ID 幂等缓存和基础 daemon 状态。
+- [x] 增加 systemd user `.socket`/`.service` 模板、安装/禁用命令和前台 `daemon run`。
+- [x] socket 激活只启动 manager daemon，不自动启动 proxy core。
+- [x] 使用临时 socket、隔离 HOME 和 fake systemctl 验证同 UID、错误 UID、并发启动、断流和 systemd 模板。
 
 验收：多个 CLI 客户端只能连接同一 daemon；daemon 不监听 TCP；无 daemon 时不直接写文件或控制 core；前台模式可用于无 systemd 测试。
 

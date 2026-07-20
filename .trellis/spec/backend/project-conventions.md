@@ -46,6 +46,9 @@
 
 ## 系统与运行约定
 
+- manager daemon 的默认 data/state/runtime/socket/lock/systemd user unit 路径由 `config.ResolveManagerPaths` 集中计算，优先使用 XDG 环境变量；测试通过 `ManagerEnvironment` 注入临时绝对路径。
+- daemon 是 manager 状态写入唯一所有者，IPC 仅限同 UID Unix socket；无 daemon 时 CLI/TUI 不得回退直接写 SQLite、配置或控制 core。A3 只提供 health/status，不伪造 core 运行态。
+
 - 服务状态和停止逻辑通过进程模式 `mihomo.*-f.*config.yaml` 查找 core，改动命令行参数时要同步评估进程检测。
 - external-controller 默认只监听 `127.0.0.1`；不要在没有明确需求和安全评估时扩大到公网地址。
 - 运行日志写入 `<CONFIG_DIR>/mihomo.log`；TUI 日志页只保留最近 500 行内存缓冲，并支持正则过滤。

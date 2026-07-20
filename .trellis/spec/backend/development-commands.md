@@ -13,6 +13,9 @@
 | 运行已安装程序 | `mm` | 打开交互式 TUI，需要终端环境 |
 | 显式运行 TUI | `mm tui` | 与无参数入口调用相同 TUI runner |
 | 非交互冒烟 | `mm --help` | 不进入 TUI，适合安装后检查 |
+| daemon 帮助 | `mm daemon --help` | 验证 daemon 基础命令，不启动 core |
+| daemon 前台 | `mm daemon run` | 使用临时 XDG 环境运行 manager daemon |
+| daemon 状态 | `mm daemon status --output json` | 通过 Unix socket 探测协议、PID、schema 和启动时间 |
 | 子命令冒烟 | `mm tui --help` | 验证显式 TUI 命令且不启动界面 |
 | 从源码查看帮助 | `go run ./cmd/mm --help` | 验证当前源码入口 |
 | 构建 | `go build -o /tmp/mm ./cmd/mm` | 使用临时输出，避免无意覆盖仓库中的 `bin/mm` |
@@ -39,3 +42,4 @@
 - `tests/test.sh` 依赖本机端口、launchd 和已运行服务，还调用已不再支持的 `mm status`，不能作为通用 CI 或当前 CLI 的必过测试。
 - `scripts/tests/test_manager.sh` 主要验证遗留 `bin/mihomo-manager` 和 `scripts/lib`，仅在维护旧 Shell 实现时运行。
 - 单元测试不得依赖真实的 `~/.config/mihomo`、真实订阅或正在运行的 mihomo；使用 `t.TempDir()`、`httptest.NewServer()` 和 `/usr/bin/true`/`false` 等可控替身。
+- daemon/IPC/systemd 测试必须使用 `t.TempDir()` 或隔离 HOME/XDG；不得连接真实用户 socket、systemd unit、mihomo core 或 TCP 端口。完整门禁还应运行 `go test -race ./...`、`go vet ./...` 和 Linux amd64/arm64 `CGO_ENABLED=0` 构建。

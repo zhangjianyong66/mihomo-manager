@@ -49,6 +49,13 @@ make install
 - Bash/Zsh 缺少等效 PATH 配置时，安装器使用稳定标记块写入 `~/.bashrc` 或 `~/.zshrc`；重复安装不得重复追加。
 - 脚本不能修改父 shell，安装结束后应提示重开终端或临时 export PATH。
 
+## daemon 与 systemd user service
+
+- `mm daemon run` 以普通用户前台运行 manager daemon；只打开 XDG manager database、Unix socket 和单实例锁，不启动 mihomo core。
+- IPC socket 默认位于 `$XDG_RUNTIME_DIR/mihomo-manager/mm.sock`，缺失时回退到 `${XDG_STATE_HOME:-$HOME/.local/state}/mihomo-manager/run/mm.sock`；父目录 `0700`，socket/lock `0600`。
+- systemd unit 模板由 Go 二进制嵌入并写入 `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/mm.socket` 与 `mm.service`。`mm.socket` 使用 `%t`、`Accept=no`、`RemoveOnStop=yes`，service 设置 `NoNewPrivileges=yes`、`UMask=0077`、失败退避，且只启动 `mm daemon run`。
+- `mm daemon enable` 原子写入并保存未知/本地修改 unit 的备份；daemon-reload 或 enable 失败会恢复原文件。systemd 用户会话不可用时保留已校验 unit，返回“已安装未启用”和 `mm daemon run` 提示，不启用 linger 或 sudo。
+
 ## 状态与卸载
 
 安装状态位于 `~/.local/share/mihomo-manager/install-state`，只记录路径、版本和归属等非敏感信息，用于安全卸载。
