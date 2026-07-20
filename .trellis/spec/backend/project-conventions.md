@@ -46,10 +46,11 @@
 
 ## 系统与运行约定
 
-- manager daemon 的默认 data/state/runtime/socket/lock/systemd user unit 路径由 `config.ResolveManagerPaths` 集中计算，优先使用 XDG 环境变量；测试通过 `ManagerEnvironment` 注入临时绝对路径。
-- daemon 是 manager 状态写入唯一所有者，IPC 仅限同 UID Unix socket；无 daemon 时 CLI/TUI 不得回退直接写 SQLite、配置或控制 core。A3 只提供 health/status，不伪造 core 运行态。
+- manager daemon 的默认 data/state/runtime/socket/lock/systemd user unit，以及 `generations`、core log/runtime metadata 路径均由 `config.ResolveManagerPaths` 集中计算，优先使用 XDG 环境变量；测试通过 `ManagerEnvironment` 注入临时绝对路径。
+- daemon 是 manager 状态写入和 2.x core 进程的唯一所有者，IPC 仅限同 UID Unix socket；无 daemon 时 CLI/TUI 不得回退直接写 SQLite、配置或控制 core。daemon 启动只装配 CoreManager，core 初始状态为 `stopped`。
 
-- 服务状态和停止逻辑通过进程模式 `mihomo.*-f.*config.yaml` 查找 core，改动命令行参数时要同步评估进程检测。
+- 1.x TUI 兼容层仍通过进程模式 `mihomo.*-f.*config.yaml` 查找 core；2.x daemon 严禁复用该逻辑，只停止 adapter 返回并由 supervisor 持有的 `Process`。
+- managed 配置写到 XDG generation 目录；external/legacy 配置只读并在 validate/start 间核对 SHA-256，不得覆盖 `~/.config/mihomo/config.yaml`。
 - external-controller 默认只监听 `127.0.0.1`；不要在没有明确需求和安全评估时扩大到公网地址。
 - 运行日志写入 `<CONFIG_DIR>/mihomo.log`；TUI 日志页只保留最近 500 行内存缓冲，并支持正则过滤。
 - 配置管理、订阅更新和路由功能涉及用户真实网络环境；自动化测试必须隔离到临时目录，不能改写用户的 `~/.config/mihomo`。

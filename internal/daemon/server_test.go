@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/zhangjianyong66/mihomo-manager/internal/config"
+	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
 	"github.com/zhangjianyong66/mihomo-manager/internal/ipc"
 	"github.com/zhangjianyong66/mihomo-manager/internal/platform"
 )
@@ -46,6 +47,26 @@ func TestServer_RunStatusMultipleClientsAndCleanup(t *testing.T) {
 		t.Fatalf("daemon lock was not released: %v", err)
 	}
 	_ = lock.Close()
+}
+
+func TestServer_WithCoreAdapterDoesNotAutoStartCore(t *testing.T) {
+	paths := testPaths(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	server := New(Options{Paths: paths, CoreAdapter: &managerFakeAdapter{}})
+	done := make(chan error, 1)
+	go func() { done <- server.Run(ctx) }()
+	waitForSocket(t, paths.Socket)
+	var status Status
+	if err := ipc.NewClient(paths.Socket).Do(context.Background(), http.MethodGet, "/v1/status", "", nil, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Core.State != domain.CoreStateStopped {
+		t.Fatalf("daemon unexpectedly started core: %+v", status.Core)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestCoordinator_RejectsConcurrentMutation(t *testing.T) {

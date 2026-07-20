@@ -101,7 +101,7 @@ mm tui --help
 mm daemon --help
 ```
 
-`mm daemon run` 是不依赖 systemd 的前台 manager daemon。daemon 只负责 manager 状态与 IPC 基础，不会自动启动 mihomo；CLI 在 daemon 不可用时不会回退为直接写 SQLite、配置或控制 core。默认运行目录和数据库遵循 XDG，可用 `XDG_DATA_HOME`、`XDG_STATE_HOME`、`XDG_RUNTIME_DIR`、`XDG_CONFIG_HOME` 隔离测试环境。
+`mm daemon run` 是不依赖 systemd 的前台 manager daemon。daemon 会装配 mihomo adapter 和单实例 supervisor，但不会自动启动 mihomo；CLI 在 daemon 不可用时不会回退为直接写 SQLite、配置或控制 core。managed generation 默认写入 `${XDG_DATA_HOME:-~/.local/share}/mihomo-manager/generations`，core 日志与 runtime metadata 写入 `${XDG_STATE_HOME:-~/.local/state}/mihomo-manager/core`。可用 `XDG_DATA_HOME`、`XDG_STATE_HOME`、`XDG_RUNTIME_DIR`、`XDG_CONFIG_HOME` 隔离测试环境。
 
 ## 快捷键
 
@@ -122,5 +122,6 @@ mm daemon --help
 
 - 当前只发布 TUI 入口；旧的非交互式业务子命令仍不支持，新的脚本化业务命令会按 2.0 路线逐步接入。
 - 2.0 的领域模型、SQLite schema/迁移和事务仓储底座已进入代码库，但尚未接入 CLI/TUI 或创建默认用户数据库；现有 1.x 配置和运行行为不变。
+- 2.0 的 mihomo adapter 已支持确定性最小配置、原生验证、loopback controller 就绪检查、精确进程停止和失败恢复；业务 core/profile/config 命令仍在后续阶段接入。
 - YAML 写回后字段顺序和注释可能变化。
 - 节点测速并发固定较低，以提高稳定性。

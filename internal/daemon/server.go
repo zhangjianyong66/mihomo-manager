@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/zhangjianyong66/mihomo-manager/internal/config"
+	"github.com/zhangjianyong66/mihomo-manager/internal/core"
+	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
 	"github.com/zhangjianyong66/mihomo-manager/internal/ipc"
 	"github.com/zhangjianyong66/mihomo-manager/internal/platform"
 	"github.com/zhangjianyong66/mihomo-manager/internal/store"
@@ -28,11 +30,12 @@ const (
 var ErrRootDaemon = errors.New("root daemon is not allowed")
 
 type Status struct {
-	ProtocolVersion int       `json:"protocolVersion"`
-	State           State     `json:"state"`
-	PID             int       `json:"pid"`
-	StartedAt       time.Time `json:"startedAt"`
-	SchemaVersion   int       `json:"schemaVersion"`
+	ProtocolVersion int        `json:"protocolVersion"`
+	State           State      `json:"state"`
+	PID             int        `json:"pid"`
+	StartedAt       time.Time  `json:"startedAt"`
+	SchemaVersion   int        `json:"schemaVersion"`
+	Core            CoreStatus `json:"core"`
 }
 
 type Store interface {
@@ -41,13 +44,15 @@ type Store interface {
 }
 
 type Options struct {
-	Paths           config.ManagerPaths
-	UID             uint32
-	PID             int
-	Clock           func() time.Time
-	OpenStore       func(context.Context, string, store.OpenOptions) (Store, error)
-	Listener        net.Listener
-	ShutdownTimeout time.Duration
+	Paths            config.ManagerPaths
+	UID              uint32
+	PID              int
+	Clock            func() time.Time
+	OpenStore        func(context.Context, string, store.OpenOptions) (Store, error)
+	Listener         net.Listener
+	ShutdownTimeout  time.Duration
+	CoreAdapter      core.Adapter
+	CoreReadyTimeout time.Duration
 }
 
 type Server struct {
@@ -59,6 +64,7 @@ type Server struct {
 	store     Store
 	lock      *platform.FileLock
 	ownedSock bool
+	core      *CoreManager
 }
 
 func New(opts Options) *Server {
@@ -106,6 +112,22 @@ func (s *Server) Run(ctx context.Context) (finalErr error) {
 		return fmt.Errorf("open daemon state: %w", err)
 	}
 	s.store = stateStore
+	if s.opts.CoreAdapter != nil {
+		repository, ok := stateStore.(CoreRepository)
+		if !ok {
+			s.setState(StateFailed)
+			return errors.New("daemon store does not implement core repository")
+		}
+		generationStore := core.NewGenerationStore(core.GenerationStoreOptions{
+			GenerationsDir: s.opts.Paths.GenerationsDir,
+			RuntimeState:   s.opts.Paths.RuntimeState,
+			LogPath:        s.opts.Paths.CoreLog,
+		})
+		s.core = NewCoreManager(CoreManagerOptions{
+			Adapter: s.opts.CoreAdapter, Configs: generationStore, Repository: repository,
+			Coordinator: NewCoordinator(), Supervisor: NewSupervisor(s.opts.CoreAdapter, s.opts.CoreReadyTimeout),
+		})
+	}
 
 	listener := s.opts.Listener
 	if listener == nil {
@@ -160,8 +182,14 @@ func (s *Server) Run(ctx context.Context) (finalErr error) {
 
 func (s *Server) Status() Status {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.status
+	status := s.status
+	s.mu.RUnlock()
+	if s.core != nil {
+		status.Core = s.core.Status()
+	} else {
+		status.Core = CoreStatus{State: domain.CoreStateStopped}
+	}
+	return status
 }
 
 func (s *Server) setState(state State) {
@@ -185,6 +213,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) cleanup() error {
 	var result error
+	if s.core != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), s.opts.ShutdownTimeout)
+		result = errors.Join(result, s.core.Close(ctx))
+		cancel()
+	}
 	if s.listener != nil {
 		if err := s.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			result = errors.Join(result, err)

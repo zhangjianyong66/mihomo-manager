@@ -28,9 +28,9 @@ CLI 签名：`mm daemon run|status|start|stop|enable|disable`；除 `run` 外均
 - XDG：data 为 `${XDG_DATA_HOME:-$HOME/.local/share}/mihomo-manager`，state 为 `${XDG_STATE_HOME:-$HOME/.local/state}/mihomo-manager`，runtime 优先 `$XDG_RUNTIME_DIR/mihomo-manager`、否则 `<state>/run`，unit 为 `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user`。所有注入路径必须是绝对路径。
 - 权限：runtime/data/state 相关创建目录收紧为 `0700`；database/lock/socket/unit 为 `0600`；拒绝已有符号链接、非预期文件类型和非当前用户目录。lock 使用 `O_NOFOLLOW` 和非阻塞 `flock`。
 - IPC：只监听 Unix stream，路径以 `/v1/` 开头；请求头 `MM-Protocol-Min`、`MM-Protocol-Max` 是严格正整数范围，响应返回 `MM-Protocol-Version`，修改请求可带 `MM-Request-ID`。当前协议版本为 `1`，JSON/NDJSON 单体上限 1 MiB。
-- 状态 DTO：`protocolVersion`、`state`、`pid`、`startedAt`、`schemaVersion`；A3 不返回虚构 core 状态。
+- 状态 DTO：`protocolVersion`、`state`、`pid`、`startedAt`、`schemaVersion`、类型化 `core` 状态；daemon 初始 core 为真实 `stopped`，不得伪造 running。
 - NDJSON：`seq` 从 1 单调递增，`kind` 只能是 `event|done|error`，且必须以 `done` 或 `error` 终止；终止后禁止继续写。
-- 安全：Linux listener 在 HTTP 前以 `SO_PEERCRED` 校验 peer UID；root daemon 拒绝启动；daemon 不监听 TCP、不调用 sudo、不启用 linger、不启动 mihomo core。
+- 安全：Linux listener 在 HTTP 前以 `SO_PEERCRED` 校验 peer UID；root daemon 拒绝启动；daemon 不监听 TCP、不调用 sudo、不启用 linger。启动 daemon 不自动启动 mihomo core，显式 CoreManager 操作才可托管。
 - 幂等：完成且非 5xx/非流式的 JSON 响应按 request ID 缓存 5 分钟、最多 1024 条；同 ID 不同 method/path/body 返回 `REQUEST_ID_CONFLICT`。
 - systemd：`mm.socket` 使用 `%t/mihomo-manager/mm.sock`、`0600/0700`、`Accept=no`、`RemoveOnStop=yes`；service 只执行 `%h/.local/bin/mm daemon run`，设置 `Restart=on-failure`、退避、`NoNewPrivileges=yes`、`UMask=0077`。unit 带 owner/version/content checksum marker，以临时文件 fsync+rename 安装。
 

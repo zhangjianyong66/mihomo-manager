@@ -33,7 +33,7 @@ align-v2rayn-cli（当前规划父任务）
 └── 3.0：Xray、sing-box 多内核
 ```
 
-规划审阅通过后按依赖创建并启动 A1、A2、A3 独立子任务；A1/A2 已归档，A3 完成质量门后归档，后续 A4 及业务迁移仍不得提前声称完成。
+规划审阅通过后按依赖创建并启动 A1、A2、A3、A4 独立子任务；A1/A2/A3 已归档，A4 已完成 adapter/generation/core 生命周期质量门，后续 legacy 迁移和业务能力仍不得提前声称完成。
 
 ## 3. 2.0.0-alpha.1
 
@@ -87,13 +87,13 @@ align-v2rayn-cli（当前规划父任务）
 
 依赖：A1、A2；进程托管集成依赖 A3。
 
-- [ ] 定义最小 `core.Adapter`、`RuntimeClient`、`Process` 接口，以 mihomo 当前真实需求驱动。
-- [ ] 将进程启动/停止、external-controller API、配置验证分离为 mihomo 子组件。
-- [ ] 保留 `Setsid`、超时、状态码和日志行为的回归测试。
-- [ ] 实现 managed 配置最小渲染、生成目录、generation 元数据、静态验证和 mihomo 原生验证。
-- [ ] 实现 external 只读启动和源文件摘要检查。
-- [ ] 实现档案切换操作记录、就绪探测、失败恢复和明确 failed 状态。
-- [ ] 使用 golden 配置和受控 mihomo 二进制执行契约测试。
+- [x] 定义最小 `core.Adapter`、`RuntimeClient`、`Process` 接口，以 mihomo 当前真实需求驱动。
+- [x] 将进程启动/停止、external-controller API、配置验证分离为 mihomo 子组件。
+- [x] 保留 `Setsid`、超时、状态码和日志行为的回归测试。
+- [x] 实现 managed 配置最小渲染、生成目录、generation 元数据、静态验证和 mihomo 原生验证。
+- [x] 实现 external 只读启动和源文件摘要检查。
+- [x] 实现档案切换操作记录、就绪探测、失败恢复和明确 failed 状态。
+- [x] 使用 golden 配置和受控 mihomo 二进制执行契约测试。
 
 验收：适配器不泄漏 mihomo `map[string]any` 到领域层；配置发布可重复且原子；失败启动恢复旧实例；测试不误杀外部 mihomo/xray 进程。
 

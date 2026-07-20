@@ -1,0 +1,19 @@
+mixed-port: 17890
+socks-port: 17891
+mode: rule
+external-controller: 127.0.0.1:19090
+proxies:
+    - name: node one-2acc8ec8
+      type: socks5
+      server: 127.0.0.1
+      port: 1080
+      username: demo
+      password: secret
+      udp: true
+proxy-groups:
+    - name: GLOBAL
+      type: select
+      proxies:
+        - node one-2acc8ec8
+rules:
+    - MATCH,GLOBAL

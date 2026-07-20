@@ -89,7 +89,7 @@ func newDaemonCommand(deps Dependencies) *cobra.Command {
 			Kind: "DaemonStatus",
 			Data: func(bool) any { return value },
 			Table: func(w io.Writer, _ bool) error {
-				_, err := fmt.Fprintf(w, "状态: %s\nPID: %d\n协议版本: %d\n启动时间: %s\nSchema 版本: %d\n", value.State, value.PID, value.ProtocolVersion, value.StartedAt.Format(time.RFC3339Nano), value.SchemaVersion)
+				_, err := fmt.Fprintf(w, "状态: %s\nPID: %d\n协议版本: %d\n启动时间: %s\nSchema 版本: %d\nCore 状态: %s\nCore PID: %d\n", value.State, value.PID, value.ProtocolVersion, value.StartedAt.Format(time.RFC3339Nano), value.SchemaVersion, value.Core.State, value.Core.PID)
 				return err
 			},
 		})

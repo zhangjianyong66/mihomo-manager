@@ -9,6 +9,7 @@
 ├── internal/cli/           # Cobra 工厂、输出、退出码和脱敏
 ├── internal/config/        # 路径、端口和环境变量配置
 ├── internal/domain/        # 稳定 ID、档案/订阅/节点/操作/设置领域模型
+├── internal/core/          # 跨 core 类型契约、generation 原子发布和 external 摘要
 ├── internal/store/         # SQLite 仓储、嵌入式迁移、权限和恢复点
 ├── internal/daemon/        # 用户级 daemon 生命周期、状态、操作锁和幂等缓存
 ├── internal/ipc/           # 版本化 HTTP/JSON Unix transport 与 NDJSON 编解码
@@ -32,11 +33,12 @@
 - `internal/app`：定义按能力拆分的应用 ports、应用 DTO/错误，并装配现有 Bubble Tea TUI。新业务边界先在这里表达。
 - `internal/domain`：定义不依赖框架、SQLite 或 mihomo DTO 的稳定标识符、core、档案、订阅、节点、操作和设置类型。
 - `internal/store`：接收显式数据库路径，负责 SQLite 打开参数、权限、迁移/恢复点和领域仓储；不读取 HOME/XDG，不由 CLI/TUI 直接调用。
-- `internal/daemon`：拥有 daemon 生命周期、状态快照、store 装配、基础 health/status、单实例锁、operation coordinator 和 request ID 缓存；不启动 mihomo core。
+- `internal/core`：定义不依赖 mihomo DTO 的 adapter/process/runtime 契约，并负责 managed generation 和 external 只读引用；不得导入 SQLite、CLI、TUI 或 `internal/mihomo`。
+- `internal/daemon`：拥有 daemon 生命周期、状态快照、store 装配、health/status、operation coordinator、CoreManager 和 request ID 缓存；启动 daemon 不自动启动 mihomo，后续显式操作才托管单实例 core。
 - `internal/ipc`：只负责 `/v1/` HTTP/JSON over Unix socket、版本范围协商、请求取消、结构化错误和 NDJSON stream；不导入 store/mihomo/CLI。
 - `internal/platform`：隔离 Linux `SO_PEERCRED`、`O_NOFOLLOW` 文件锁、Unix listener、socket activation 和 systemd user unit 控制；协议层不得依赖 Linux syscall。
 - `internal/config/config.go`：统一生成 `config.Paths`。新增运行路径或环境变量时，应在这里提供默认值并由调用方注入，避免在业务包重复拼接 `$HOME` 路径。
-- `internal/mihomo/client.go`：当前核心业务边界，负责 mihomo 子进程、external-controller HTTP API、YAML 配置、订阅解析、白名单、路由和日志读取。
+- `internal/mihomo/adapter.go`、`render.go`、`process.go`、`runtime.go`：2.x adapter 的渲染/验证、精确进程句柄和类型化 runtime API；`client.go` 暂时保留 1.x TUI 兼容业务。
 - `internal/tui/model.go`：Bubble Tea `Model`、消息类型、按键处理和视图渲染。它调用 `mihomo.Client`，不直接解析订阅或改写 YAML。
 
 ## 文件归属规则

@@ -10,6 +10,7 @@ import (
 	"github.com/zhangjianyong66/mihomo-manager/internal/config"
 	"github.com/zhangjianyong66/mihomo-manager/internal/daemon"
 	"github.com/zhangjianyong66/mihomo-manager/internal/ipc"
+	"github.com/zhangjianyong66/mihomo-manager/internal/mihomo"
 	"github.com/zhangjianyong66/mihomo-manager/internal/platform"
 	"github.com/zhangjianyong66/mihomo-manager/internal/platform/systemd"
 )
@@ -38,7 +39,9 @@ func (r localDaemonRunner) Run(ctx context.Context, diagnostics io.Writer) error
 	if diagnostics != nil {
 		_, _ = fmt.Fprintf(diagnostics, "mihomo-manager daemon 前台运行，socket=%s\n", r.paths.Socket)
 	}
-	err := daemon.New(daemon.Options{Paths: r.paths}).Run(ctx)
+	corePaths := config.Load()
+	adapter := mihomo.NewAdapter(mihomo.AdapterOptions{Binary: corePaths.MihomoBin})
+	err := daemon.New(daemon.Options{Paths: r.paths, CoreAdapter: adapter}).Run(ctx)
 	if errors.Is(err, daemon.ErrRootDaemon) {
 		return &Error{Category: ErrorCategoryPermissionDenied, Code: ErrorCodePermissionDenied, Message: "daemon 必须以普通用户运行"}
 	}

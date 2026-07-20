@@ -29,13 +29,17 @@ type ManagerEnvironment struct {
 }
 
 type ManagerPaths struct {
-	DataDir     string
-	Database    string
-	StateDir    string
-	RuntimeDir  string
-	Socket      string
-	Lock        string
-	UserUnitDir string
+	DataDir        string
+	Database       string
+	GenerationsDir string
+	StateDir       string
+	CoreStateDir   string
+	CoreLog        string
+	RuntimeState   string
+	RuntimeDir     string
+	Socket         string
+	Lock           string
+	UserUnitDir    string
 }
 
 func LoadManagerPaths() (ManagerPaths, error) {
@@ -73,13 +77,17 @@ func ResolveManagerPaths(env ManagerEnvironment) (ManagerPaths, error) {
 		runtimeDir = filepath.Join(filepath.Clean(env.RuntimeDir), "mihomo-manager")
 	}
 	return ManagerPaths{
-		DataDir:     dataDir,
-		Database:    filepath.Join(dataDir, "state.db"),
-		StateDir:    stateDir,
-		RuntimeDir:  runtimeDir,
-		Socket:      filepath.Join(runtimeDir, "mm.sock"),
-		Lock:        filepath.Join(runtimeDir, "daemon.lock"),
-		UserUnitDir: filepath.Join(configHome, "systemd", "user"),
+		DataDir:        dataDir,
+		Database:       filepath.Join(dataDir, "state.db"),
+		GenerationsDir: filepath.Join(dataDir, "generations"),
+		StateDir:       stateDir,
+		CoreStateDir:   filepath.Join(stateDir, "core"),
+		CoreLog:        filepath.Join(stateDir, "core", "mihomo.log"),
+		RuntimeState:   filepath.Join(stateDir, "core", "runtime.json"),
+		RuntimeDir:     runtimeDir,
+		Socket:         filepath.Join(runtimeDir, "mm.sock"),
+		Lock:           filepath.Join(runtimeDir, "daemon.lock"),
+		UserUnitDir:    filepath.Join(configHome, "systemd", "user"),
 	}, nil
 }
 

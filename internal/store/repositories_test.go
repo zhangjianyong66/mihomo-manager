@@ -88,6 +88,40 @@ func TestProfileAndSubscriptionCRUD(t *testing.T) {
 	}
 }
 
+func TestActiveProfileRestore_CanClearAndRestorePrevious(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	first := testProfile("profile-active-one", "one", now)
+	second := testProfile("profile-active-two", "two", now)
+	if err := store.CreateProfile(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateProfile(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetActiveProfile(ctx, first.ID, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	active, ok, err := store.ActiveProfileID(ctx)
+	if err != nil || !ok || active != first.ID {
+		t.Fatalf("unexpected active profile: %q %v %v", active, ok, err)
+	}
+	if err := store.RestoreActiveProfile(ctx, nil, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.ActiveProfileID(ctx); err != nil || ok {
+		t.Fatalf("expected no active profile: ok=%v err=%v", ok, err)
+	}
+	if err := store.RestoreActiveProfile(ctx, &second.ID, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	active, ok, err = store.ActiveProfileID(ctx)
+	if err != nil || !ok || active != second.ID {
+		t.Fatalf("restored active profile mismatch: %q %v %v", active, ok, err)
+	}
+}
+
 func TestReplaceSubscriptionNodes_IsolatedAndAtomic(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

@@ -12,6 +12,7 @@
 | [CLI 与应用边界契约](./cli-contract.md) | 命令工厂、应用 ports、JSON、错误、退出码和脱敏 |
 | [SQLite 领域存储契约](./storage.md) | 领域/SQL 边界、迁移、权限、错误和测试契约 |
 | [daemon、Unix IPC 与 systemd](./daemon-ipc.md) | XDG 路径、协议、peer UID、生命周期、幂等和 unit 回滚契约 |
+| [Core adapter 与 generation](./core-adapter.md) | mihomo 渲染/验证、只读 external、精确进程托管和切换恢复契约 |
 | [安装与部署](./deployment.md) | 一键安装、独立 mm、mihomo core、daemon systemd unit、状态与安全卸载 |
 | [重要项目约定](./project-conventions.md) | 配置路径、路由语义、订阅更新和兼容边界 |
 
@@ -24,6 +25,7 @@
 5. 修改领域持久化、SQLite schema、迁移或仓储时阅读 [SQLite 领域存储契约](./storage.md)。
 6. 完成修改后至少执行 `gofmt` 检查和 `go test ./...`，具体命令见 [开发与验证命令](./development-commands.md)。
 7. 修改 daemon、IPC、Unix socket、systemd unit 或 manager XDG 路径时阅读 [daemon、Unix IPC 与 systemd](./daemon-ipc.md)。
+8. 修改 core adapter、generation、mihomo 进程/API 或档案切换时阅读 [Core adapter 与 generation](./core-adapter.md)。
 
 ## 质量检查（Quality Check）
 

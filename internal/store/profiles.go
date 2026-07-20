@@ -116,8 +116,34 @@ func (s *Store) SetActiveProfile(ctx context.Context, id domain.ProfileID, updat
 	if err := id.Validate(); err != nil {
 		return invalid("set active profile", err)
 	}
+	return s.RestoreActiveProfile(ctx, &id, updatedAt)
+}
+
+func (s *Store) ActiveProfileID(ctx context.Context) (domain.ProfileID, bool, error) {
+	db, release, err := s.acquire()
+	if err != nil {
+		return "", false, err
+	}
+	defer release()
+	var id string
+	err = db.QueryRowContext(ctx, "SELECT id FROM profiles WHERE active = 1").Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, storeError("get active profile", err)
+	}
+	return domain.ProfileID(id), true, nil
+}
+
+func (s *Store) RestoreActiveProfile(ctx context.Context, id *domain.ProfileID, updatedAt time.Time) error {
+	if id != nil {
+		if err := id.Validate(); err != nil {
+			return invalid("restore active profile", err)
+		}
+	}
 	if err := validateStoreTime(updatedAt); err != nil {
-		return invalid("set active profile", err)
+		return invalid("restore active profile", err)
 	}
 	db, release, err := s.acquire()
 	if err != nil {
@@ -126,20 +152,24 @@ func (s *Store) SetActiveProfile(ctx context.Context, id domain.ProfileID, updat
 	defer release()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return storeError("begin active profile switch", err)
+		return storeError("begin active profile restore", err)
 	}
 	defer tx.Rollback()
-	var exists int
-	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM profiles WHERE id = ?", id.String()).Scan(&exists); err != nil {
-		return storeError("find active profile target "+id.String(), err)
+	if id != nil {
+		var exists int
+		if err := tx.QueryRowContext(ctx, "SELECT 1 FROM profiles WHERE id = ?", id.String()).Scan(&exists); err != nil {
+			return storeError("find active profile target "+id.String(), err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE profiles SET active = 0, revision = revision + 1, updated_at = ? WHERE active = 1", formatTime(updatedAt)); err != nil {
 		return storeError("clear active profile", err)
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE profiles SET active = 1, revision = revision + 1, updated_at = ? WHERE id = ?", formatTime(updatedAt), id.String()); err != nil {
-		return storeError("set active profile "+id.String(), err)
+	if id != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE profiles SET active = 1, revision = revision + 1, updated_at = ? WHERE id = ?", formatTime(updatedAt), id.String()); err != nil {
+			return storeError("restore active profile "+id.String(), err)
+		}
 	}
-	return storeError("commit active profile switch", tx.Commit())
+	return storeError("commit active profile restore", tx.Commit())
 }
 
 func (s *Store) DeleteProfile(ctx context.Context, id domain.ProfileID) error {

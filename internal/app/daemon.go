@@ -8,11 +8,20 @@ import (
 )
 
 type DaemonStatus struct {
-	ProtocolVersion int       `json:"protocolVersion"`
-	State           string    `json:"state"`
-	PID             int       `json:"pid"`
-	StartedAt       time.Time `json:"startedAt"`
-	SchemaVersion   int       `json:"schemaVersion"`
+	ProtocolVersion int              `json:"protocolVersion"`
+	State           string           `json:"state"`
+	PID             int              `json:"pid"`
+	StartedAt       time.Time        `json:"startedAt"`
+	SchemaVersion   int              `json:"schemaVersion"`
+	Core            DaemonCoreStatus `json:"core"`
+}
+
+type DaemonCoreStatus struct {
+	State        string `json:"state"`
+	ProfileID    string `json:"profileId,omitempty"`
+	GenerationID string `json:"generationId,omitempty"`
+	PID          int    `json:"pid,omitempty"`
+	ErrorCode    string `json:"errorCode,omitempty"`
 }
 
 type DaemonStatusClient interface {
