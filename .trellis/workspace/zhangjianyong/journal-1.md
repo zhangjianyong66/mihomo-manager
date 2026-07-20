@@ -204,3 +204,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: 完成 A4 mihomo adapter 与 core 生命周期
+
+**Date**: 2026-07-20
+**Task**: 完成 A4 mihomo adapter 与 core 生命周期
+**Branch**: `master`
+
+### Summary
+
+实现类型化 core 契约、原子 generation、external 只读摘要、mihomo 原生验证与 loopback RuntimeClient、精确进程托管，以及 daemon 档案切换/失败恢复状态机；同步规范并通过 race、vet 和双架构无 CGO 构建。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9b4ce99` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
