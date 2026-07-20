@@ -31,6 +31,7 @@ type ManagerEnvironment struct {
 type ManagerPaths struct {
 	DataDir        string
 	Database       string
+	BackupsDir     string
 	GenerationsDir string
 	StateDir       string
 	CoreStateDir   string
@@ -79,6 +80,7 @@ func ResolveManagerPaths(env ManagerEnvironment) (ManagerPaths, error) {
 	return ManagerPaths{
 		DataDir:        dataDir,
 		Database:       filepath.Join(dataDir, "state.db"),
+		BackupsDir:     filepath.Join(dataDir, "backups"),
 		GenerationsDir: filepath.Join(dataDir, "generations"),
 		StateDir:       stateDir,
 		CoreStateDir:   filepath.Join(stateDir, "core"),

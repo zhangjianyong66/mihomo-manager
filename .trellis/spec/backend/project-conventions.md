@@ -54,3 +54,53 @@
 - external-controller 默认只监听 `127.0.0.1`；不要在没有明确需求和安全评估时扩大到公网地址。
 - 运行日志写入 `<CONFIG_DIR>/mihomo.log`；TUI 日志页只保留最近 500 行内存缓冲，并支持正则过滤。
 - 配置管理、订阅更新和路由功能涉及用户真实网络环境；自动化测试必须隔离到临时目录，不能改写用户的 `~/.config/mihomo`。
+
+## Scenario：legacy 迁移与恢复点
+
+### 1. Scope / Trigger
+
+- 触发：增加 `migrate plan|apply|status|rollback`、SQLite legacy schema 和跨层 Unix IPC。
+- 目标：识别并保留 1.x `CONFIG_DIR`，让 2.x 管理 legacy metadata，同时可安全回退。
+
+### 2. Signatures
+
+- CLI：`mm migrate plan|apply|status|rollback --output table|json`；rollback 必须有 `--restore-point <id>`。
+- IPC：`GET /v1/migrations/plan`、`POST /v1/migrations/apply`、`GET /v1/migrations/status`、`POST /v1/migrations/rollback`。
+- 数据库：`legacy_migrations(id, profile_id, source_dir, state, error_code, timestamps)` 与 `legacy_files(migration_id, relative_path, before_*, expected_*, snapshot_path)`，通过追加 `0003_legacy_migrations.sql` 创建。
+
+### 3. Contracts
+
+- apply 前创建 `${XDG_DATA_HOME:-~/.local/share}/mihomo-manager/backups/<id>/files`，目录/文件权限 `0700/0600`；manifest 保存 before 内容和 SHA-256，expected 摘要随 daemon 兼容写入更新。
+- `CONFIG_DIR` 只选择旧 mihomo 源目录；`MIHOMO_BIN` 只用于受控验证；`MIHOMO_API_PORT` 只用于 loopback 探测；`EDITOR` 不会被迁移自动调用。
+- CLI 不可用 daemon 时不得直接读取 SQLite、配置、订阅或 core；响应使用 `mm/v1` envelope，URL/token/完整 YAML 不进入日志或展示。
+
+### 4. Validation & Error Matrix
+
+- 空或缺失 `config.yaml` -> 创建可查询恢复点和非活动 legacy profile，operation `failed`，返回 `VALIDATION_FAILED`/退出码 6。
+- mihomo 原生验证失败 -> 同上，旧文件摘要不变。
+- 重复 source 或恢复点 ID -> `CONFLICT`/退出码 4，不覆盖已有快照。
+- rollback 当前摘要不等于 expected、符号链接、路径越界或不安全权限 -> `CONFLICT`/`PERMISSION_DENIED`，不做部分恢复。
+- daemon 不可用/协议不兼容 -> 退出码 5。
+
+### 5. Good/Base/Bad Cases
+
+- Good：有效旧配置、订阅 URL、白名单和历史备份被发现；apply 不改写源文件，status 返回 succeeded，且无活动档案时激活 legacy。
+- Base：空环境、无效配置、重复 apply、daemon 重启和取消请求均可查询，不产生伪造 managed 配置。
+- Bad：恢复点缺失、外部修改、路径逃逸、world-writable 文件或无法判断归属均拒绝写入。
+
+### 6. Tests Required
+
+- `internal/legacy`：发现脱敏、快照权限、无效/空配置、重复、摘要冲突、显式 rollback；断言源文件内容/权限和不启动真实 core。
+- `internal/store`：v3 schema、事务回滚、唯一 source、profile activation 和 manifest round-trip。
+- `internal/daemon`：HTTP 方法、IPC 路由、错误状态/代码和显式 restore point 校验。
+- `internal/cli`：table/json、stdout/stderr、退出码和 `--restore-point` 必填。
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+CLI 直接打开 `state.db` 或 `CONFIG_DIR`，重复 apply 先覆盖同名恢复点，rollback 默认猜最近快照。
+
+#### Correct
+
+CLI 只调用 daemon IPC；恢复点目录使用临时目录加原子发布且已存在即冲突；rollback 必须显式指定 ID 并核对 expected 摘要。

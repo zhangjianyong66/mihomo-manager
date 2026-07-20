@@ -32,7 +32,7 @@ func TestOpen_InitializesSchemaAndSecuresFiles(t *testing.T) {
 	assertPragma(t, store.db, "journal_mode", "delete")
 	assertPragma(t, store.db, "synchronous", "2")
 
-	wantTables := []string{"nodes", "operations", "profiles", "schema_migrations", "settings", "subscriptions"}
+	wantTables := []string{"legacy_files", "legacy_migrations", "nodes", "operations", "profiles", "schema_migrations", "settings", "subscriptions"}
 	if got := userTables(t, store.db); !equalStrings(got, wantTables) {
 		t.Fatalf("tables = %v, want %v", got, wantTables)
 	}
@@ -144,7 +144,7 @@ func TestOpen_RejectsCorruptAndIncompatibleSchema(t *testing.T) {
 	t.Run("schema too new", func(t *testing.T) {
 		path := initializedPath(t)
 		db := openRawDB(t, path)
-		if _, err := db.Exec(`INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (3, 'future', 'future', ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		if _, err := db.Exec(`INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (4, 'future', 'future', ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			t.Fatal(err)
 		}
 		if err := db.Close(); err != nil {
@@ -186,7 +186,7 @@ func TestMigration_UpgradeCreatesConsistentBackup(t *testing.T) {
 	}
 	defer store.Close()
 	info := store.SchemaInfo()
-	if info.Version != 2 || !info.Migrated || info.BackupPath == "" {
+	if info.Version != len(migrations) || !info.Migrated || info.BackupPath == "" {
 		t.Fatalf("unexpected upgrade info: %+v", info)
 	}
 	assertMode(t, info.BackupPath, 0o600)

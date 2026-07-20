@@ -3,6 +3,7 @@ package domain
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -56,15 +57,15 @@ func (s OperationState) Validate() error {
 }
 
 type Profile struct {
-	ID         ProfileID
-	Name       string
-	Mode       ProfileMode
-	CoreType   CoreType
-	ConfigPath string
-	Active     bool
-	Revision   int64
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID         ProfileID   `json:"id"`
+	Name       string      `json:"name"`
+	Mode       ProfileMode `json:"mode"`
+	CoreType   CoreType    `json:"coreType"`
+	ConfigPath string      `json:"configPath,omitempty"`
+	Active     bool        `json:"active"`
+	Revision   int64       `json:"revision"`
+	CreatedAt  time.Time   `json:"createdAt"`
+	UpdatedAt  time.Time   `json:"updatedAt"`
 }
 
 func (p Profile) Validate() error {
@@ -210,6 +211,111 @@ type Setting struct {
 	Key       string
 	Value     json.RawMessage
 	UpdatedAt time.Time
+}
+
+type LegacyMigrationState string
+
+const (
+	LegacyMigrationStatePending    LegacyMigrationState = "pending"
+	LegacyMigrationStateSucceeded  LegacyMigrationState = "succeeded"
+	LegacyMigrationStateFailed     LegacyMigrationState = "failed"
+	LegacyMigrationStateRolledBack LegacyMigrationState = "rolled_back"
+)
+
+func (s LegacyMigrationState) String() string { return string(s) }
+
+func (s LegacyMigrationState) Validate() error {
+	switch s {
+	case LegacyMigrationStatePending, LegacyMigrationStateSucceeded, LegacyMigrationStateFailed, LegacyMigrationStateRolledBack:
+		return nil
+	default:
+		return fmt.Errorf("unsupported legacy migration state %q", s)
+	}
+}
+
+type LegacyFileSnapshot struct {
+	RelativePath   string `json:"relativePath"`
+	BeforeExists   bool   `json:"beforeExists"`
+	BeforeMode     uint32 `json:"beforeMode,omitempty"`
+	BeforeSize     int64  `json:"beforeSize,omitempty"`
+	BeforeSHA256   string `json:"beforeSha256,omitempty"`
+	ExpectedExists bool   `json:"expectedExists"`
+	ExpectedSHA256 string `json:"expectedSha256,omitempty"`
+	SnapshotPath   string `json:"-"`
+}
+
+func (f LegacyFileSnapshot) Validate() error {
+	if err := requireText("legacy file relative path", f.RelativePath); err != nil {
+		return err
+	}
+	if filepath.IsAbs(f.RelativePath) || filepath.Clean(f.RelativePath) != f.RelativePath || f.RelativePath == "." || strings.HasPrefix(f.RelativePath, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("legacy file relative path must stay within source directory")
+	}
+	if f.BeforeSize < 0 {
+		return fmt.Errorf("legacy file size must not be negative")
+	}
+	if f.BeforeExists {
+		if len(f.BeforeSHA256) != 64 || !filepath.IsAbs(f.SnapshotPath) {
+			return fmt.Errorf("existing legacy file requires digest and absolute snapshot path")
+		}
+	} else if f.BeforeSHA256 != "" || f.SnapshotPath != "" || f.BeforeMode != 0 || f.BeforeSize != 0 {
+		return fmt.Errorf("absent legacy file must not have snapshot metadata")
+	}
+	if f.ExpectedExists && len(f.ExpectedSHA256) != 64 {
+		return fmt.Errorf("expected legacy file requires digest")
+	}
+	if !f.ExpectedExists && f.ExpectedSHA256 != "" {
+		return fmt.Errorf("absent expected legacy file must not have digest")
+	}
+	return nil
+}
+
+type LegacyMigration struct {
+	ID           RestorePointID       `json:"restorePoint"`
+	ProfileID    ProfileID            `json:"profileId"`
+	SourceDir    string               `json:"sourceDir"`
+	State        LegacyMigrationState `json:"state"`
+	Files        []LegacyFileSnapshot `json:"files"`
+	ErrorCode    string               `json:"errorCode,omitempty"`
+	CreatedAt    time.Time            `json:"createdAt"`
+	UpdatedAt    time.Time            `json:"updatedAt"`
+	CompletedAt  *time.Time           `json:"completedAt,omitempty"`
+	RolledBackAt *time.Time           `json:"rolledBackAt,omitempty"`
+}
+
+func (m LegacyMigration) Validate() error {
+	if err := m.ID.Validate(); err != nil {
+		return err
+	}
+	if err := m.ProfileID.Validate(); err != nil {
+		return err
+	}
+	if !filepath.IsAbs(m.SourceDir) {
+		return fmt.Errorf("legacy source directory must be absolute")
+	}
+	if err := m.State.Validate(); err != nil {
+		return err
+	}
+	seen := make(map[string]struct{}, len(m.Files))
+	for _, file := range m.Files {
+		if err := file.Validate(); err != nil {
+			return err
+		}
+		if _, exists := seen[file.RelativePath]; exists {
+			return fmt.Errorf("duplicate legacy file %q", file.RelativePath)
+		}
+		seen[file.RelativePath] = struct{}{}
+	}
+	if err := validateTimes(m.CreatedAt, m.UpdatedAt); err != nil {
+		return err
+	}
+	if err := validateOptionalUTC("legacy migration completed time", m.CompletedAt); err != nil {
+		return err
+	}
+	if err := validateOptionalUTC("legacy migration rolled back time", m.RolledBackAt); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s Setting) Validate() error {

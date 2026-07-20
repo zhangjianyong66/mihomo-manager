@@ -103,12 +103,12 @@ align-v2rayn-cli（当前规划父任务）
 
 依赖：A2、A3、A4。
 
-- [ ] 实现 `migrate plan|apply|status|rollback|convert` 的 Alpha 子集：plan/apply/status/rollback。
-- [ ] 发现 `CONFIG_DIR`、旧配置、订阅、白名单、备份和运行状态，不读取秘密到日志。
-- [ ] 创建时间戳恢复点和 legacy profile 元数据，不自动转换或重写旧 YAML。
-- [ ] 通过兼容 service 包装原 1.x 配置/订阅/白名单行为，所有写入沿用备份和验证规则。
-- [ ] 明确 `CONFIG_DIR`、`MIHOMO_BIN`、`MIHOMO_API_PORT`、`EDITOR` 在 legacy 模式的作用。
-- [ ] 建立 Good/Base/Bad 矩阵：空环境、有效旧配置、无效配置、中断迁移、重复迁移、回滚。
+- [x] 实现 `migrate plan|apply|status|rollback|convert` 的 Alpha 子集：plan/apply/status/rollback。
+- [x] 发现 `CONFIG_DIR`、旧配置、订阅、白名单、备份和运行状态，不读取秘密到日志。
+- [x] 创建时间戳恢复点和 legacy profile 元数据，不自动转换或重写旧 YAML。
+- [x] 通过兼容 service 包装原 1.x 配置/订阅/白名单行为，所有写入沿用备份和验证规则。
+- [x] 明确 `CONFIG_DIR`、`MIHOMO_BIN`、`MIHOMO_API_PORT`、`EDITOR` 在 legacy 模式的作用。
+- [x] 建立 Good/Base/Bad 矩阵：空环境、有效旧配置、无效配置、中断迁移、重复迁移、回滚。
 
 验收：迁移失败后旧 mm/core/config 摘要不变；成功后 2.x 可管理 legacy 档案；回滚后 1.x 可继续使用；外部配置不会误分类后改写。
 

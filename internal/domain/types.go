@@ -32,6 +32,12 @@ func (id GroupID) String() string { return string(id) }
 
 func (id GroupID) Validate() error { return validateID("group", string(id)) }
 
+type RestorePointID string
+
+func (id RestorePointID) String() string { return string(id) }
+
+func (id RestorePointID) Validate() error { return validateID("restore point", string(id)) }
+
 func validateID(kind, value string) error {
 	if strings.TrimSpace(value) == "" {
 		return fmt.Errorf("%s id: %w", kind, ErrEmptyID)

@@ -14,6 +14,7 @@ import (
 	"github.com/zhangjianyong66/mihomo-manager/internal/core"
 	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
 	"github.com/zhangjianyong66/mihomo-manager/internal/ipc"
+	"github.com/zhangjianyong66/mihomo-manager/internal/legacy"
 	"github.com/zhangjianyong66/mihomo-manager/internal/platform"
 	"github.com/zhangjianyong66/mihomo-manager/internal/store"
 )
@@ -53,18 +54,20 @@ type Options struct {
 	ShutdownTimeout  time.Duration
 	CoreAdapter      core.Adapter
 	CoreReadyTimeout time.Duration
+	LegacyService    MigrationService
 }
 
 type Server struct {
-	opts      Options
-	mu        sync.RWMutex
-	status    Status
-	http      *http.Server
-	listener  net.Listener
-	store     Store
-	lock      *platform.FileLock
-	ownedSock bool
-	core      *CoreManager
+	opts       Options
+	mu         sync.RWMutex
+	status     Status
+	http       *http.Server
+	listener   net.Listener
+	store      Store
+	lock       *platform.FileLock
+	ownedSock  bool
+	core       *CoreManager
+	migrations MigrationService
 }
 
 func New(opts Options) *Server {
@@ -128,6 +131,11 @@ func (s *Server) Run(ctx context.Context) (finalErr error) {
 			Coordinator: NewCoordinator(), Supervisor: NewSupervisor(s.opts.CoreAdapter, s.opts.CoreReadyTimeout),
 		})
 	}
+	if s.opts.LegacyService != nil {
+		s.migrations = s.opts.LegacyService
+	} else if repository, ok := stateStore.(legacy.Repository); ok {
+		s.migrations = legacy.NewService(config.Load(), s.opts.Paths, repository)
+	}
 
 	listener := s.opts.Listener
 	if listener == nil {
@@ -154,6 +162,10 @@ func (s *Server) Run(ctx context.Context) (finalErr error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/health", s.handleStatus)
 	mux.HandleFunc("/v1/status", s.handleStatus)
+	mux.HandleFunc("/v1/migrations/plan", s.handleMigrationPlan)
+	mux.HandleFunc("/v1/migrations/apply", s.handleMigrationApply)
+	mux.HandleFunc("/v1/migrations/status", s.handleMigrationStatus)
+	mux.HandleFunc("/v1/migrations/rollback", s.handleMigrationRollback)
 	handler := ipc.NewServer(NewRequestCache(5*time.Minute, 1024).Middleware(mux))
 	s.http = &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 64 << 10}
 	serveErr := make(chan error, 1)

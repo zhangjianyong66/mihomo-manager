@@ -27,8 +27,9 @@ func (f TUIRunnerFunc) Run(ctx context.Context, streams IOStreams) error {
 }
 
 type Dependencies struct {
-	TUI    TUIRunner
-	Daemon *app.DaemonService
+	TUI        TUIRunner
+	Daemon     *app.DaemonService
+	Migrations *app.MigrationService
 }
 
 func NewRoot(deps Dependencies) *cobra.Command {
@@ -62,6 +63,7 @@ func NewRoot(deps Dependencies) *cobra.Command {
 	tuiCommand.SetFlagErrorFunc(invalidFlagError)
 	root.AddCommand(tuiCommand)
 	root.AddCommand(newDaemonCommand(deps))
+	root.AddCommand(newMigrationCommand(deps))
 
 	return root
 }

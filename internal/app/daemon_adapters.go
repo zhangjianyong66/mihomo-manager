@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/zhangjianyong66/mihomo-manager/internal/config"
 	"github.com/zhangjianyong66/mihomo-manager/internal/daemon"
+	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
 	"github.com/zhangjianyong66/mihomo-manager/internal/ipc"
+	"github.com/zhangjianyong66/mihomo-manager/internal/legacy"
 	"github.com/zhangjianyong66/mihomo-manager/internal/mihomo"
 	"github.com/zhangjianyong66/mihomo-manager/internal/platform"
 	"github.com/zhangjianyong66/mihomo-manager/internal/platform/systemd"
@@ -23,7 +26,50 @@ func NewDaemonService(paths config.ManagerPaths) *DaemonService {
 	}
 }
 
+func NewMigrationService(paths config.ManagerPaths) *MigrationService {
+	return &MigrationService{Client: daemonMigrationIPCClient{client: ipc.NewClient(paths.Socket)}}
+}
+
 type daemonIPCClient struct{ client *ipc.Client }
+
+type daemonMigrationIPCClient struct{ client *ipc.Client }
+
+func (c daemonMigrationIPCClient) Plan(ctx context.Context) (legacy.Plan, error) {
+	var result legacy.Plan
+	if err := c.client.Do(ctx, "GET", "/v1/migrations/plan", "", nil, &result); err != nil {
+		return legacy.Plan{}, mapIPCError(err)
+	}
+	return result, nil
+}
+
+func (c daemonMigrationIPCClient) Apply(ctx context.Context) (legacy.ApplyResult, error) {
+	var result legacy.ApplyResult
+	if err := c.client.Do(ctx, "POST", "/v1/migrations/apply", newRequestID("migration-apply"), nil, &result); err != nil {
+		return legacy.ApplyResult{}, mapIPCError(err)
+	}
+	return result, nil
+}
+
+func (c daemonMigrationIPCClient) Status(ctx context.Context) ([]domain.LegacyMigration, error) {
+	var result []domain.LegacyMigration
+	if err := c.client.Do(ctx, "GET", "/v1/migrations/status", "", nil, &result); err != nil {
+		return nil, mapIPCError(err)
+	}
+	return result, nil
+}
+
+func (c daemonMigrationIPCClient) Rollback(ctx context.Context, id domain.RestorePointID) (legacy.RollbackResult, error) {
+	var result legacy.RollbackResult
+	request := struct {
+		RestorePoint string `json:"restorePoint"`
+	}{RestorePoint: id.String()}
+	if err := c.client.Do(ctx, "POST", "/v1/migrations/rollback", newRequestID("migration-rollback"), request, &result); err != nil {
+		return legacy.RollbackResult{}, mapIPCError(err)
+	}
+	return result, nil
+}
+
+func newRequestID(prefix string) string { return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano()) }
 
 func (c daemonIPCClient) Status(ctx context.Context) (DaemonStatus, error) {
 	var status DaemonStatus
@@ -100,10 +146,14 @@ func mapIPCError(err error) error {
 
 func protocolCategory(code string) ErrorCategory {
 	switch code {
-	case "REQUEST_ID_CONFLICT", "OPERATION_CONFLICT":
+	case "REQUEST_ID_CONFLICT", "OPERATION_CONFLICT", "CONFLICT":
 		return ErrorCategoryConflict
 	case "INVALID_REQUEST":
 		return ErrorCategoryInvalidArgument
+	case "NOT_FOUND":
+		return ErrorCategoryNotFound
+	case "VALIDATION_FAILED":
+		return ErrorCategoryValidationFailed
 	case "PERMISSION_DENIED":
 		return ErrorCategoryPermissionDenied
 	default:

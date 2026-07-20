@@ -47,6 +47,9 @@ func TestResolveManagerPaths_XDGAndFallback(t *testing.T) {
 			if paths.GenerationsDir != filepath.Join(tt.data, "generations") || paths.CoreStateDir != filepath.Join(tt.state, "core") {
 				t.Fatalf("unexpected core paths: %+v", paths)
 			}
+			if paths.BackupsDir != filepath.Join(tt.data, "backups") {
+				t.Fatalf("unexpected backup path: %+v", paths)
+			}
 			if paths.CoreLog != filepath.Join(tt.state, "core", "mihomo.log") || paths.RuntimeState != filepath.Join(tt.state, "core", "runtime.json") {
 				t.Fatalf("unexpected core files: %+v", paths)
 			}
