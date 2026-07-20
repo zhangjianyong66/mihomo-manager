@@ -105,3 +105,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: 完成 A1 CLI 与应用服务契约
+
+**Date**: 2026-07-20
+**Task**: 完成 A1 CLI 与应用服务契约
+**Branch**: `master`
+
+### Summary
+
+建立领域 ID 与 core 状态、按能力拆分的应用 ports、mm/v1 table/json 输出、结构化错误与 1-8 退出码、显式秘密脱敏、可注入 Cobra 命令工厂和 mm tui 兼容入口；同步 README、AGENTS、能力矩阵与 backend CLI 契约规范，并通过全量测试、race、vet 和无 CGO 构建。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `148117d` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
