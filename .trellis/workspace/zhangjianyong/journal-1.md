@@ -171,3 +171,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: 完成 A3 daemon、Unix IPC 与 systemd 用户服务
+
+**Date**: 2026-07-20
+**Task**: 完成 A3 daemon、Unix IPC 与 systemd 用户服务
+**Branch**: `master`
+
+### Summary
+
+实现 XDG manager 路径、同 UID Unix socket IPC、daemon 生命周期与状态、operation/request 幂等基础、systemd user unit 控制和 daemon CLI；通过 Go 1.22.12 全量测试、race、vet、双架构无 CGO 构建及隔离 XDG 冒烟。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `250ec03` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

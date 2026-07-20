@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 5
+- **Total Sessions**: 6
 - **Last Active**: 2026-07-20
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~173 | Active |
+| `journal-1.md` | ~206 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 6 | 2026-07-20 | 完成 A3 daemon、Unix IPC 与 systemd 用户服务 | `250ec03` | `master` |
 | 5 | 2026-07-20 | 完成 A2 领域模型与 SQLite 存储 | `9ecb7f9` | `master` |
 | 4 | 2026-07-20 | 完成 A1 CLI 与应用服务契约 | `148117d` | `master` |
 | 3 | 2026-07-14 | 修复 mihomo 重复节点配置 | `312c17d` | `master` |
