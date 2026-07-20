@@ -237,3 +237,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: 完成 A5 legacy 迁移与回滚
+
+**Date**: 2026-07-20
+**Task**: 完成 A5 legacy 迁移与回滚
+**Branch**: `master`
+
+### Summary
+
+实现 migrate plan/apply/status/rollback、legacy 恢复点与 SQLite v3、daemon IPC、兼容服务和安全回滚；补齐专项测试、文档与规范并通过完整质量门。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1e40359` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
+- **Total Sessions**: 8
 - **Last Active**: 2026-07-20
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~239 | Active |
+| `journal-1.md` | ~272 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 8 | 2026-07-20 | 完成 A5 legacy 迁移与回滚 | `1e40359` | `master` |
 | 7 | 2026-07-20 | 完成 A4 mihomo adapter 与 core 生命周期 | `9b4ce99` | `master` |
 | 6 | 2026-07-20 | 完成 A3 daemon、Unix IPC 与 systemd 用户服务 | `250ec03` | `master` |
 | 5 | 2026-07-20 | 完成 A2 领域模型与 SQLite 存储 | `9ecb7f9` | `master` |
