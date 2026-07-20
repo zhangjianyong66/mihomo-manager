@@ -101,7 +101,7 @@ go test ./internal/store -run 'Replace|Concurrent|Rollback'
 - [x] `trellis-update-spec` 记录 `internal/store` 边界、迁移不可改写、权限和验证命令。
 - [x] 父任务能力矩阵/实施清单只更新 A2 已交付项。
 - [x] 使用中文 Conventional Commit，例如 `feat(store): 建立 SQLite 领域存储与迁移框架`。
-- [ ] 执行 `trellis-finish-work`，归档 A2 并记录 journal。
+- [x] 执行 `trellis-finish-work`，归档 A2 并记录 journal。
 
 ## 6. 启动前审阅清单
 
