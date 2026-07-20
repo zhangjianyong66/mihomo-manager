@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 4
+- **Total Sessions**: 5
 - **Last Active**: 2026-07-20
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~140 | Active |
+| `journal-1.md` | ~173 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 5 | 2026-07-20 | 完成 A2 领域模型与 SQLite 存储 | `9ecb7f9` | `master` |
 | 4 | 2026-07-20 | 完成 A1 CLI 与应用服务契约 | `148117d` | `master` |
 | 3 | 2026-07-14 | 修复 mihomo 重复节点配置 | `312c17d` | `master` |
 | 2 | 2026-07-14 | 完成 Ubuntu Debian 一键安装流程 | `a3b1e19`, `a04ddd5` | `master` |
