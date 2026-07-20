@@ -1,0 +1,28 @@
+{
+  "id": "align-v2rayn-cli",
+  "name": "align-v2rayn-cli",
+  "title": "对齐 v2rayN 的终端 CLI 能力",
+  "description": "规划将 mihomo-manager 演进为 v2rayN 同类终端 CLI 的产品边界、总体架构、能力矩阵和分阶段实施路线",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "zhangjianyong",
+  "assignee": "zhangjianyong",
+  "createdAt": "2026-07-20",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "07-20-cli-app-contract"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

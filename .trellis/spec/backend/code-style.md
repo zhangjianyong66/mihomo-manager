@@ -5,7 +5,7 @@
 - 所有 Go 文件以 `gofmt` 结果为准；当前 `cmd/` 和 `internal/` 均可通过 `gofmt -l` 零输出检查。
 - 标识符、包名和导出规则遵循 Go 惯例；用户界面文案以中文为主，代码标识符使用英文。
 - 导入按标准库、第三方库、项目内部包分组。可参考 `internal/app/run.go` 和 `internal/tui/model.go`。
-- 小型入口保持薄：`cmd/mm/main.go` 只定义命令和进程级错误处理，`internal/app/run.go` 只负责装配。
+- 小型入口保持薄：`cmd/mm/main.go` 只注入进程依赖并调用 `cli.Execute`，Cobra 命令和进程级错误映射位于 `internal/cli`，`internal/app/run.go` 只负责 TUI 装配。
 
 ## 依赖与边界
 
@@ -18,8 +18,9 @@
 
 - 发生错误时立即返回，不吞掉会影响正确性的错误；需要补充上下文时使用 `%w` 包装，例如订阅解析和应用路由后的配置测试。
 - 仅在“尽力恢复”或幂等清理场景忽略错误，例如 `Restart()` 先停止服务、写配置失败后尝试 `RestoreConfig()`。
-- 最外层错误只由 `cmd/mm/main.go` 输出到 stderr 并设置非零退出码；内部包返回 `error`，TUI 通过消息和结果页展示。
+- CLI 错误只由 `internal/cli.Presenter` 输出到 stderr，`cmd/mm` 只应用 `cli.Execute` 返回的退出码；内部包返回 `error`，TUI 通过消息和结果页展示。
 - 错误信息应描述失败动作或非法输入，不包含订阅密码、完整节点 URI 等敏感内容。现有 URI 解析错误通过 `truncate` 限制输入片段长度。
+- 新应用错误使用 `app.Error`：`Category` 决定退出码，`Code` 是可细化机器码，底层 `Err` 不直接序列化。秘密字段必须通过 `cli.Secret` 和显式输出投影处理。
 
 ## 配置文件写入
 

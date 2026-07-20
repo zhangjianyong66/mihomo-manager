@@ -2,7 +2,7 @@
 
 ## 产品与兼容边界
 
-- 当前产品是 Go 实现的交互式 TUI，命令为 `mm`。README 明确旧的非交互式子命令不再支持。
+- 当前产品是 Go 实现的交互式 TUI，无参数 `mm` 与显式 `mm tui` 打开相同界面。Go CLI 已有命令/JSON/错误/退出码基础契约，但业务子命令尚未迁移；旧的非交互式子命令仍不支持。
 - `bin/mihomo-manager` 和 `scripts/lib` 是遗留实现；除兼容维护外，不作为新功能入口，也不能用其帮助信息判断 Go 版能力。
 - 项目运行时依赖独立的 mihomo core 和本机 external-controller；一键安装器会准备默认 core，但 Go 二进制本身不内嵌代理内核。
 

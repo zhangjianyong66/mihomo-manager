@@ -1,6 +1,7 @@
 # 项目说明
 
 - 本项目是 Go CLI 项目，模块名为 `github.com/zhangjianyong66/mihomo-manager`。
+- 当前开发机为 Ubuntu 26.04 LTS x86_64。
 - Go 版本要求见 `go.mod`：`go 1.22`；当前本机用户目录安装了 Go `1.26.4`，入口为 `~/.local/bin/go`。
 - 一键安装首版支持 Ubuntu/Debian amd64/arm64；远程入口为 `curl -fsSL https://raw.githubusercontent.com/zhangjianyong66/mihomo-manager/master/scripts/bootstrap.sh | bash`，本地入口为 `make install`。
 - 安装器需以普通用户运行，只在安装缺失 apt 包时局部使用 sudo；支持 `--yes`/`MM_ASSUME_YES=1` 无交互确认。
@@ -8,7 +9,10 @@
 - 安装器会自动安装并校验 mihomo core，默认固定 `v1.19.28`，支持 `MIHOMO_VERSION` 覆盖；默认 core 路径为 `~/.local/bin/mihomo`，可用 `MIHOMO_BIN` 覆盖。
 - 系统 Go 低于 1.22 或缺失时，安装器会把官方 Go 1.26.4 安装到 `~/.local/share/mihomo-manager/toolchains/go1.26.4`，不替换系统 Go。
 - 当前本机已安装 MetaCubeX/mihomo `v1.19.28` Linux amd64 v1 构建到 `~/.local/bin/mihomo`。
-- 运行命令：`mm`，默认打开交互式 TUI；可用 `mm --help` 做非交互冒烟验证。
+- 运行命令：`mm` 或 `mm tui`，两者打开相同的交互式 TUI；可用 `mm --help`、`mm tui --help` 做非交互冒烟验证。
+- CLI 命令工厂、table/json 输出、结构化错误、退出码和秘密值位于 `internal/cli`；`cmd/mm` 只做真实依赖/IO 装配和进程退出。
+- 稳定 ID、mihomo core 类型和运行状态位于 `internal/domain`；按 core/profile/node/group/subscription/route/config/log 拆分的应用 ports 位于 `internal/app`，现有 TUI 尚未迁移到这些 ports。
+- CLI 退出码契约为：`1` 内部错误、`2` 输入错误、`3` 不存在、`4` 冲突、`5` daemon/协议不可用、`6` 校验失败、`7` 权限拒绝、`8` 上游失败；JSON API 版本为 `mm/v1`。
 - 测试命令：`go test ./...`；安装流程测试为 `bash scripts/tests/test_install.sh`；Shell 语法检查为 `bash -n scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh tests/*.sh`。
 - Go 版路径和端口可通过环境变量覆盖：`CONFIG_DIR` 修改配置目录，`MIHOMO_API_PORT` 修改 external-controller 端口，`EDITOR` 修改配置编辑器；`MIHOMO_BIN` 修改 core 路径。
 - `tests/test.sh` 与 `scripts/tests/test_manager.sh` 面向旧非交互式 Shell 实现或依赖本机运行状态，不作为当前 Go TUI 的默认验收命令。

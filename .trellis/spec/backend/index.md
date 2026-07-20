@@ -9,6 +9,7 @@
 | [目录结构](./directory-structure.md) | 包职责、文件归属和新增代码位置 |
 | [开发与验证命令](./development-commands.md) | 运行、构建、测试和配置检查命令 |
 | [代码风格](./code-style.md) | Go、TUI、错误处理、配置写入和测试风格 |
+| [CLI 与应用边界契约](./cli-contract.md) | 命令工厂、应用 ports、JSON、错误、退出码和脱敏 |
 | [安装与部署](./deployment.md) | 一键安装、独立 mm、mihomo core、状态与安全卸载 |
 | [重要项目约定](./project-conventions.md) | 配置路径、路由语义、订阅更新和兼容边界 |
 
@@ -17,11 +18,13 @@
 1. 先阅读 [目录结构](./directory-structure.md) 和 [重要项目约定](./project-conventions.md)。
 2. 修改 Go 代码时阅读 [代码风格](./code-style.md)；修改安装或运行方式时再读 [安装与部署](./deployment.md)。
 3. 搜索现有实现后再新增辅助函数；核心业务优先放在 `internal/mihomo`，不要继续扩展遗留 Shell CLI。
-4. 完成修改后至少执行 `gofmt` 检查和 `go test ./...`，具体命令见 [开发与验证命令](./development-commands.md)。
+4. 修改命令、应用服务、输出或错误时阅读 [CLI 与应用边界契约](./cli-contract.md)。
+5. 完成修改后至少执行 `gofmt` 检查和 `go test ./...`，具体命令见 [开发与验证命令](./development-commands.md)。
 
 ## 质量检查（Quality Check）
 
 - 确认改动落在正确包中，没有把业务逻辑放入 `cmd/mm` 或 TUI 渲染函数。
+- 新命令必须验证 stdout/stderr、table/json、退出码和默认脱敏，不注册空壳命令。
 - 确认 Go 文件经过 `gofmt`，并通过 `go test ./...`。
 - 配置、订阅、白名单或路由变更应有临时目录驱动的回归测试，不得触碰用户真实配置。
 - 安装脚本变更需核对独立构建产物、core 校验、PATH 幂等、旧软链接迁移和卸载保留配置的行为。

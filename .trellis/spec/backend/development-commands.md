@@ -11,7 +11,9 @@
 | 目的 | 命令 | 说明 |
 |------|------|------|
 | 运行已安装程序 | `mm` | 打开交互式 TUI，需要终端环境 |
+| 显式运行 TUI | `mm tui` | 与无参数入口调用相同 TUI runner |
 | 非交互冒烟 | `mm --help` | 不进入 TUI，适合安装后检查 |
+| 子命令冒烟 | `mm tui --help` | 验证显式 TUI 命令且不启动界面 |
 | 从源码查看帮助 | `go run ./cmd/mm --help` | 验证当前源码入口 |
 | 构建 | `go build -o /tmp/mm ./cmd/mm` | 使用临时输出，避免无意覆盖仓库中的 `bin/mm` |
 | 格式检查 | `test -z "$(gofmt -l cmd internal)"` | 有输出表示存在未格式化的 Go 文件 |
@@ -23,7 +25,7 @@
 
 ## 按修改范围验证
 
-- 修改 `internal/config`、`internal/mihomo`、`internal/tui` 或 `cmd/mm`：运行 `gofmt` 检查、`go test ./...`，并用 `go run ./cmd/mm --help` 做入口冒烟。
+- 修改 `internal/cli`、`internal/app`、`internal/domain`、`internal/config`、`internal/mihomo`、`internal/tui` 或 `cmd/mm`：运行 `gofmt` 检查、`go test ./...`，并用 `go run ./cmd/mm --help` 和 `go run ./cmd/mm tui --help` 做入口冒烟。
 - 修改进程启动逻辑：除全量测试外，确保 `internal/mihomo/client_start_test.go` 仍验证 `Setsid: true`。
 - 修改订阅、白名单或路由：优先在 `internal/mihomo/client_route_test.go` 添加临时目录或 `httptest.Server` 驱动的回归测试；涉及最终 YAML 时再执行 mihomo 配置检查。
 - 修改安装 Shell：执行 `bash scripts/tests/test_install.sh` 和 `bash -n scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh tests/*.sh`，且不能以 Shell 测试替代 Go 测试。

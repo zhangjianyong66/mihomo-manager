@@ -1,24 +1,25 @@
 package main
 
 import (
-	"fmt"
+	"context"
 	"os"
 
-	"github.com/spf13/cobra"
 	"github.com/zhangjianyong66/mihomo-manager/internal/app"
+	"github.com/zhangjianyong66/mihomo-manager/internal/cli"
 )
 
 func main() {
-	root := &cobra.Command{
-		Use:   "mm",
-		Short: "Interactive Mihomo Manager",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return app.RunInteractive()
+	code := cli.Execute(
+		context.Background(),
+		cli.Dependencies{
+			TUI: cli.TUIRunnerFunc(func(ctx context.Context, streams cli.IOStreams) error {
+				return app.RunInteractiveContext(ctx, streams.In, streams.Out)
+			}),
 		},
-	}
-
-	if err := root.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+		os.Args[1:],
+		os.Stdin,
+		os.Stdout,
+		os.Stderr,
+	)
+	os.Exit(code)
 }
