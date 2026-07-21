@@ -435,3 +435,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: 完成 M4 模式 CLI 与 TUI
+
+**Date**: 2026-07-22
+**Task**: 完成 M4 模式 CLI 与 TUI
+**Branch**: `master`
+
+### Summary
+
+新增 mode status/set 稳定 table/json 输出与恢复提示；将 TUI 全面迁移到 daemon capability，增加三模式页面、连接关闭选项和可取消流；补充编辑器桥接、回归测试与项目规范。全量 test/race/vet 及 amd64/arm64 无 CGO 构建通过。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6761798` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
