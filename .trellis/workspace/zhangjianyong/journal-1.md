@@ -402,3 +402,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: 完成 M3 模式事务与 daemon API
+
+**Date**: 2026-07-21
+**Task**: 完成 M3 模式事务与 daemon API
+**Branch**: `master`
+
+### Summary
+
+实现 global/rule/direct 模式事务、typed mihomo runtime、失败补偿、共享写协调器和 /v1/mode 幂等 IPC。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `45b4829` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

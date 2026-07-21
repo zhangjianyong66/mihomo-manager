@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 12
+- **Total Sessions**: 13
 - **Last Active**: 2026-07-21
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~404 | Active |
+| `journal-1.md` | ~437 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 13 | 2026-07-21 | 完成 M3 模式事务与 daemon API | `45b4829` | `master` |
 | 12 | 2026-07-21 | 完成 M2 Rule 分流与订阅保留 | `2c3a7e5` | `master` |
 | 11 | 2026-07-21 | 完成 M1 CN 规则集与用户 daemon 安装 | `ae2ccff` | `master` |
 | 10 | 2026-07-21 | 归档 v2rayN 对齐总体规划 | `31a7d96` | `master` |
