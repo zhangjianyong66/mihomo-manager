@@ -369,3 +369,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 12: 完成 M2 Rule 分流与订阅保留
+
+**Date**: 2026-07-21
+**Task**: 完成 M2 Rule 分流与订阅保留
+**Branch**: `master`
+
+### Summary
+
+新增统一 RoutingPolicy 与 RoutingMode，生成本机/局域网、白名单、CN MRS providers、唯一兜底和防循环 DNS；订阅更新保留 mode、规则、DNS、providers 与组选择，节点消失返回 warning，失败恢复配置、权限和运行态；完成 v1.19.28 原生验证及全量质量门禁。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2c3a7e5` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
