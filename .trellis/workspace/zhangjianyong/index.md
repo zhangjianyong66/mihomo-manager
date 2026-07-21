@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 10
+- **Total Sessions**: 11
 - **Last Active**: 2026-07-21
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~338 | Active |
+| `journal-1.md` | ~371 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 11 | 2026-07-21 | 完成 M1 CN 规则集与用户 daemon 安装 | `ae2ccff` | `master` |
 | 10 | 2026-07-21 | 归档 v2rayN 对齐总体规划 | `31a7d96` | `master` |
 | 9 | 2026-07-21 | 完成 A6 现有能力 CLI 等价迁移 | `9c470e1` | `master` |
 | 8 | 2026-07-20 | 完成 A5 legacy 迁移与回滚 | `1e40359` | `master` |

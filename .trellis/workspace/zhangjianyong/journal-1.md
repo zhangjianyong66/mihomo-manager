@@ -336,3 +336,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: 完成 M1 CN 规则集与用户 daemon 安装
+
+**Date**: 2026-07-21
+**Task**: 完成 M1 CN 规则集与用户 daemon 安装
+**Branch**: `master`
+
+### Summary
+
+实现 CN 规则集事务安装、daemon 安全升级与 fresh migrate，并完成全量质量门和真实安装验收
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ae2ccff` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
