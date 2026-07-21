@@ -1,0 +1,32 @@
+{
+  "id": "routing-modes",
+  "name": "routing-modes",
+  "title": "新增三模式路由与实时链路",
+  "description": "提供 global/rule/direct 三模式、CN 规则与 DNS 分流、事务切换、CLI/TUI 和真实连接链路，并完善安装与 daemon 接入。",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "zhangjianyong",
+  "assignee": "zhangjianyong",
+  "createdAt": "2026-07-21",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "07-21-m1-ruleset-install",
+    "07-21-m2-rule-policy",
+    "07-21-m3-mode-transaction",
+    "07-21-m4-mode-surfaces",
+    "07-21-m5-route-observability"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
