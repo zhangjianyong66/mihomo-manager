@@ -303,3 +303,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: 归档 v2rayN 对齐总体规划
+
+**Date**: 2026-07-21
+**Task**: 归档 v2rayN 对齐总体规划
+**Branch**: `master`
+
+### Summary
+
+同步父任务规划状态，标记 A6 CLI 迁移完成，明确 A7/A8 及 Beta 至 3.0 为后续独立路线，并归档 07-20-align-v2rayn-cli。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `31a7d96` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
