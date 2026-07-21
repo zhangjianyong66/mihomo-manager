@@ -27,9 +27,10 @@ func (f TUIRunnerFunc) Run(ctx context.Context, streams IOStreams) error {
 }
 
 type Dependencies struct {
-	TUI        TUIRunner
-	Daemon     *app.DaemonService
-	Migrations *app.MigrationService
+	TUI          TUIRunner
+	Daemon       *app.DaemonService
+	Migrations   *app.MigrationService
+	Capabilities app.CapabilityAPI
 }
 
 func NewRoot(deps Dependencies) *cobra.Command {
@@ -64,6 +65,7 @@ func NewRoot(deps Dependencies) *cobra.Command {
 	root.AddCommand(tuiCommand)
 	root.AddCommand(newDaemonCommand(deps))
 	root.AddCommand(newMigrationCommand(deps))
+	root.AddCommand(newCapabilityCommands(deps)...)
 
 	return root
 }
@@ -163,10 +165,10 @@ func Execute(ctx context.Context, deps Dependencies, args []string, stdin io.Rea
 
 func requestedOutputFormat(args []string) OutputFormat {
 	for index, arg := range args {
-		if arg == "--output=json" {
+		if arg == "--output=json" || arg == "--output=ndjson" {
 			return OutputJSON
 		}
-		if arg == "--output" && index+1 < len(args) && args[index+1] == "json" {
+		if arg == "--output" && index+1 < len(args) && (args[index+1] == "json" || args[index+1] == "ndjson") {
 			return OutputJSON
 		}
 	}

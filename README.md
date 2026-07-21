@@ -1,6 +1,6 @@
-# Mihomo Manager（交互式 CLI）
+# Mihomo Manager（终端 CLI）
 
-`mm` 是使用 Go 编写的交互式 Mihomo 管理器。
+`mm` 是使用 Go 编写的终端优先 Mihomo 管理器，提供脚本化 CLI 和 Bubble Tea TUI。
 
 ## 一键安装
 
@@ -93,6 +93,12 @@ mm daemon status --output json
 mm daemon enable
 mm migrate plan --output json
 mm migrate status
+mm core status --output json
+mm config validate
+mm group list
+mm node test --group GLOBAL --output ndjson
+mm subscription show
+mm route whitelist list
 ```
 
 两个入口打开相同的交互式终端界面。非交互冒烟检查：
@@ -104,6 +110,16 @@ mm daemon --help
 ```
 
 `mm daemon run` 是不依赖 systemd 的前台 manager daemon。daemon 会装配 mihomo adapter 和单实例 supervisor，但不会自动启动 mihomo；CLI 在 daemon 不可用时不会回退为直接写 SQLite、配置或控制 core。managed generation 默认写入 `${XDG_DATA_HOME:-~/.local/share}/mihomo-manager/generations`，core 日志与 runtime metadata 写入 `${XDG_STATE_HOME:-~/.local/state}/mihomo-manager/core`。可用 `XDG_DATA_HOME`、`XDG_STATE_HOME`、`XDG_RUNTIME_DIR`、`XDG_CONFIG_HOME` 隔离测试环境。
+
+2.0 Alpha 的业务 CLI 默认作用于唯一活动 legacy 档案，也可用 `--profile <id>` 显式指定。查询命令使用 `--output table|json`；`node test` 和 `core logs --follow` 使用 `--output text|ndjson`。订阅地址、节点 URI、UUID、密码和日志凭据默认脱敏，只有显式 `--show-secrets` 才显示完整值。
+
+当前脚本化命令包括：
+
+- `core status|start|stop|restart|reload|logs`
+- `config validate|backup|restore|edit`
+- `group list|show|select`、`node list|select|test`
+- legacy `subscription show|set|update`
+- legacy `route whitelist list|add|edit|remove`、`route preset cn`、`route diagnose`
 
 ## 快捷键
 
@@ -122,8 +138,8 @@ mm daemon --help
 
 ## 注意事项
 
-- `migrate plan|apply|status|rollback` 是 2.0 Alpha 的首个脚本化业务能力；所有迁移读写经 daemon，`rollback` 必须显式指定恢复点，旧 YAML 不会自动转换或重排。
+- `migrate plan|apply|status|rollback` 负责注册活动 legacy 档案；所有迁移和 A6 业务写入均经 daemon，`rollback` 必须显式指定恢复点，旧 YAML 不会自动转换。
 - 2.0 的领域模型、SQLite schema/迁移和事务仓储底座已接入 daemon；legacy profile 仅由迁移创建，无法确认归属的文件不会猜测为 managed。
-- 2.0 的 mihomo adapter 已支持确定性最小配置、原生验证、loopback controller 就绪检查、精确进程停止和失败恢复；业务 core/profile/config 命令仍在后续阶段接入。
+- 2.0 的 mihomo adapter 已支持原生验证、loopback controller 就绪检查、精确进程停止和失败恢复；A6 已接入 legacy core/config/node/subscription/route/log 命令，多档案、多订阅和完整 managed 配置仍属于 Beta。
 - YAML 写回后字段顺序和注释可能变化。
 - 节点测速并发固定较低，以提高稳定性。

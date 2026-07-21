@@ -212,6 +212,39 @@ func TestCompatibilityWritesTrackExpectedFilesAndRollback(t *testing.T) {
 	}
 }
 
+func TestCompatibilityReplaceConfigChecksDigestAndValidates(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "legacy")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configFile := filepath.Join(configDir, "config.yaml")
+	original := []byte("mixed-port: 7890\nrules:\n  - MATCH,DIRECT\n")
+	if err := os.WriteFile(configFile, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service, _ := testService(t, root, configDir, fakeValidator(t, root, true))
+	result, err := service.Apply(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	compat := service.Compatibility()
+	content, digest, err := compat.ReadConfig(context.Background(), result.Migration.ID)
+	if err != nil || string(content) != string(original) || len(digest) != 64 {
+		t.Fatalf("read config: content=%q digest=%q err=%v", content, digest, err)
+	}
+	updated := []byte("mixed-port: 7891\nrules:\n  - MATCH,DIRECT\n")
+	if err := compat.ReplaceConfig(context.Background(), result.Migration.ID, digest, updated); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(configFile); string(got) != string(updated) {
+		t.Fatalf("updated config = %q", got)
+	}
+	if err := compat.ReplaceConfig(context.Background(), result.Migration.ID, digest, original); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale digest error = %v", err)
+	}
+}
+
 func testService(t *testing.T, root, configDir, validator string) (*Service, *store.Store) {
 	t.Helper()
 	manager, err := config.ResolveManagerPaths(config.ManagerEnvironment{HomeDir: root, DataHome: filepath.Join(root, "data"), StateHome: filepath.Join(root, "state"), RuntimeDir: filepath.Join(root, "run"), ConfigHome: filepath.Join(root, "config")})

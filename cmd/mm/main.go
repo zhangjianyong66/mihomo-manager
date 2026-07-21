@@ -17,15 +17,18 @@ func main() {
 	paths, _ := config.LoadManagerPaths()
 	var daemonService *app.DaemonService
 	var migrationService *app.MigrationService
+	var capabilityService *app.DaemonCapabilities
 	if paths.Database != "" {
 		daemonService = app.NewDaemonService(paths)
 		migrationService = app.NewMigrationService(paths)
+		capabilityService = app.NewCapabilityService(paths)
 	}
 	code := cli.Execute(
 		ctx,
 		cli.Dependencies{
-			Daemon:     daemonService,
-			Migrations: migrationService,
+			Daemon:       daemonService,
+			Migrations:   migrationService,
+			Capabilities: capabilityService,
 			TUI: cli.TUIRunnerFunc(func(ctx context.Context, streams cli.IOStreams) error {
 				return app.RunInteractiveContext(ctx, streams.In, streams.Out)
 			}),

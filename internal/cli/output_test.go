@@ -198,3 +198,16 @@ func TestURLSecretRedactsCredentialsAndLocation(t *testing.T) {
 		t.Fatalf("unexpected revealed URL: %q", got)
 	}
 }
+
+func TestRedactTextHidesProxyURIsUUIDsAndCredentials(t *testing.T) {
+	raw := "connect vless://user@example.com:443?token=abc https://example.com/sub/private?access=abc uuid=550e8400-e29b-41d4-a716-446655440000 password=hunter2"
+	redacted := RedactText(raw)
+	for _, secret := range []string{"user@example.com", "token=abc", "/sub/private", "access=abc", "550e8400-e29b-41d4-a716-446655440000", "hunter2"} {
+		if strings.Contains(redacted, secret) {
+			t.Fatalf("redacted text contains %q: %q", secret, redacted)
+		}
+	}
+	if !strings.Contains(redacted, "connect") || !strings.Contains(redacted, Redacted) {
+		t.Fatalf("redaction removed useful context: %q", redacted)
+	}
+}

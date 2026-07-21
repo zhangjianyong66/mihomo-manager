@@ -219,6 +219,20 @@ func NewCoreManager(options CoreManagerOptions) *CoreManager {
 
 func (m *CoreManager) Status() CoreStatus { return m.supervisor.Status() }
 
+func (m *CoreManager) Stop(ctx context.Context) error {
+	if m == nil || m.supervisor == nil {
+		return errors.New("core manager is not fully configured")
+	}
+	m.operationMu.Lock()
+	defer m.operationMu.Unlock()
+	release, err := m.coordinator.TryAcquire(ctx, m.newID(), "core.stop")
+	if err != nil {
+		return err
+	}
+	defer release()
+	return m.supervisor.Stop(ctx)
+}
+
 func (m *CoreManager) Activate(ctx context.Context, snapshot core.ProfileSnapshot) error {
 	if m.adapter == nil || m.configs == nil || m.repository == nil || m.supervisor == nil {
 		return errors.New("core manager is not fully configured")

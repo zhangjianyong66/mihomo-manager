@@ -241,6 +241,71 @@ func (c *Client) Do(ctx context.Context, method, path, requestID string, request
 	return nil
 }
 
+// OpenStream opens a daemon NDJSON response. The caller owns and must close the body.
+func (c *Client) OpenStream(ctx context.Context, method, path, requestID string, request any) (io.ReadCloser, error) {
+	if !strings.HasPrefix(path, "/v1/") {
+		return nil, fmt.Errorf("ipc path must begin with /v1/: %w", ErrProtocolMismatch)
+	}
+	var body io.Reader
+	if request != nil {
+		encoded, err := json.Marshal(request)
+		if err != nil {
+			return nil, fmt.Errorf("encode ipc request: %w", err)
+		}
+		if len(encoded) > MaxBodySize {
+			return nil, fmt.Errorf("encode ipc request: %w", ErrStreamInvalid)
+		}
+		body = bytes.NewReader(encoded)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, "http://mihomo-manager"+path, body)
+	if err != nil {
+		return nil, err
+	}
+	min, max := c.MinVersion, c.MaxVersion
+	if min == 0 {
+		min = ProtocolVersion
+	}
+	if max == 0 {
+		max = ProtocolVersion
+	}
+	req.Header.Set(ProtocolMin, fmt.Sprint(min))
+	req.Header.Set(ProtocolMax, fmt.Sprint(max))
+	if requestID != "" {
+		req.Header.Set(RequestIDHeader, requestID)
+	}
+	client := c.HTTPClient
+	if client == nil {
+		client = NewClient(c.SocketPath).HTTPClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("ipc stream: %w", ErrRequestCancelled)
+		}
+		if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) {
+			return nil, fmt.Errorf("ipc stream: %w", ErrPermissionDenied)
+		}
+		return nil, fmt.Errorf("ipc stream: %w", ErrDaemonUnavailable)
+	}
+	if resp.StatusCode >= 400 {
+		defer resp.Body.Close()
+		encoded, readErr := io.ReadAll(io.LimitReader(resp.Body, MaxBodySize+1))
+		if readErr != nil || len(encoded) > MaxBodySize {
+			return nil, fmt.Errorf("read ipc error: %w", ErrDaemonUnavailable)
+		}
+		var raw Response
+		if json.Unmarshal(encoded, &raw) != nil || raw.Error == nil {
+			return nil, fmt.Errorf("decode ipc error: %w", ErrDaemonUnavailable)
+		}
+		return nil, &Error{Body: *raw.Error, StatusCode: resp.StatusCode}
+	}
+	if resp.Header.Get(ProtocolHeader) != fmt.Sprint(ProtocolVersion) {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("ipc stream protocol: %w", ErrProtocolMismatch)
+	}
+	return resp.Body, nil
+}
+
 func parseVersionRange(minText, maxText string) (int, int, error) {
 	if minText == "" {
 		minText = fmt.Sprint(ProtocolVersion)

@@ -2,6 +2,8 @@ package legacy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -53,7 +55,7 @@ func (c *Compatibility) UpdateSubscription(ctx context.Context, id domain.Restor
 
 func (c *Compatibility) ListWhitelist(ctx context.Context, id domain.RestorePointID) ([]string, error) {
 	var result []string
-	err := c.mutate(ctx, id, false, func(client *mihomo.Client) error {
+	err := c.inspect(ctx, id, func(client *mihomo.Client) error {
 		var err error
 		result, err = client.ListWhitelist()
 		return err
@@ -69,12 +71,157 @@ func (c *Compatibility) RemoveWhitelist(ctx context.Context, id domain.RestorePo
 	return c.mutate(ctx, id, true, func(client *mihomo.Client) error { return client.RemoveWhitelist(value) })
 }
 
+func (c *Compatibility) EditWhitelist(ctx context.Context, id domain.RestorePointID, oldValue, newValue string) error {
+	if strings.TrimSpace(oldValue) == "" || strings.TrimSpace(newValue) == "" {
+		return errors.New("whitelist domains must not be empty")
+	}
+	return c.mutate(ctx, id, true, func(client *mihomo.Client) error {
+		if err := client.RemoveWhitelist(oldValue); err != nil {
+			return err
+		}
+		return client.AddWhitelist(newValue)
+	})
+}
+
 func (c *Compatibility) BackupConfig(ctx context.Context, id domain.RestorePointID) error {
 	return c.mutate(ctx, id, false, func(client *mihomo.Client) error { return client.BackupConfig() })
 }
 
 func (c *Compatibility) RestoreConfig(ctx context.Context, id domain.RestorePointID) error {
 	return c.mutate(ctx, id, true, func(client *mihomo.Client) error { return client.RestoreConfig() })
+}
+
+func (c *Compatibility) ReadConfig(ctx context.Context, id domain.RestorePointID) ([]byte, string, error) {
+	var content []byte
+	err := c.inspect(ctx, id, func(*mihomo.Client) error {
+		var err error
+		content, err = os.ReadFile(c.service.pathsOrDefault().ConfigFile)
+		return err
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	sum := sha256.Sum256(content)
+	return content, hex.EncodeToString(sum[:]), nil
+}
+
+func (c *Compatibility) ReplaceConfig(ctx context.Context, id domain.RestorePointID, expectedSHA256 string, content []byte) error {
+	if len(expectedSHA256) != sha256.Size*2 || len(content) == 0 {
+		return errors.New("config content or expected digest is invalid")
+	}
+	return c.mutate(ctx, id, true, func(*mihomo.Client) error {
+		paths := c.service.pathsOrDefault()
+		current, err := fileSHA256(paths.ConfigFile)
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(current, expectedSHA256) {
+			return fmt.Errorf("%w: config changed while editing", ErrConflict)
+		}
+		return writeAtomic(paths.ConfigFile, content, 0o600)
+	})
+}
+
+func (c *Compatibility) Reload(ctx context.Context, id domain.RestorePointID) error {
+	return c.inspect(ctx, id, func(client *mihomo.Client) error { return client.Reload() })
+}
+
+func (c *Compatibility) ListGroups(ctx context.Context, id domain.RestorePointID) ([]mihomo.ProxyGroup, error) {
+	var result []mihomo.ProxyGroup
+	err := c.inspect(ctx, id, func(client *mihomo.Client) error {
+		var err error
+		result, err = client.ListSelectableGroups()
+		return err
+	})
+	return result, err
+}
+
+func (c *Compatibility) GroupNodes(ctx context.Context, id domain.RestorePointID, group string) ([]string, string, error) {
+	var nodes []string
+	var selected string
+	err := c.inspect(ctx, id, func(client *mihomo.Client) error {
+		var err error
+		nodes, selected, err = client.GroupNodes(group)
+		return err
+	})
+	return nodes, selected, err
+}
+
+func (c *Compatibility) GlobalNodes(ctx context.Context, id domain.RestorePointID) ([]string, error) {
+	var nodes []string
+	err := c.inspect(ctx, id, func(client *mihomo.Client) error {
+		var err error
+		nodes, err = client.GlobalNodes()
+		return err
+	})
+	return nodes, err
+}
+
+func (c *Compatibility) SelectNode(ctx context.Context, id domain.RestorePointID, group, node string) error {
+	if strings.TrimSpace(group) == "" || strings.TrimSpace(node) == "" {
+		return errors.New("group and node must not be empty")
+	}
+	return c.inspect(ctx, id, func(client *mihomo.Client) error { return client.SwitchNodeInGroup(group, node) })
+}
+
+func (c *Compatibility) TestNodes(ctx context.Context, id domain.RestorePointID, group string, concurrency, limit int) (<-chan mihomo.NodeTestEvent, error) {
+	var stream <-chan mihomo.NodeTestEvent
+	err := c.inspect(ctx, id, func(client *mihomo.Client) error {
+		if strings.TrimSpace(group) == "" {
+			stream = client.TestNodesStreamWithStop(concurrency, limit, ctx.Done())
+		} else {
+			stream = client.TestGroupNodesStreamWithStop(group, concurrency, limit, ctx.Done())
+		}
+		return nil
+	})
+	return stream, err
+}
+
+func (c *Compatibility) DiagnoseRoute(ctx context.Context, id domain.RestorePointID, input string) (mihomo.RouteDiagnosisResult, error) {
+	var result mihomo.RouteDiagnosisResult
+	err := c.inspect(ctx, id, func(client *mihomo.Client) error {
+		var err error
+		result, err = client.DiagnoseRoute(input)
+		return err
+	})
+	return result, err
+}
+
+func (c *Compatibility) ApplyRouteCN(ctx context.Context, id domain.RestorePointID) error {
+	return c.mutate(ctx, id, true, func(client *mihomo.Client) error { return client.ApplyRouteCN() })
+}
+
+func (c *Compatibility) TailLogs(ctx context.Context, id domain.RestorePointID, lines int) (string, error) {
+	var result string
+	err := c.inspect(ctx, id, func(client *mihomo.Client) error {
+		var err error
+		result, err = client.TailLogs(lines)
+		return err
+	})
+	return result, err
+}
+
+func (c *Compatibility) FollowLogs(ctx context.Context, id domain.RestorePointID, lines int) (<-chan mihomo.LogEvent, error) {
+	var stream <-chan mihomo.LogEvent
+	err := c.inspect(ctx, id, func(client *mihomo.Client) error {
+		stream = client.TailLogsStreamWithStop(lines, ctx.Done())
+		return nil
+	})
+	return stream, err
+}
+
+func (c *Compatibility) inspect(ctx context.Context, id domain.RestorePointID, action func(*mihomo.Client) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	migration, err := c.load(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := checkExpected(migration); err != nil {
+		return err
+	}
+	return action(mihomo.New(c.service.pathsOrDefault()))
 }
 
 func (c *Compatibility) load(ctx context.Context, id domain.RestorePointID) (domain.LegacyMigration, error) {

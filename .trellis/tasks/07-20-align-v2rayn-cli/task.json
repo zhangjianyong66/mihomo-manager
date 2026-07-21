@@ -23,7 +23,8 @@
     "07-20-domain-sqlite-migrations",
     "07-20-daemon-ipc-systemd",
     "07-20-mihomo-adapter-core",
-    "07-20-legacy-migration-rollback"
+    "07-20-legacy-migration-rollback",
+    "07-20-cli-capability-migration"
   ],
   "parent": null,
   "relatedFiles": [],

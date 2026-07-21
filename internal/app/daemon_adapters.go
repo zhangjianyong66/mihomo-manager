@@ -156,6 +156,10 @@ func protocolCategory(code string) ErrorCategory {
 		return ErrorCategoryValidationFailed
 	case "PERMISSION_DENIED":
 		return ErrorCategoryPermissionDenied
+	case "UPSTREAM_FAILURE":
+		return ErrorCategoryUpstreamFailure
+	case "UNSUPPORTED_PROFILE":
+		return ErrorCategoryConflict
 	default:
 		return ErrorCategoryDaemonUnavailable
 	}

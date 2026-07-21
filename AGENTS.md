@@ -9,7 +9,7 @@
 - 安装器会自动安装并校验 mihomo core，默认固定 `v1.19.28`，支持 `MIHOMO_VERSION` 覆盖；默认 core 路径为 `~/.local/bin/mihomo`，可用 `MIHOMO_BIN` 覆盖。
 - 系统 Go 低于 1.22 或缺失时，安装器会把官方 Go 1.26.4 安装到 `~/.local/share/mihomo-manager/toolchains/go1.26.4`，不替换系统 Go。
 - 当前本机已安装 MetaCubeX/mihomo `v1.19.28` Linux amd64 v1 构建到 `~/.local/bin/mihomo`。
-- 运行命令：`mm` 或 `mm tui`，两者打开相同的交互式 TUI；A5 增加 `mm migrate plan|apply|status|rollback`，可用 `mm --help`、`mm migrate --help` 做非交互冒烟验证。
+- 运行命令：`mm` 或 `mm tui` 打开相同 TUI；A6 已提供 `core`、`config`、`group`、`node`、legacy `subscription`、`route` 业务命令，可用 `mm --help` 和各二级 `--help` 做非交互冒烟验证。
 - CLI 命令工厂、table/json 输出、结构化错误、退出码和秘密值位于 `internal/cli`；`cmd/mm` 只做真实依赖/IO 装配和进程退出。
 - 稳定 ID、mihomo core、档案、订阅、节点、操作和设置领域模型位于 `internal/domain`；按 core/profile/node/group/subscription/route/config/log 拆分的应用 ports 位于 `internal/app`，现有 TUI 尚未迁移到这些 ports。
 - `internal/store` 使用 `database/sql` 与固定的 `modernc.org/sqlite v1.36.1`（无 CGO），提供 profile/subscription/node/operation/settings/legacy migration 仓储和三条嵌入式迁移；store 只接收显式数据库路径，默认用户路径由 daemon/config 装配。
@@ -18,6 +18,9 @@
 - external/legacy 配置在 2.x adapter 中只读，validate 与 start 前核对 SHA-256；managed 配置写入独立 generation，绝不覆盖 `~/.config/mihomo/config.yaml`。
 - SQLite store 使用单连接、rollback journal、`foreign_keys=ON`、`synchronous=FULL`；状态目录/数据库权限分别收紧为 `0700`/`0600`，迁移历史以 SHA-256 防改写，已有 schema 升级前创建同目录恢复点。
 - CLI 退出码契约为：`1` 内部错误、`2` 输入错误、`3` 不存在、`4` 冲突、`5` daemon/协议不可用、`6` 校验失败、`7` 权限拒绝、`8` 上游失败；JSON API 版本为 `mm/v1`。
+- A6 业务 CLI 默认解析唯一活动 legacy profile，可用 `--profile` 显式指定；查询支持 table/json，`node test` 与 `core logs --follow` 支持 text/NDJSON，订阅 URL、节点 URI、UUID、密码和日志凭据默认脱敏。
+- A6 daemon 路由位于 `/v1/core/*`、`/v1/config/*`、`/v1/groups*`、`/v1/nodes*`、`/v1/subscription`、`/v1/routes/*`、`/v1/logs*`；CLI 不可用 daemon 时不会回退到旧的 `pgrep/pkill`、配置直写或 mihomo API 直连。
+- `mm config edit` 在 CLI 本地以 `0600` 临时文件启动 `EDITOR`，再携带 expected SHA-256 回传 daemon；daemon 核对摘要、原子写入并验证，systemd daemon 不直接占用终端。
 - daemon 前台入口为 `mm daemon run`，状态/控制入口为 `mm daemon status|start|stop|enable|disable`；默认使用 XDG 下的 `~/.local/share/mihomo-manager/state.db`、`~/.local/state/mihomo-manager/run/mm.sock`，有 `XDG_RUNTIME_DIR` 时运行目录改为 `$XDG_RUNTIME_DIR/mihomo-manager`。
 - daemon 启动会装配 CoreManager，但 core 初始状态始终为 `stopped`，不会自动启动代理；后续显式切换使用 operation 阶段记录，失败时恢复旧 RuntimeSpec，恢复失败进入明确 `failed`。
 - daemon 只监听 Unix socket，不监听 TCP；socket 父目录为 `0700`、socket/锁为 `0600`，Linux 通过 `SO_PEERCRED` 限制为当前 UID，root daemon 被拒绝。IPC 使用 `/v1/`、`MM-Protocol-Min/Max` 和 `MM-Request-ID`，流式扩展采用 NDJSON。

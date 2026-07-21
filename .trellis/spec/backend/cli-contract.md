@@ -6,7 +6,7 @@
 
 以下变化必须遵守本规范：新增 Cobra 命令、修改应用服务接口、增加 table/json 输出、增加机器错误码或输出可能含秘密的字段。
 
-目标是让 `cmd/mm` 只负责进程装配，让 CLI/TUI 最终复用 `internal/app` 用例，并保证脚本可依赖 JSON 和退出码。A1 发布 `mm` 与 `mm tui`，A3 增加 `mm daemon run|status|start|stop|enable|disable`，A5 增加 `mm migrate plan|apply|status|rollback`。
+目标是让 `cmd/mm` 只负责进程装配，让 CLI/TUI 最终复用 `internal/app` 用例，并保证脚本可依赖 JSON 和退出码。A1 发布 `mm` 与 `mm tui`，A3 增加 daemon 命令，A5 增加 migrate 命令，A6 增加 core/config/group/node 和 legacy subscription/route/log 命令。
 
 daemon `run` 只向 stderr 写诊断并保持前台运行；其他 daemon 命令通过 `internal/app.DaemonService` 访问 IPC/systemd，不直接读写 SQLite、socket 或 unit 文件。daemon 不可用/协议不兼容映射退出码 5，锁冲突映射 4，路径安全/权限拒绝映射 7。
 
@@ -58,6 +58,10 @@ JSON 错误 envelope：
 - `Secret.String()` 和 JSON marshal 永远脱敏；需要完整值时由输出投影显式调用 `Display(showSecrets)`。
 - `NewURLSecret` 默认只保留 scheme/host，隐藏 userinfo、非根路径、query 和 fragment。
 - 只有命令行显式 `--show-secrets` 可以使投影显示完整值，环境变量不得隐式开启。
+
+A6 业务命令默认使用活动 legacy profile，可选 `--profile` 只用于显式消歧；无活动档案返回 `NOT_FOUND`。普通查询使用 table/json，测速与日志 follow 使用 text/NDJSON。NDJSON 每行必须是完整 JSON，最后包含 terminal 事件；取消必须传到 daemon 并关闭 HTTP body/channel，不得泄漏 producer goroutine。
+
+`config edit` 不得让 systemd daemon 启动交互编辑器。CLI 通过 GET 取得配置内容与 SHA-256，在本地私有临时文件中调用 `EDITOR`，再通过 PUT 回传内容和 expected SHA-256；daemon 负责摘要冲突、原子写入、原生校验和失败恢复。
 
 ### 4. Validation & Error Matrix
 

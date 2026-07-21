@@ -1,0 +1,383 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/zhangjianyong66/mihomo-manager/internal/config"
+	"github.com/zhangjianyong66/mihomo-manager/internal/daemon"
+	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
+	"github.com/zhangjianyong66/mihomo-manager/internal/ipc"
+)
+
+type CapabilityAPI interface {
+	CoreStatus(context.Context, string) (CoreStatus, error)
+	CoreAction(context.Context, string, string) error
+	ValidateConfig(context.Context, string) error
+	Groups(context.Context, string) ([]Group, error)
+	Group(context.Context, string, string) (Group, error)
+	SelectGroupNode(context.Context, string, string, string) error
+	Nodes(context.Context, string, string) ([]Node, error)
+	TestNodes(context.Context, NodeTestRequest) <-chan NodeTestEvent
+	Subscription(context.Context, string) (Subscription, error)
+	SetSubscription(context.Context, string, string) error
+	UpdateSubscription(context.Context, string) error
+	Whitelist(context.Context, string) ([]string, error)
+	AddWhitelist(context.Context, string, string) error
+	RemoveWhitelist(context.Context, string, string) error
+	EditWhitelist(context.Context, string, string, string) error
+	ApplyRoutePreset(context.Context, string, string) error
+	DiagnoseRoute(context.Context, string, string) (RouteDiagnosis, error)
+	ConfigBackup(context.Context, string) error
+	ConfigRestore(context.Context, string) error
+	ReadConfig(context.Context, string) (ConfigDocument, error)
+	ReplaceConfig(context.Context, string, string, []byte) error
+	TailLogs(context.Context, LogRequest) ([]LogLine, error)
+	FollowLogs(context.Context, LogRequest) <-chan LogEvent
+}
+
+type ConfigDocument struct {
+	Content []byte
+	SHA256  string
+}
+
+type DaemonCapabilities struct{ client *ipc.Client }
+
+func NewCapabilityService(paths config.ManagerPaths) *DaemonCapabilities {
+	return &DaemonCapabilities{client: ipc.NewClient(paths.Socket)}
+}
+
+func (c *DaemonCapabilities) CoreStatus(ctx context.Context, profileID string) (CoreStatus, error) {
+	var value daemon.CoreStatus
+	if err := c.do(ctx, http.MethodGet, capabilityPath("/v1/core/status", profileID), "", nil, &value); err != nil {
+		return CoreStatus{}, err
+	}
+	return CoreStatus{Type: domain.CoreTypeMihomo, State: value.State, ProfileID: value.ProfileID, PID: value.PID}, nil
+}
+
+func (c *DaemonCapabilities) CoreAction(ctx context.Context, profileID, action string) error {
+	var result map[string]any
+	request := map[string]string{"profileId": profileID}
+	return c.do(ctx, http.MethodPost, "/v1/core/"+url.PathEscape(action), newRequestID("core-"+action), request, &result)
+}
+
+func (c *DaemonCapabilities) ValidateConfig(ctx context.Context, profileID string) error {
+	var result map[string]any
+	return c.do(ctx, http.MethodPost, "/v1/config/validate", newRequestID("config-validate"), map[string]string{"profileId": profileID}, &result)
+}
+
+func (c *DaemonCapabilities) Groups(ctx context.Context, profileID string) ([]Group, error) {
+	var values []daemon.GroupInfo
+	if err := c.do(ctx, http.MethodGet, capabilityPath("/v1/groups", profileID), "", nil, &values); err != nil {
+		return nil, err
+	}
+	return convertGroups(values), nil
+}
+
+func (c *DaemonCapabilities) Group(ctx context.Context, profileID, groupID string) (Group, error) {
+	var value daemon.GroupInfo
+	if err := c.do(ctx, http.MethodGet, capabilityPath("/v1/groups/"+url.PathEscape(groupID), profileID), "", nil, &value); err != nil {
+		return Group{}, err
+	}
+	return convertGroup(value), nil
+}
+
+func (c *DaemonCapabilities) SelectGroupNode(ctx context.Context, profileID, groupID, nodeID string) error {
+	var result map[string]any
+	request := map[string]string{"profileId": profileID, "nodeId": nodeID}
+	return c.do(ctx, http.MethodPost, "/v1/groups/"+url.PathEscape(groupID), newRequestID("group-select"), request, &result)
+}
+
+func (c *DaemonCapabilities) Nodes(ctx context.Context, profileID, groupID string) ([]Node, error) {
+	path := capabilityPath("/v1/nodes", profileID)
+	if groupID != "" {
+		path = addQuery(path, "groupId", groupID)
+	}
+	var values []daemon.NodeInfo
+	if err := c.do(ctx, http.MethodGet, path, "", nil, &values); err != nil {
+		return nil, err
+	}
+	result := make([]Node, 0, len(values))
+	for _, value := range values {
+		result = append(result, Node{ID: value.ID, Name: value.Name, Protocol: value.Protocol})
+	}
+	return result, nil
+}
+
+func (c *DaemonCapabilities) TestNodes(ctx context.Context, request NodeTestRequest) <-chan NodeTestEvent {
+	result := make(chan NodeTestEvent, 32)
+	go func() {
+		defer close(result)
+		body, err := c.client.OpenStream(ctx, http.MethodPost, "/v1/nodes/test", newRequestID("node-test"), map[string]any{
+			"profileId": request.ProfileID, "groupId": request.GroupID, "concurrency": request.Concurrency, "limit": request.Limit,
+		})
+		if err != nil {
+			sendNodeTestEvent(ctx, result, NodeTestEvent{Err: c.mapError(err), Finished: true})
+			return
+		}
+		defer body.Close()
+		decoder := ipc.NewStreamDecoder(body)
+		for {
+			event, decodeErr := decoder.Next(ctx)
+			if decodeErr != nil {
+				if errors.Is(decodeErr, ipc.ErrRequestCancelled) || ctx.Err() != nil {
+					sendNodeTestEvent(ctx, result, NodeTestEvent{Err: ctx.Err(), Finished: true})
+					return
+				}
+				sendNodeTestEvent(ctx, result, NodeTestEvent{Err: c.mapError(decodeErr), Finished: true})
+				return
+			}
+			switch event.Kind {
+			case "event":
+				var value struct {
+					Done  int    `json:"done"`
+					Total int    `json:"total"`
+					Name  string `json:"name"`
+					Delay int    `json:"delayMs"`
+				}
+				if err := json.Unmarshal(event.Data, &value); err != nil {
+					sendNodeTestEvent(ctx, result, NodeTestEvent{Err: err, Finished: true})
+					return
+				}
+				sendNodeTestEvent(ctx, result, NodeTestEvent{Done: value.Done, Total: value.Total, Result: &NodeDelay{NodeID: domain.NodeID(value.Name), Delay: time.Duration(value.Delay) * time.Millisecond}})
+			case "done":
+				var value struct{ Done, Total int }
+				_ = json.Unmarshal(event.Data, &value)
+				sendNodeTestEvent(ctx, result, NodeTestEvent{Done: value.Done, Total: value.Total, Finished: true})
+				return
+			case "error":
+				if event.Error == nil {
+					sendNodeTestEvent(ctx, result, NodeTestEvent{Err: errors.New("stream error event is missing details"), Finished: true})
+				} else {
+					sendNodeTestEvent(ctx, result, NodeTestEvent{Err: c.mapError(&ipc.Error{Body: *event.Error}), Finished: true})
+				}
+				return
+			}
+		}
+	}()
+	return result
+}
+
+func (c *DaemonCapabilities) Subscription(ctx context.Context, profileID string) (Subscription, error) {
+	var value daemon.SubscriptionInfo
+	if err := c.do(ctx, http.MethodGet, capabilityPath("/v1/subscription", profileID), "", nil, &value); err != nil {
+		return Subscription{}, err
+	}
+	return Subscription{ID: value.ID, Name: value.Name, URL: value.URL, Enabled: value.Enabled}, nil
+}
+
+func (c *DaemonCapabilities) SetSubscription(ctx context.Context, profileID, value string) error {
+	var result map[string]any
+	return c.do(ctx, http.MethodPut, "/v1/subscription", newRequestID("subscription-set"), map[string]string{"profileId": profileID, "url": value}, &result)
+}
+
+func (c *DaemonCapabilities) UpdateSubscription(ctx context.Context, profileID string) error {
+	var result map[string]any
+	return c.do(ctx, http.MethodPost, "/v1/subscription", newRequestID("subscription-update"), map[string]string{"profileId": profileID}, &result)
+}
+
+func (c *DaemonCapabilities) Whitelist(ctx context.Context, profileID string) ([]string, error) {
+	var value []string
+	if err := c.do(ctx, http.MethodGet, capabilityPath("/v1/routes/whitelist", profileID), "", nil, &value); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+func (c *DaemonCapabilities) AddWhitelist(ctx context.Context, profileID, value string) error {
+	return c.whitelistMutation(ctx, http.MethodPost, "add", profileID, value, "")
+}
+func (c *DaemonCapabilities) RemoveWhitelist(ctx context.Context, profileID, value string) error {
+	return c.whitelistMutation(ctx, http.MethodDelete, "remove", profileID, value, "")
+}
+func (c *DaemonCapabilities) EditWhitelist(ctx context.Context, profileID, oldValue, newValue string) error {
+	return c.whitelistMutation(ctx, http.MethodPut, "edit", profileID, newValue, oldValue)
+}
+func (c *DaemonCapabilities) whitelistMutation(ctx context.Context, method, action, profileID, value, oldValue string) error {
+	var result map[string]any
+	request := map[string]string{"profileId": profileID, "domain": value}
+	if oldValue != "" {
+		request["oldDomain"] = oldValue
+	}
+	return c.do(ctx, method, "/v1/routes/whitelist", newRequestID("whitelist-"+action), request, &result)
+}
+
+func (c *DaemonCapabilities) ApplyRoutePreset(ctx context.Context, profileID, preset string) error {
+	var result map[string]any
+	return c.do(ctx, http.MethodPost, "/v1/routes/preset", newRequestID("route-preset"), map[string]string{"profileId": profileID, "preset": preset}, &result)
+}
+
+func (c *DaemonCapabilities) DiagnoseRoute(ctx context.Context, profileID, input string) (RouteDiagnosis, error) {
+	var value daemon.RouteInfo
+	path := addQuery(capabilityPath("/v1/routes/diagnose", profileID), "input", input)
+	if err := c.do(ctx, http.MethodGet, path, "", nil, &value); err != nil {
+		return RouteDiagnosis{}, err
+	}
+	return RouteDiagnosis{Input: value.Input, Host: value.Host, MatchedRule: value.MatchedRule, Target: value.Target, CurrentNode: value.CurrentNode, Confidence: value.Confidence, Note: value.Note}, nil
+}
+
+func (c *DaemonCapabilities) ConfigBackup(ctx context.Context, profileID string) error {
+	return c.configMutation(ctx, "backup", profileID)
+}
+func (c *DaemonCapabilities) ConfigRestore(ctx context.Context, profileID string) error {
+	return c.configMutation(ctx, "restore", profileID)
+}
+func (c *DaemonCapabilities) configMutation(ctx context.Context, action, profileID string) error {
+	var result map[string]any
+	return c.do(ctx, http.MethodPost, "/v1/config/"+action, newRequestID("config-"+action), map[string]string{"profileId": profileID}, &result)
+}
+
+func (c *DaemonCapabilities) ReadConfig(ctx context.Context, profileID string) (ConfigDocument, error) {
+	var value daemon.ConfigDocument
+	if err := c.do(ctx, http.MethodGet, capabilityPath("/v1/config/edit", profileID), "", nil, &value); err != nil {
+		return ConfigDocument{}, err
+	}
+	return ConfigDocument{Content: value.Content, SHA256: value.SHA256}, nil
+}
+
+func (c *DaemonCapabilities) ReplaceConfig(ctx context.Context, profileID, expectedSHA256 string, content []byte) error {
+	var result map[string]any
+	request := map[string]any{"profileId": profileID, "expectedSha256": expectedSHA256, "content": content}
+	return c.do(ctx, http.MethodPut, "/v1/config/edit", newRequestID("config-edit"), request, &result)
+}
+
+func (c *DaemonCapabilities) TailLogs(ctx context.Context, request LogRequest) ([]LogLine, error) {
+	path := addQuery(capabilityPath("/v1/logs", request.ProfileID.String()), "lines", strconv.Itoa(request.Lines))
+	var value struct {
+		Content string `json:"content"`
+	}
+	if err := c.do(ctx, http.MethodGet, path, "", nil, &value); err != nil {
+		return nil, err
+	}
+	return splitLogLines(value.Content), nil
+}
+
+func (c *DaemonCapabilities) FollowLogs(ctx context.Context, request LogRequest) <-chan LogEvent {
+	result := make(chan LogEvent, 32)
+	go func() {
+		defer close(result)
+		path := addQuery(capabilityPath("/v1/logs/follow", request.ProfileID.String()), "lines", strconv.Itoa(request.Lines))
+		body, err := c.client.OpenStream(ctx, http.MethodGet, path, newRequestID("logs-follow"), nil)
+		if err != nil {
+			sendLogEvent(ctx, result, LogEvent{Err: c.mapError(err), Finished: true})
+			return
+		}
+		defer body.Close()
+		decoder := ipc.NewStreamDecoder(body)
+		for {
+			event, decodeErr := decoder.Next(ctx)
+			if decodeErr != nil {
+				if ctx.Err() != nil {
+					sendLogEvent(ctx, result, LogEvent{Err: ctx.Err(), Finished: true})
+				} else {
+					sendLogEvent(ctx, result, LogEvent{Err: c.mapError(decodeErr), Finished: true})
+				}
+				return
+			}
+			switch event.Kind {
+			case "event":
+				var value struct {
+					Line string `json:"line"`
+				}
+				if err := json.Unmarshal(event.Data, &value); err != nil {
+					sendLogEvent(ctx, result, LogEvent{Err: err, Finished: true})
+					return
+				}
+				sendLogEvent(ctx, result, LogEvent{Line: &LogLine{Message: value.Line}})
+			case "done":
+				sendLogEvent(ctx, result, LogEvent{Finished: true})
+				return
+			case "error":
+				if event.Error == nil {
+					sendLogEvent(ctx, result, LogEvent{Err: errors.New("stream error event is missing details"), Finished: true})
+				} else {
+					sendLogEvent(ctx, result, LogEvent{Err: c.mapError(&ipc.Error{Body: *event.Error}), Finished: true})
+				}
+				return
+			}
+		}
+	}()
+	return result
+}
+
+func (c *DaemonCapabilities) do(ctx context.Context, method, path, requestID string, request, result any) error {
+	if c == nil || c.client == nil {
+		return &Error{Category: ErrorCategoryDaemonUnavailable, Code: ErrorCodeDaemonUnavailable, Message: "daemon 客户端未配置"}
+	}
+	return c.mapError(c.client.Do(ctx, method, path, requestID, request, result))
+}
+
+func (c *DaemonCapabilities) mapError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return mapIPCError(err)
+}
+
+func capabilityPath(path, profileID string) string {
+	if strings.TrimSpace(profileID) == "" {
+		return path
+	}
+	return addQuery(path, "profileId", profileID)
+}
+
+func addQuery(path, key, value string) string {
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator + url.QueryEscape(key) + "=" + url.QueryEscape(value)
+}
+
+func convertGroups(values []daemon.GroupInfo) []Group {
+	result := make([]Group, 0, len(values))
+	for _, value := range values {
+		result = append(result, convertGroup(value))
+	}
+	return result
+}
+
+func convertGroup(value daemon.GroupInfo) Group {
+	nodes := make([]domain.NodeID, 0, len(value.Nodes))
+	for _, node := range value.Nodes {
+		nodes = append(nodes, domain.NodeID(node))
+	}
+	return Group{ID: value.ID, Name: value.Name, Type: value.Type, SelectedNodeID: domain.NodeID(value.SelectedNode), NodeIDs: nodes}
+}
+
+func splitLogLines(content string) []LogLine {
+	lines := strings.Split(content, "\n")
+	result := make([]LogLine, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			result = append(result, LogLine{Message: line})
+		}
+	}
+	return result
+}
+
+func sendNodeTestEvent(ctx context.Context, output chan<- NodeTestEvent, event NodeTestEvent) bool {
+	select {
+	case output <- event:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func sendLogEvent(ctx context.Context, output chan<- LogEvent, event LogEvent) bool {
+	select {
+	case output <- event:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+var _ CapabilityAPI = (*DaemonCapabilities)(nil)

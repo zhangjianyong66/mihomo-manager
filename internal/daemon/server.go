@@ -55,19 +55,21 @@ type Options struct {
 	CoreAdapter      core.Adapter
 	CoreReadyTimeout time.Duration
 	LegacyService    MigrationService
+	Capabilities     *CapabilityService
 }
 
 type Server struct {
-	opts       Options
-	mu         sync.RWMutex
-	status     Status
-	http       *http.Server
-	listener   net.Listener
-	store      Store
-	lock       *platform.FileLock
-	ownedSock  bool
-	core       *CoreManager
-	migrations MigrationService
+	opts         Options
+	mu           sync.RWMutex
+	status       Status
+	http         *http.Server
+	listener     net.Listener
+	store        Store
+	lock         *platform.FileLock
+	ownedSock    bool
+	core         *CoreManager
+	migrations   MigrationService
+	capabilities *CapabilityService
 }
 
 func New(opts Options) *Server {
@@ -131,10 +133,21 @@ func (s *Server) Run(ctx context.Context) (finalErr error) {
 			Coordinator: NewCoordinator(), Supervisor: NewSupervisor(s.opts.CoreAdapter, s.opts.CoreReadyTimeout),
 		})
 	}
+	var compatibility *legacy.Compatibility
 	if s.opts.LegacyService != nil {
 		s.migrations = s.opts.LegacyService
 	} else if repository, ok := stateStore.(legacy.Repository); ok {
-		s.migrations = legacy.NewService(config.Load(), s.opts.Paths, repository)
+		legacyPaths := config.Load()
+		legacyPaths.LogFile = s.opts.Paths.CoreLog
+		legacyService := legacy.NewService(legacyPaths, s.opts.Paths, repository)
+		s.migrations = legacyService
+		compatibility = legacyService.Compatibility()
+	}
+	s.capabilities = s.opts.Capabilities
+	if s.capabilities == nil && compatibility != nil {
+		if repository, ok := stateStore.(CapabilityStore); ok {
+			s.capabilities = NewCapabilityService(repository, s.core, compatibility, config.Load())
+		}
 	}
 
 	listener := s.opts.Listener
@@ -166,6 +179,9 @@ func (s *Server) Run(ctx context.Context) (finalErr error) {
 	mux.HandleFunc("/v1/migrations/apply", s.handleMigrationApply)
 	mux.HandleFunc("/v1/migrations/status", s.handleMigrationStatus)
 	mux.HandleFunc("/v1/migrations/rollback", s.handleMigrationRollback)
+	if s.capabilities != nil {
+		registerCapabilityRoutes(mux, s.capabilities)
+	}
 	handler := ipc.NewServer(NewRequestCache(5*time.Minute, 1024).Middleware(mux))
 	s.http = &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 64 << 10}
 	serveErr := make(chan error, 1)

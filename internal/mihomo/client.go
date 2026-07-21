@@ -443,17 +443,23 @@ func (c *Client) TestNodesStreamWithStop(concurrency, maxProbeNodes int, stop <-
 					enc := url.PathEscape(n)
 					b, callErr := c.call(http.MethodGet, "/proxies/"+enc+"/delay?timeout=3000&url=http://www.gstatic.com/generate_204", nil)
 					if callErr != nil {
-						doneCh <- NodeDelay{Name: n, Delay: -1}
+						if !sendNodeDelay(stop, doneCh, NodeDelay{Name: n, Delay: -1}) {
+							return
+						}
 						continue
 					}
 					var d struct {
 						Delay int `json:"delay"`
 					}
 					if json.Unmarshal(b, &d) != nil || d.Delay <= 0 {
-						doneCh <- NodeDelay{Name: n, Delay: -1}
+						if !sendNodeDelay(stop, doneCh, NodeDelay{Name: n, Delay: -1}) {
+							return
+						}
 						continue
 					}
-					doneCh <- NodeDelay{Name: n, Delay: d.Delay}
+					if !sendNodeDelay(stop, doneCh, NodeDelay{Name: n, Delay: d.Delay}) {
+						return
+					}
 				}
 			}()
 		}
@@ -463,7 +469,14 @@ func (c *Client) TestNodesStreamWithStop(concurrency, maxProbeNodes int, stop <-
 				if isStopped(stop) {
 					break
 				}
-				jobs <- n
+				select {
+				case jobs <- n:
+				case <-stop:
+					close(jobs)
+					wg.Wait()
+					close(doneCh)
+					return
+				}
 			}
 			close(jobs)
 			wg.Wait()
@@ -521,17 +534,23 @@ func (c *Client) TestGroupNodesStreamWithStop(group string, concurrency, maxProb
 					enc := url.PathEscape(n)
 					b, callErr := c.call(http.MethodGet, "/proxies/"+enc+"/delay?timeout=3000&url=http://www.gstatic.com/generate_204", nil)
 					if callErr != nil {
-						doneCh <- NodeDelay{Name: n, Delay: -1}
+						if !sendNodeDelay(stop, doneCh, NodeDelay{Name: n, Delay: -1}) {
+							return
+						}
 						continue
 					}
 					var d struct {
 						Delay int `json:"delay"`
 					}
 					if json.Unmarshal(b, &d) != nil || d.Delay <= 0 {
-						doneCh <- NodeDelay{Name: n, Delay: -1}
+						if !sendNodeDelay(stop, doneCh, NodeDelay{Name: n, Delay: -1}) {
+							return
+						}
 						continue
 					}
-					doneCh <- NodeDelay{Name: n, Delay: d.Delay}
+					if !sendNodeDelay(stop, doneCh, NodeDelay{Name: n, Delay: d.Delay}) {
+						return
+					}
 				}
 			}()
 		}
@@ -541,7 +560,14 @@ func (c *Client) TestGroupNodesStreamWithStop(group string, concurrency, maxProb
 				if isStopped(stop) {
 					break
 				}
-				jobs <- n
+				select {
+				case jobs <- n:
+				case <-stop:
+					close(jobs)
+					wg.Wait()
+					close(doneCh)
+					return
+				}
 			}
 			close(jobs)
 			wg.Wait()
@@ -570,6 +596,19 @@ func isStopped(stop <-chan struct{}) bool {
 	case <-stop:
 		return true
 	default:
+		return false
+	}
+}
+
+func sendNodeDelay(stop <-chan struct{}, output chan<- NodeDelay, value NodeDelay) bool {
+	if stop == nil {
+		output <- value
+		return true
+	}
+	select {
+	case output <- value:
+		return true
+	case <-stop:
 		return false
 	}
 }
@@ -1129,19 +1168,21 @@ func (c *Client) TailLogsStreamWithStop(initialLines int, stop <-chan struct{}) 
 			if line == "" {
 				continue
 			}
-			ch <- LogEvent{Line: line}
+			if !sendLogEvent(stop, ch, LogEvent{Line: line}) {
+				return
+			}
 		}
 		ticker := time.NewTicker(400 * time.Millisecond)
 		defer ticker.Stop()
 		for {
 			if isStopped(stop) {
-				ch <- LogEvent{Finished: true}
+				_ = sendLogEvent(stop, ch, LogEvent{Finished: true})
 				return
 			}
 			<-ticker.C
 			lines, newOffset, readErr := readAppendedLines(c.paths.LogFile, offset)
 			if readErr != nil {
-				ch <- LogEvent{Err: readErr, Finished: true}
+				_ = sendLogEvent(stop, ch, LogEvent{Err: readErr, Finished: true})
 				return
 			}
 			offset = newOffset
@@ -1149,11 +1190,26 @@ func (c *Client) TailLogsStreamWithStop(initialLines int, stop <-chan struct{}) 
 				if line == "" {
 					continue
 				}
-				ch <- LogEvent{Line: line}
+				if !sendLogEvent(stop, ch, LogEvent{Line: line}) {
+					return
+				}
 			}
 		}
 	}()
 	return ch
+}
+
+func sendLogEvent(stop <-chan struct{}, output chan<- LogEvent, value LogEvent) bool {
+	if stop == nil {
+		output <- value
+		return true
+	}
+	select {
+	case output <- value:
+		return true
+	case <-stop:
+		return false
+	}
 }
 
 func readTailWithOffset(path string, lines int) ([]string, int64, error) {
