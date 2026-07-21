@@ -9,8 +9,8 @@
 
 ## 依赖与边界
 
-- 通过构造函数注入依赖：`mihomo.New(paths)` 接收 `config.Paths`，`tui.New(client)` 接收 `*mihomo.Client`。
-- TUI 不直接执行 `os.WriteFile`、`exec.Command` 或原始 HTTP 请求；这些副作用由 `internal/mihomo` 封装。
+- 通过构造函数注入依赖：daemon 装配 `mihomo.Adapter`，`tui.New`/`NewWithContext` 接收窄化的 daemon capability；禁止在 TUI 内重新加载 HOME/XDG 路径或构造 `mihomo.Client`。
+- TUI 不直接执行 `os.WriteFile`、`exec.Command` 或原始 HTTP 请求；业务副作用经 `internal/app.DaemonCapabilities`，本地编辑器由 `app.InteractiveCapabilities` 桥接。
 - 路径和端口默认值集中在 `internal/config/config.go`，不要在不同业务方法中重复读取环境变量。
 - 与 mihomo external-controller 交互统一经 `Client.call`，新增 API 方法应复用该入口处理地址、超时和状态码。
 
@@ -32,8 +32,8 @@
 ## 异步与 TUI
 
 - 长耗时测速和日志跟随使用只读事件 channel，将进度、结果、错误和完成状态封装为消息类型，如 `NodeTestEvent`、`LogEvent`。
-- 可取消操作接收只读 `stop <-chan struct{}`；循环和发送前检查停止信号，TUI 返回页面时关闭对应 stop channel。
-- Bubble Tea `Update` 处理状态转换，`View` 只渲染当前状态；不要在 `View` 中执行网络、文件或进程副作用。
+- 可取消操作使用派生 `context.Context`，TUI 返回页面时调用对应 cancel；daemon stream 必须随 context 关闭 HTTP body/channel。
+- Bubble Tea `Update` 只处理状态转换，`View` 只渲染当前状态；所有 capability 调用封装为 `tea.Cmd`，不得在 `Update`/`View` 直接执行网络、文件或进程副作用。
 - 新页面或流程优先复用现有 `page`、`actionCtx` 和消息模式，避免另建与主状态机并行的全局状态。
 
 ## 测试风格

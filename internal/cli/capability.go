@@ -21,7 +21,7 @@ func newCapabilityCommands(deps Dependencies) []*cobra.Command {
 	if deps.Capabilities == nil {
 		return nil
 	}
-	return []*cobra.Command{newCoreCommand(deps), newGroupCommand(deps), newNodeCommand(deps), newSubscriptionCommand(deps), newRouteCommand(deps), newConfigCommand(deps)}
+	return []*cobra.Command{newModeCommand(deps), newCoreCommand(deps), newGroupCommand(deps), newNodeCommand(deps), newSubscriptionCommand(deps), newRouteCommand(deps), newConfigCommand(deps)}
 }
 
 func bindCapabilityOptions(command *cobra.Command, profile *string, options *OutputOptions) {

@@ -22,14 +22,17 @@ type fakeCapabilityAPI struct {
 	selectGroup  string
 	selectNode   string
 	replaced     []byte
+	modeStatus   app.RoutingModeStatus
+	setMode      app.SetRoutingModeRequest
 	err          error
 }
 
 func (f *fakeCapabilityAPI) ModeStatus(context.Context, string) (app.RoutingModeStatus, error) {
-	return app.RoutingModeStatus{}, f.err
+	return f.modeStatus, f.err
 }
-func (f *fakeCapabilityAPI) SetMode(context.Context, app.SetRoutingModeRequest) (app.RoutingModeStatus, error) {
-	return app.RoutingModeStatus{}, f.err
+func (f *fakeCapabilityAPI) SetMode(_ context.Context, request app.SetRoutingModeRequest) (app.RoutingModeStatus, error) {
+	f.setMode = request
+	return f.modeStatus, f.err
 }
 
 func (f *fakeCapabilityAPI) CoreStatus(context.Context, string) (app.CoreStatus, error) {

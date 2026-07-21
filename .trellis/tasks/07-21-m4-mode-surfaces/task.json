@@ -3,7 +3,7 @@
   "name": "m4-mode-surfaces",
   "title": "M4 提供模式 CLI 与 TUI",
   "description": "通过统一 daemon 能力提供模式状态和切换的 CLI/TUI 用户界面。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

@@ -1,7 +1,10 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -10,8 +13,34 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/zhangjianyong66/mihomo-manager/internal/mihomo"
+	"github.com/zhangjianyong66/mihomo-manager/internal/app"
+	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
 )
+
+type Capabilities interface {
+	ModeStatus(context.Context, string) (app.RoutingModeStatus, error)
+	SetMode(context.Context, app.SetRoutingModeRequest) (app.RoutingModeStatus, error)
+	CoreStatus(context.Context, string) (app.CoreStatus, error)
+	CoreAction(context.Context, string, string) error
+	ValidateConfig(context.Context, string) error
+	Groups(context.Context, string) ([]app.Group, error)
+	Group(context.Context, string, string) (app.Group, error)
+	SelectGroupNode(context.Context, string, string, string) error
+	TestNodes(context.Context, app.NodeTestRequest) <-chan app.NodeTestEvent
+	Subscription(context.Context, string) (app.Subscription, error)
+	SetSubscription(context.Context, string, string) error
+	UpdateSubscription(context.Context, string) error
+	Whitelist(context.Context, string) ([]string, error)
+	AddWhitelist(context.Context, string, string) error
+	RemoveWhitelist(context.Context, string, string) error
+	EditWhitelist(context.Context, string, string, string) error
+	ApplyRoutePreset(context.Context, string, string) error
+	DiagnoseRoute(context.Context, string, string) (app.RouteDiagnosis, error)
+	ConfigBackup(context.Context, string) error
+	ConfigRestore(context.Context, string) error
+	FollowLogs(context.Context, app.LogRequest) <-chan app.LogEvent
+	EditConfig(context.Context, string) error
+}
 
 type page int
 
@@ -23,7 +52,8 @@ const (
 )
 
 type Model struct {
-	client *mihomo.Client
+	client Capabilities
+	ctx    context.Context
 	page   page
 	width  int
 	height int
@@ -36,7 +66,7 @@ type Model struct {
 
 	input      textinput.Model
 	inputTitle string
-	inputDo    func(string) (string, error)
+	inputDo    func(string) tea.Cmd
 
 	result            string
 	err               error
@@ -44,22 +74,29 @@ type Model struct {
 	returnPage        page
 	progressDone      int
 	progressTotal     int
-	liveResults       []mihomo.NodeDelay
+	liveResults       []app.NodeDelay
 	switchNodeDelay   map[string]int
 	switchTestDone    int
 	switchTestTotal   int
-	switchTestStop    chan struct{}
+	switchTestCancel  context.CancelFunc
 	currentNodeName   string
+	currentGroupID    string
 	currentGroupName  string
-	groups            []mihomo.ProxyGroup
+	groups            []app.Group
 	whitelistItems    []string
 	selectedWhitelist string
 	logLines          []string
 	logRawLines       []string
 	logFilter         string
 	logRegex          *regexp.Regexp
-	logFollowStop     chan struct{}
+	logFollowCancel   context.CancelFunc
 	logScrollOffset   int
+	modeStatus        app.RoutingModeStatus
+	modeSelected      domain.RoutingMode
+	modeClose         bool
+	modeResult        string
+	modeErr           error
+	modeCancel        context.CancelFunc
 }
 
 type actionDoneMsg struct {
@@ -67,36 +104,206 @@ type actionDoneMsg struct {
 	err    error
 }
 
+type modeStatusMsg struct {
+	status app.RoutingModeStatus
+	err    error
+	set    bool
+}
+
+type groupsLoadedMsg struct {
+	groups []app.Group
+	err    error
+}
+
+type groupLoadedMsg struct {
+	group app.Group
+	err   error
+}
+
+type whitelistLoadedMsg struct {
+	items  []string
+	result string
+	err    error
+}
+
+type routeDiagnosisMsg struct {
+	value app.RouteDiagnosis
+	err   error
+}
+
+type subscriptionLoadedMsg struct {
+	value app.Subscription
+	err   error
+}
+
+type coreStatusMsg struct {
+	value app.CoreStatus
+	err   error
+}
+
+type nodeSelectedMsg struct {
+	node string
+	err  error
+}
+
+type nodeTestStartedMsg struct{ ch <-chan app.NodeTestEvent }
+
+type logStreamStartedMsg struct{ ch <-chan app.LogEvent }
+
 type nodeTestMsg struct {
-	ch    <-chan mihomo.NodeTestEvent
-	event mihomo.NodeTestEvent
+	ch    <-chan app.NodeTestEvent
+	event app.NodeTestEvent
 	ok    bool
 }
 
 type switchNodeTestMsg struct {
-	ch    <-chan mihomo.NodeTestEvent
-	event mihomo.NodeTestEvent
+	ch    <-chan app.NodeTestEvent
+	event app.NodeTestEvent
 	ok    bool
 }
 
 type logEventMsg struct {
-	ch    <-chan mihomo.LogEvent
-	event mihomo.LogEvent
+	ch    <-chan app.LogEvent
+	event app.LogEvent
 	ok    bool
 }
 
-func New(client *mihomo.Client) Model {
+func New(client Capabilities) Model {
+	return NewWithContext(context.Background(), client)
+}
+
+func NewWithContext(ctx context.Context, client Capabilities) Model {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	ti := textinput.New()
 	ti.Prompt = "> "
 	ti.CharLimit = 200
 	ti.Width = 70
-	return Model{client: client, page: mainMenu, returnPage: actionMenu, input: ti, mainItems: []string{"服务管理", "节点管理", "订阅管理", "白名单管理", "路由诊断", "配置管理", "退出"}}
+	return Model{client: client, ctx: ctx, page: mainMenu, returnPage: actionMenu, input: ti, mainItems: []string{"运行模式", "服务管理", "节点管理", "订阅管理", "白名单管理", "路由诊断", "配置管理", "退出"}}
 }
 
 func (m Model) Init() tea.Cmd { return nil }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case modeStatusMsg:
+		m.busy = false
+		m.modeCancel = nil
+		m.modeErr = msg.err
+		if msg.err == nil || msg.status.ConfigMode != "" {
+			m.modeStatus = msg.status
+			if msg.status.ConfigMode != "" {
+				m.modeSelected = msg.status.ConfigMode
+			}
+		}
+		if msg.set {
+			if msg.err == nil {
+				if msg.status.NextStart {
+					m.modeResult = "配置已保存，将在下次启动 mihomo 时生效"
+				} else {
+					m.modeResult = "运行模式已切换"
+				}
+			} else {
+				m.modeResult = modeErrorMessage(msg.err)
+			}
+		}
+		return m, nil
+	case groupsLoadedMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.result, m.err, m.returnPage, m.page = "读取代理组失败", msg.err, mainMenu, resultView
+			return m, nil
+		}
+		if len(msg.groups) == 0 {
+			m.result, m.err, m.returnPage, m.page = "没有可管理的代理组", nil, mainMenu, resultView
+			return m, nil
+		}
+		m.groups = msg.groups
+		m.actionCtx = "group_list"
+		m.actionItems = formatGroupItems(msg.groups)
+		m.actionIndex = 0
+		m.page = actionMenu
+		return m, nil
+	case groupLoadedMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.result, m.err, m.returnPage, m.page = "读取代理组节点失败", msg.err, actionMenu, resultView
+			return m, nil
+		}
+		return m.enterLoadedGroup(msg.group)
+	case whitelistLoadedMsg:
+		m.busy = false
+		if msg.err != nil {
+			result := "读取白名单失败"
+			returnPage := mainMenu
+			if msg.result != "" {
+				result = msg.result + "失败"
+				returnPage = actionMenu
+			}
+			m.result, m.err, m.returnPage, m.page = result, msg.err, returnPage, resultView
+			return m, nil
+		}
+		m.whitelistItems = sortUniqueDomains(msg.items)
+		m.actionCtx = "whitelist_list"
+		m.actionItems = m.whitelistActionItems()
+		m.actionIndex = 0
+		if msg.result != "" {
+			m.result, m.err, m.returnPage, m.page = msg.result, nil, actionMenu, resultView
+		} else {
+			m.page = actionMenu
+		}
+		return m, nil
+	case routeDiagnosisMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.result, m.err, m.returnPage, m.page = "诊断失败", msg.err, mainMenu, resultView
+			return m, nil
+		}
+		m.result = formatRouteDiagnosis(msg.value)
+		m.err = nil
+		m.returnPage = mainMenu
+		m.page = resultView
+		return m, nil
+	case subscriptionLoadedMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.result, m.err, m.returnPage, m.page = "读取订阅失败", msg.err, actionMenu, resultView
+			return m, nil
+		}
+		m.result = "当前 URL: " + redactURL(msg.value.URL)
+		m.err = nil
+		m.returnPage = actionMenu
+		m.page = resultView
+		return m, nil
+	case coreStatusMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.result, m.err = "读取服务状态失败", msg.err
+		} else {
+			m.result = fmt.Sprintf("服务状态: %s\n档案: %s\nPID: %d", coreStateLabel(msg.value.State), msg.value.ProfileID, msg.value.PID)
+			m.err = nil
+		}
+		m.returnPage = actionMenu
+		m.page = resultView
+		return m, nil
+	case nodeSelectedMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.result, m.err, m.returnPage, m.page = "节点切换失败", msg.err, actionMenu, resultView
+			return m, nil
+		}
+		m.currentNodeName = msg.node
+		m.switchNodeDelay = map[string]int{}
+		m.switchTestDone = 0
+		m.switchTestTotal = 0
+		ctx, cancel := context.WithCancel(m.ctx)
+		m.switchTestCancel = cancel
+		return m, startNodeTestCmd(ctx, m.client, m.currentGroupID)
+	case nodeTestStartedMsg:
+		return m, waitSwitchNodeTestMsg(msg.ch)
+	case logStreamStartedMsg:
+		return m, waitLogEventMsg(msg.ch)
 	case actionDoneMsg:
 		m.busy = false
 		m.result = msg.result
@@ -134,7 +341,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			sortNodeDelays(m.liveResults)
 			b := strings.Builder{}
 			for i := 0; i < min(10, len(m.liveResults)); i++ {
-				b.WriteString(fmt.Sprintf("%d. %s - %dms\n", i+1, m.liveResults[i].Name, m.liveResults[i].Delay))
+				b.WriteString(fmt.Sprintf("%d. %s - %dms\n", i+1, m.liveResults[i].NodeID, m.liveResults[i].Delay.Milliseconds()))
 			}
 			m.result = b.String()
 			m.returnPage = actionMenu
@@ -153,7 +360,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.switchNodeDelay == nil {
 				m.switchNodeDelay = map[string]int{}
 			}
-			m.switchNodeDelay[msg.event.Result.Name] = msg.event.Result.Delay
+			m.switchNodeDelay[msg.event.Result.NodeID.String()] = int(msg.event.Result.Delay.Milliseconds())
 		}
 		m.switchTestDone = msg.event.Done
 		m.switchTestTotal = msg.event.Total
@@ -175,7 +382,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.page = resultView
 			return m, nil
 		}
-		m.appendLogLine(msg.event.Line)
+		if msg.event.Line != nil {
+			m.appendLogLine(msg.event.Line.Message)
+		}
 		return m, waitLogEventMsg(msg.ch)
 	case tea.KeyMsg:
 		s := msg.String()
@@ -183,6 +392,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		if m.busy {
+			if s == "esc" && m.actionCtx == "mode" {
+				if m.modeCancel != nil {
+					m.modeCancel()
+					m.modeCancel = nil
+				}
+				m.busy = false
+				m.actionCtx = ""
+				m.page = mainMenu
+				m.modeErr = nil
+				m.modeResult = ""
+			}
 			return m, nil
 		}
 		switch s {
@@ -191,10 +411,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 		case "esc":
+			if m.page == actionMenu && m.actionCtx == "mode" {
+				if m.modeCancel != nil {
+					m.modeCancel()
+					m.modeCancel = nil
+				}
+				m.actionCtx = ""
+				m.actionItems = nil
+				m.actionIndex = 0
+				m.page = mainMenu
+				m.modeResult = ""
+				m.modeErr = nil
+				return m, nil
+			}
 			if m.actionCtx == "log_live" {
-				if m.logFollowStop != nil {
-					close(m.logFollowStop)
-					m.logFollowStop = nil
+				if m.logFollowCancel != nil {
+					m.logFollowCancel()
+					m.logFollowCancel = nil
 				}
 				m.actionCtx = ""
 				m.actionItems = menuActions("服务管理")
@@ -202,9 +435,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.page == actionMenu && (m.actionCtx == "switch_nodes" || m.actionCtx == "group_nodes") {
-				if m.switchTestStop != nil {
-					close(m.switchTestStop)
-					m.switchTestStop = nil
+				if m.switchTestCancel != nil {
+					m.switchTestCancel()
+					m.switchTestCancel = nil
 				}
 				if m.actionCtx == "group_nodes" {
 					m.actionCtx = "group_list"
@@ -319,44 +552,25 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if choice == "退出" {
 			return m, tea.Quit
 		}
-		if choice == "节点管理" {
-			groups, err := m.client.ListSelectableGroups()
-			if err != nil {
-				m.result = "读取代理组失败"
-				m.err = err
-				m.returnPage = mainMenu
-				m.page = resultView
-				return m, nil
-			}
-			if len(groups) == 0 {
-				m.result = "没有可管理的代理组"
-				m.err = nil
-				m.returnPage = mainMenu
-				m.page = resultView
-				return m, nil
-			}
-			m.groups = groups
-			m.actionCtx = "group_list"
-			m.actionItems = formatGroupItems(groups)
+		if choice == "运行模式" {
+			m.actionCtx = "mode"
+			m.actionItems = modeActionItems()
 			m.actionIndex = 0
+			m.modeResult = ""
+			m.modeErr = nil
 			m.page = actionMenu
-			return m, nil
+			m.busy = true
+			ctx, cancel := context.WithCancel(m.ctx)
+			m.modeCancel = cancel
+			return m, loadModeStatusCmd(ctx, m.client)
+		}
+		if choice == "节点管理" {
+			m.busy = true
+			return m, loadGroupsCmd(m.ctx, m.client)
 		}
 		if choice == "白名单管理" {
-			items, err := m.client.ListWhitelist()
-			if err != nil {
-				m.result = "读取白名单失败"
-				m.err = err
-				m.returnPage = mainMenu
-				m.page = resultView
-				return m, nil
-			}
-			m.whitelistItems = sortUniqueDomains(items)
-			m.actionCtx = "whitelist_list"
-			m.actionItems = m.whitelistActionItems()
-			m.actionIndex = 0
-			m.page = actionMenu
-			return m, nil
+			m.busy = true
+			return m, loadWhitelistCmd(m.ctx, m.client, "")
 		}
 		if choice == "路由诊断" {
 			m.inputTitle = "输入 URL 或域名"
@@ -375,22 +589,15 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	s := msg.String()
+	if m.actionCtx == "mode" {
+		return m.updateMode(msg)
+	}
 	switch s {
 	case "a":
 		if m.actionCtx == "whitelist_list" {
 			m.inputTitle = "新增白名单域名"
-			m.inputDo = func(v string) (string, error) {
-				if err := m.client.AddWhitelist(v); err != nil {
-					return "新增失败", err
-				}
-				items, err := m.client.ListWhitelist()
-				if err == nil {
-					m.whitelistItems = sortUniqueDomains(items)
-					m.actionItems = m.whitelistActionItems()
-				}
-				m.actionCtx = "whitelist_list"
-				m.actionIndex = m.findWhitelistIndex(normalizeDomainText(v))
-				return "已新增", nil
+			m.inputDo = func(v string) tea.Cmd {
+				return mutateWhitelistCmd(m.ctx, m.client, "add", "", v)
 			}
 			m.input.SetValue("")
 			m.input.Focus()
@@ -417,9 +624,9 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		act := m.actionItems[m.actionIndex]
 		if m.actionCtx == "switch_nodes" {
 			if act == "返回" {
-				if m.switchTestStop != nil {
-					close(m.switchTestStop)
-					m.switchTestStop = nil
+				if m.switchTestCancel != nil {
+					m.switchTestCancel()
+					m.switchTestCancel = nil
 				}
 				m.actionCtx = ""
 				m.actionItems = menuActions("节点管理")
@@ -429,9 +636,9 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.switchTestTotal = 0
 				return m, nil
 			}
-			if m.switchTestStop != nil {
-				close(m.switchTestStop)
-				m.switchTestStop = nil
+			if m.switchTestCancel != nil {
+				m.switchTestCancel()
+				m.switchTestCancel = nil
 			}
 			m.actionCtx = ""
 			m.actionItems = menuActions("节点管理")
@@ -454,14 +661,21 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.page = mainMenu
 				return m, nil
 			}
-			groupName := parseGroupName(act)
-			return m.enterGroupNodes(groupName)
+			groupID := parseGroupName(act)
+			for _, group := range m.groups {
+				if group.Name == groupID {
+					groupID = group.ID.String()
+					break
+				}
+			}
+			m.busy = true
+			return m, loadGroupCmd(m.ctx, m.client, groupID)
 		}
 		if m.actionCtx == "group_nodes" {
 			if act == "返回" {
-				if m.switchTestStop != nil {
-					close(m.switchTestStop)
-					m.switchTestStop = nil
+				if m.switchTestCancel != nil {
+					m.switchTestCancel()
+					m.switchTestCancel = nil
 				}
 				m.actionCtx = "group_list"
 				m.actionItems = formatGroupItems(m.groups)
@@ -471,24 +685,12 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.switchTestTotal = 0
 				return m, nil
 			}
-			if m.switchTestStop != nil {
-				close(m.switchTestStop)
-				m.switchTestStop = nil
+			if m.switchTestCancel != nil {
+				m.switchTestCancel()
+				m.switchTestCancel = nil
 			}
-			if err := m.client.SwitchNodeInGroup(m.currentGroupName, act); err != nil {
-				m.result = "节点切换失败"
-				m.err = err
-				m.returnPage = actionMenu
-				m.page = resultView
-				return m, nil
-			}
-			m.currentNodeName = act
-			m.switchNodeDelay = map[string]int{}
-			m.switchTestDone = 0
-			m.switchTestTotal = 0
-			m.switchTestStop = make(chan struct{})
-			stream := m.client.TestGroupNodesStreamWithStop(m.currentGroupName, 5, 120, m.switchTestStop)
-			return m, waitSwitchNodeTestMsg(stream)
+			m.busy = true
+			return m, selectNodeCmd(m.ctx, m.client, m.currentGroupID, act)
 		}
 		if m.actionCtx == "whitelist_list" {
 			if act == "返回" {
@@ -512,44 +714,13 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.actionIndex = m.findWhitelistIndex(m.selectedWhitelist)
 				return m, nil
 			case "删除":
-				if err := m.client.RemoveWhitelist(m.selectedWhitelist); err != nil {
-					m.result = "删除失败"
-					m.err = err
-				} else {
-					m.result = "已删除"
-					m.err = nil
-				}
-				items, _ := m.client.ListWhitelist()
-				m.whitelistItems = sortUniqueDomains(items)
-				m.actionCtx = "whitelist_list"
-				m.actionItems = m.whitelistActionItems()
-				m.actionIndex = 0
-				m.returnPage = actionMenu
-				m.page = resultView
-				return m, nil
+				m.busy = true
+				return m, mutateWhitelistCmd(m.ctx, m.client, "remove", m.selectedWhitelist, "")
 			case "修改":
 				old := m.selectedWhitelist
 				m.inputTitle = "修改白名单域名"
-				m.inputDo = func(v string) (string, error) {
-					newDomain := normalizeDomainText(v)
-					if newDomain == "" {
-						return "修改失败", fmt.Errorf("域名不能为空")
-					}
-					if err := m.client.RemoveWhitelist(old); err != nil {
-						return "修改失败", err
-					}
-					if err := m.client.AddWhitelist(newDomain); err != nil {
-						return "修改失败", err
-					}
-					items, err := m.client.ListWhitelist()
-					if err == nil {
-						m.whitelistItems = sortUniqueDomains(items)
-						m.actionItems = m.whitelistActionItems()
-					}
-					m.selectedWhitelist = newDomain
-					m.actionCtx = "whitelist_list"
-					m.actionIndex = m.findWhitelistIndex(newDomain)
-					return "已修改", nil
+				m.inputDo = func(v string) tea.Cmd {
+					return mutateWhitelistCmd(m.ctx, m.client, "edit", old, v)
 				}
 				m.input.SetValue(old)
 				m.input.Focus()
@@ -612,129 +783,100 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.page = resultView
 			return m, nil
 		}
-		res, err := m.client.DiagnoseRoute(val)
-		if err != nil {
-			m.result = "诊断失败"
-			m.err = err
-			m.returnPage = mainMenu
-			m.page = resultView
-			return m, nil
-		}
-		out := strings.Builder{}
-		out.WriteString(fmt.Sprintf("输入: %s\n", res.Input))
-		out.WriteString(fmt.Sprintf("Host: %s\n", res.Host))
-		if res.MatchedRule != "" {
-			out.WriteString(fmt.Sprintf("命中规则: %s\n", res.MatchedRule))
-		}
-		if res.Target != "" {
-			out.WriteString(fmt.Sprintf("目标组: %s\n", res.Target))
-		}
-		if res.CurrentNode != "" {
-			out.WriteString(fmt.Sprintf("当前节点: %s\n", res.CurrentNode))
-		}
-		if res.Confidence != "" {
-			out.WriteString(fmt.Sprintf("置信度: %s\n", res.Confidence))
-		}
-		if strings.TrimSpace(res.Note) != "" {
-			out.WriteString(fmt.Sprintf("备注: %s\n", strings.TrimSpace(res.Note)))
-		}
-		m.result = out.String()
-		m.err = nil
-		m.returnPage = mainMenu
-		m.page = resultView
-		return m, nil
+		m.busy = true
+		return m, diagnoseRouteCmd(m.ctx, m.client, val)
 	}
 	if msg.String() == "enter" && m.inputDo != nil {
-		res, err := m.inputDo(m.input.Value())
-		m.result = res
-		m.err = err
-		m.returnPage = actionMenu
-		m.page = resultView
+		run := m.inputDo
+		value := m.input.Value()
+		m.inputDo = nil
 		m.input.SetValue("")
 		m.input.Blur()
+		m.busy = true
+		return m, run(value)
 	}
 	return m, cmd
 }
 
 func (m Model) executeAction(cat, act string) (tea.Model, tea.Cmd) {
-	setResult := func(s string, err error) (tea.Model, tea.Cmd) {
-		m.result = s
-		m.err = err
-		m.returnPage = actionMenu
-		m.page = resultView
-		return m, nil
-	}
-
 	switch cat {
 	case "服务管理":
 		switch act {
 		case "状态":
-			return setResult("服务状态: "+m.client.ServiceStatus(), nil)
+			m.busy = true
+			return m, coreStatusCmd(m.ctx, m.client)
 		case "启动":
-			return setResult("已启动", m.client.Start())
+			m.busy = true
+			return m, actionCmd("已启动", func() error { return m.client.CoreAction(m.ctx, "", "start") })
 		case "停止":
-			return setResult("已停止", m.client.Stop())
+			m.busy = true
+			return m, actionCmd("已停止", func() error { return m.client.CoreAction(m.ctx, "", "stop") })
 		case "重启":
-			return setResult("已重启", m.client.Restart())
+			m.busy = true
+			return m, actionCmd("已重启", func() error { return m.client.CoreAction(m.ctx, "", "restart") })
 		case "热重载":
-			return setResult("已热重载", m.client.Reload())
+			m.busy = true
+			return m, actionCmd("已热重载", func() error { return m.client.CoreAction(m.ctx, "", "reload") })
 		case "配置测试":
-			return setResult("配置测试通过", m.client.TestConfig())
+			m.busy = true
+			return m, actionCmd("配置测试通过", func() error { return m.client.ValidateConfig(m.ctx, "") })
 		case "查看实时日志":
 			m.logLines = nil
 			m.logRawLines = nil
 			m.logFilter = ""
 			m.logRegex = nil
 			m.logScrollOffset = 0
-			if m.logFollowStop != nil {
-				close(m.logFollowStop)
+			if m.logFollowCancel != nil {
+				m.logFollowCancel()
 			}
-			m.logFollowStop = make(chan struct{})
+			ctx, cancel := context.WithCancel(m.ctx)
+			m.logFollowCancel = cancel
 			m.actionCtx = "log_live"
 			m.page = actionMenu
-			stream := m.client.TailLogsStreamWithStop(50, m.logFollowStop)
-			return m, waitLogEventMsg(stream)
+			return m, startLogFollowCmd(ctx, m.client)
 		}
 	case "节点管理":
 		return m, nil
-	case "节点切换选择":
-		return setResult("节点已切换: "+act, m.client.SwitchNode(act))
 	case "订阅管理":
 		switch act {
 		case "保存订阅URL":
 			m.inputTitle = "输入订阅 URL"
-			m.inputDo = func(v string) (string, error) { return "订阅 URL 已保存", m.client.SaveSubscriptionURL(v) }
+			m.inputDo = func(v string) tea.Cmd {
+				return actionCmd("订阅 URL 已保存", func() error { return m.client.SetSubscription(m.ctx, "", strings.TrimSpace(v)) })
+			}
 			m.input.SetValue("")
 			m.input.Focus()
 			m.page = inputView
 			return m, textinput.Blink
 		case "查看订阅URL":
-			v, err := m.client.ReadSubscriptionURL()
-			return setResult("当前 URL: "+v, err)
+			m.busy = true
+			return m, loadSubscriptionCmd(m.ctx, m.client)
 		case "更新订阅":
-			if err := m.client.UpdateSubscription(); err != nil {
-				return setResult("订阅更新失败", err)
-			}
-			if err := m.client.Reload(); err != nil {
-				return setResult("订阅更新成功，但热重载失败", err)
-			}
-			return setResult("订阅更新并热重载完成", nil)
+			m.busy = true
+			return m, actionCmd("订阅更新完成", func() error { return m.client.UpdateSubscription(m.ctx, "") })
 		}
 	case "白名单管理":
 		return m, nil
 	case "配置管理":
 		switch act {
 		case "备份配置":
-			return setResult("配置已备份", m.client.BackupConfig())
+			m.busy = true
+			return m, actionCmd("配置已备份", func() error { return m.client.ConfigBackup(m.ctx, "") })
 		case "恢复配置":
-			return setResult("配置已恢复", m.client.RestoreConfig())
+			m.busy = true
+			return m, actionCmd("配置已恢复", func() error { return m.client.ConfigRestore(m.ctx, "") })
 		case "编辑配置":
-			return setResult("编辑结束", m.client.OpenConfigEditor())
+			m.busy = true
+			return m, actionCmd("编辑结束", func() error { return m.client.EditConfig(m.ctx, "") })
 		case "应用分流规则（大陆直连/其他走GLOBAL）":
-			return setResult("分流规则已应用", m.client.ApplyRouteCN())
+			m.busy = true
+			return m, actionCmd("分流规则已应用", func() error { return m.client.ApplyRoutePreset(m.ctx, "", "cn") })
 		}
 	}
-	return setResult("未实现操作", nil)
+	m.result = "未实现操作"
+	m.returnPage = actionMenu
+	m.page = resultView
+	return m, nil
 }
 
 func menuActions(main string) []string {
@@ -754,6 +896,238 @@ func menuActions(main string) []string {
 	}
 }
 
+func modeActionItems() []string {
+	return []string{"全局代理", "规则分流", "全局直连", "关闭现有连接", "应用切换", "返回"}
+}
+
+func (m Model) updateMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up":
+		if m.actionIndex > 0 {
+			m.actionIndex--
+		}
+	case "down":
+		if m.actionIndex < len(m.actionItems)-1 {
+			m.actionIndex++
+		}
+	case " ":
+		if m.actionIndex == 3 {
+			m.modeClose = !m.modeClose
+		}
+	case "enter":
+		switch m.actionIndex {
+		case 0:
+			m.modeSelected = domain.RoutingModeGlobal
+		case 1:
+			m.modeSelected = domain.RoutingModeRule
+		case 2:
+			m.modeSelected = domain.RoutingModeDirect
+		case 3:
+			m.modeClose = !m.modeClose
+		case 4:
+			if m.modeSelected == "" {
+				m.modeSelected = m.modeStatus.ConfigMode
+			}
+			if err := m.modeSelected.Validate(); err != nil {
+				m.modeErr = err
+				m.modeResult = "请选择运行模式"
+				return m, nil
+			}
+			m.busy = true
+			m.modeResult = ""
+			m.modeErr = nil
+			ctx, cancel := context.WithCancel(m.ctx)
+			m.modeCancel = cancel
+			return m, setModeCmd(ctx, m.client, m.modeStatus.ProfileID, m.modeSelected, m.modeClose)
+		case 5:
+			m.actionCtx = ""
+			m.page = mainMenu
+			m.modeResult = ""
+			m.modeErr = nil
+		}
+	}
+	return m, nil
+}
+
+func loadModeStatusCmd(ctx context.Context, service Capabilities) tea.Cmd {
+	return func() tea.Msg {
+		status, err := service.ModeStatus(ctx, "")
+		return modeStatusMsg{status: status, err: err}
+	}
+}
+
+func setModeCmd(ctx context.Context, service Capabilities, profileID domain.ProfileID, mode domain.RoutingMode, closeConnections bool) tea.Cmd {
+	return func() tea.Msg {
+		status, err := service.SetMode(ctx, app.SetRoutingModeRequest{ProfileID: profileID, Mode: mode, CloseConnections: closeConnections})
+		return modeStatusMsg{status: status, err: err, set: true}
+	}
+}
+
+func loadGroupsCmd(ctx context.Context, service Capabilities) tea.Cmd {
+	return func() tea.Msg {
+		groups, err := service.Groups(ctx, "")
+		return groupsLoadedMsg{groups: groups, err: err}
+	}
+}
+
+func loadGroupCmd(ctx context.Context, service Capabilities, groupID string) tea.Cmd {
+	return func() tea.Msg {
+		group, err := service.Group(ctx, "", groupID)
+		return groupLoadedMsg{group: group, err: err}
+	}
+}
+
+func loadWhitelistCmd(ctx context.Context, service Capabilities, result string) tea.Cmd {
+	return func() tea.Msg {
+		items, err := service.Whitelist(ctx, "")
+		return whitelistLoadedMsg{items: items, result: result, err: err}
+	}
+}
+
+func mutateWhitelistCmd(ctx context.Context, service Capabilities, action, oldValue, value string) tea.Cmd {
+	return func() tea.Msg {
+		value = normalizeDomainText(value)
+		var err error
+		var result string
+		switch action {
+		case "add":
+			if value == "" {
+				err = fmt.Errorf("域名不能为空")
+			} else {
+				err = service.AddWhitelist(ctx, "", value)
+			}
+			result = "已新增"
+		case "remove":
+			err = service.RemoveWhitelist(ctx, "", oldValue)
+			result = "已删除"
+		case "edit":
+			if value == "" {
+				err = fmt.Errorf("域名不能为空")
+			} else {
+				err = service.EditWhitelist(ctx, "", oldValue, value)
+			}
+			result = "已修改"
+		default:
+			err = fmt.Errorf("未知白名单操作")
+		}
+		if err != nil {
+			return whitelistLoadedMsg{result: result, err: err}
+		}
+		items, err := service.Whitelist(ctx, "")
+		return whitelistLoadedMsg{items: items, result: result, err: err}
+	}
+}
+
+func selectNodeCmd(ctx context.Context, service Capabilities, groupID, nodeID string) tea.Cmd {
+	return func() tea.Msg {
+		err := service.SelectGroupNode(ctx, "", groupID, nodeID)
+		return nodeSelectedMsg{node: nodeID, err: err}
+	}
+}
+
+func startNodeTestCmd(ctx context.Context, service Capabilities, groupID string) tea.Cmd {
+	return func() tea.Msg {
+		return nodeTestStartedMsg{ch: service.TestNodes(ctx, app.NodeTestRequest{GroupID: domain.GroupID(groupID), Concurrency: 5, Limit: 120})}
+	}
+}
+
+func startLogFollowCmd(ctx context.Context, service Capabilities) tea.Cmd {
+	return func() tea.Msg {
+		return logStreamStartedMsg{ch: service.FollowLogs(ctx, app.LogRequest{Lines: 50})}
+	}
+}
+
+func diagnoseRouteCmd(ctx context.Context, service Capabilities, input string) tea.Cmd {
+	return func() tea.Msg {
+		value, err := service.DiagnoseRoute(ctx, "", input)
+		return routeDiagnosisMsg{value: value, err: err}
+	}
+}
+
+func loadSubscriptionCmd(ctx context.Context, service Capabilities) tea.Cmd {
+	return func() tea.Msg {
+		value, err := service.Subscription(ctx, "")
+		return subscriptionLoadedMsg{value: value, err: err}
+	}
+}
+
+func coreStatusCmd(ctx context.Context, service Capabilities) tea.Cmd {
+	return func() tea.Msg {
+		value, err := service.CoreStatus(ctx, "")
+		return coreStatusMsg{value: value, err: err}
+	}
+}
+
+func actionCmd(result string, run func() error) tea.Cmd {
+	return func() tea.Msg { return actionDoneMsg{result: result, err: run()} }
+}
+
+func formatRouteDiagnosis(value app.RouteDiagnosis) string {
+	var out strings.Builder
+	out.WriteString(fmt.Sprintf("输入: %s\n", value.Input))
+	out.WriteString(fmt.Sprintf("Host: %s\n", value.Host))
+	if value.MatchedRule != "" {
+		out.WriteString(fmt.Sprintf("命中规则: %s\n", value.MatchedRule))
+	}
+	if value.Target != "" {
+		out.WriteString(fmt.Sprintf("目标组: %s\n", value.Target))
+	}
+	if value.CurrentNode != "" {
+		out.WriteString(fmt.Sprintf("当前节点: %s\n", value.CurrentNode))
+	}
+	if value.Confidence != "" {
+		out.WriteString(fmt.Sprintf("置信度: %s\n", value.Confidence))
+	}
+	if strings.TrimSpace(value.Note) != "" {
+		out.WriteString(fmt.Sprintf("备注: %s\n", strings.TrimSpace(value.Note)))
+	}
+	return out.String()
+}
+
+func redactURL(value string) string {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "[已隐藏]"
+	}
+	return parsed.Scheme + "://" + parsed.Host + "/redacted"
+}
+
+func coreStateLabel(state domain.CoreState) string {
+	switch state {
+	case domain.CoreStateRunning:
+		return "运行中"
+	case domain.CoreStateStopped:
+		return "已停止"
+	case domain.CoreStateFailed:
+		return "失败"
+	default:
+		return state.String()
+	}
+}
+
+func modeErrorMessage(err error) string {
+	var appErr *app.Error
+	if !errors.As(err, &appErr) {
+		return "操作失败，请查看 daemon 状态"
+	}
+	switch appErr.Code {
+	case app.ErrorCodeDaemonUnavailable:
+		return "daemon 不可用，请执行 mm daemon status；必要时执行 mm daemon start"
+	case app.ErrorCodeNotFound:
+		return "尚未迁移 legacy 配置，请执行 mm migrate plan，然后执行 mm migrate apply"
+	case app.ErrorCode("PROFILE_MODE_UNSUPPORTED"):
+		return "当前档案不支持模式切换"
+	case app.ErrorCode("MODE_RUNTIME_MISMATCH"):
+		return "配置模式与运行模式不一致，请检查 mm core status"
+	case app.ErrorCode("RESTORE_FAILED"):
+		return "恢复失败，状态可能不确定，请检查 mm daemon status 和 mm core status"
+	case app.ErrorCode("CONNECTION_CLOSE_FAILED"):
+		return "模式已生效，但关闭现有连接失败"
+	default:
+		return appErr.Message
+	}
+}
+
 func (m Model) View() string {
 	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39")).Render("Mihomo Manager (Interactive)")
 	if m.page == inputView {
@@ -768,7 +1142,7 @@ func (m Model) View() string {
 			sortNodeDelays(m.liveResults)
 			b := strings.Builder{}
 			for i := 0; i < min(10, len(m.liveResults)); i++ {
-				b.WriteString(fmt.Sprintf("%d. %s - %dms\n", i+1, m.liveResults[i].Name, m.liveResults[i].Delay))
+				b.WriteString(fmt.Sprintf("%d. %s - %dms\n", i+1, m.liveResults[i].NodeID, m.liveResults[i].Delay.Milliseconds()))
 			}
 			progress := fmt.Sprintf("进度: %d/%d", m.progressDone, m.progressTotal)
 			if m.progressTotal == 0 {
@@ -808,6 +1182,9 @@ func (m Model) View() string {
 	}
 	if m.page == actionMenu && m.actionCtx == "log_live" {
 		return m.renderLogView(title)
+	}
+	if m.page == actionMenu && m.actionCtx == "mode" {
+		return m.renderModeView(title)
 	}
 	var b strings.Builder
 	for i := start; i < end; i++ {
@@ -905,28 +1282,28 @@ func (m Model) pageMove(dir int) int {
 	return target
 }
 
-func waitNodeTestMsg(ch <-chan mihomo.NodeTestEvent) tea.Cmd {
+func waitNodeTestMsg(ch <-chan app.NodeTestEvent) tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-ch
 		return nodeTestMsg{ch: ch, event: ev, ok: ok}
 	}
 }
 
-func waitSwitchNodeTestMsg(ch <-chan mihomo.NodeTestEvent) tea.Cmd {
+func waitSwitchNodeTestMsg(ch <-chan app.NodeTestEvent) tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-ch
 		return switchNodeTestMsg{ch: ch, event: ev, ok: ok}
 	}
 }
 
-func waitLogEventMsg(ch <-chan mihomo.LogEvent) tea.Cmd {
+func waitLogEventMsg(ch <-chan app.LogEvent) tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-ch
 		return logEventMsg{ch: ch, event: ev, ok: ok}
 	}
 }
 
-func sortNodeDelays(in []mihomo.NodeDelay) {
+func sortNodeDelays(in []app.NodeDelay) {
 	for i := 0; i < len(in); i++ {
 		for j := i + 1; j < len(in); j++ {
 			if in[j].Delay < in[i].Delay {
@@ -978,10 +1355,10 @@ func fitFooter(s string, width int) string {
 	return string(r[:maxw-3]) + "..."
 }
 
-func formatGroupItems(groups []mihomo.ProxyGroup) []string {
+func formatGroupItems(groups []app.Group) []string {
 	out := make([]string, 0, len(groups)+1)
 	for _, g := range groups {
-		now := strings.TrimSpace(g.Now)
+		now := strings.TrimSpace(g.SelectedNodeID.String())
 		if now == "" {
 			now = "-"
 		}
@@ -999,33 +1376,30 @@ func parseGroupName(item string) string {
 	return strings.TrimSpace(item[:i])
 }
 
-func (m Model) enterGroupNodes(groupName string) (tea.Model, tea.Cmd) {
-	nodes, now, err := m.client.GroupNodes(groupName)
-	if err != nil {
-		m.result = "读取代理组节点失败"
-		m.err = err
-		m.returnPage = actionMenu
-		m.page = resultView
-		return m, nil
-	}
-	if len(nodes) == 0 {
+func (m Model) enterLoadedGroup(group app.Group) (tea.Model, tea.Cmd) {
+	if len(group.NodeIDs) == 0 {
 		m.result = "该代理组没有可选节点"
 		m.err = nil
 		m.returnPage = actionMenu
 		m.page = resultView
 		return m, nil
 	}
-	m.currentGroupName = groupName
-	m.currentNodeName = strings.TrimSpace(now)
+	nodes := make([]string, 0, len(group.NodeIDs))
+	for _, node := range group.NodeIDs {
+		nodes = append(nodes, node.String())
+	}
+	m.currentGroupID = group.ID.String()
+	m.currentGroupName = group.Name
+	m.currentNodeName = strings.TrimSpace(group.SelectedNodeID.String())
 	m.actionCtx = "group_nodes"
 	m.actionItems = append(nodes, "返回")
 	m.actionIndex = 0
 	m.switchNodeDelay = map[string]int{}
 	m.switchTestDone = 0
 	m.switchTestTotal = 0
-	m.switchTestStop = make(chan struct{})
-	stream := m.client.TestGroupNodesStreamWithStop(groupName, 5, 120, m.switchTestStop)
-	return m, waitSwitchNodeTestMsg(stream)
+	ctx, cancel := context.WithCancel(m.ctx)
+	m.switchTestCancel = cancel
+	return m, startNodeTestCmd(ctx, m.client, group.ID.String())
 }
 
 func (m Model) whitelistActionItems() []string {
@@ -1136,4 +1510,124 @@ func (m Model) renderLogView(title string) string {
 	footer := fmt.Sprintf("↑/↓ 滚动  / 设置正则  c 清除过滤  Esc 返回  Ctrl+C 退出 | lines %d | filter %s", total, filter)
 	footer = fitFooter(footer, m.width)
 	return fmt.Sprintf("%s\n\n服务管理 / 实时日志\n%s\n\n%s", title, view, footer)
+}
+
+func (m Model) renderModeView(title string) string {
+	var body strings.Builder
+	body.WriteString("运行模式\n")
+	if m.modeStatus.ConfigMode == "" {
+		if m.busy {
+			body.WriteString("正在读取 daemon 状态...\n")
+		} else if m.modeErr != nil {
+			body.WriteString(modeErrorMessage(m.modeErr) + "\n")
+		}
+	} else {
+		body.WriteString(fmt.Sprintf("配置模式：%s\n", routingModeLabel(m.modeStatus.ConfigMode)))
+		if m.modeStatus.RuntimeAvailable && m.modeStatus.RuntimeMode != nil {
+			body.WriteString(fmt.Sprintf("运行模式：%s\n", routingModeLabel(*m.modeStatus.RuntimeMode)))
+		} else {
+			body.WriteString(fmt.Sprintf("运行模式：不可用 / Core %s\n", coreStateLabel(m.modeStatus.CoreState)))
+		}
+		body.WriteString("实际路径：" + effectivePath(m.modeStatus) + "\n")
+		if m.modeStatus.ConnectionsAvailable {
+			body.WriteString(fmt.Sprintf("活动连接：%d\n", m.modeStatus.ActiveConnections))
+		} else {
+			body.WriteString("活动连接：不可用\n")
+		}
+		if m.modeStatus.ConnectionsClosed {
+			body.WriteString("连接处理：已关闭现有连接\n")
+		}
+		body.WriteString("规则集：" + ruleSetSummary(m.modeStatus) + "\n")
+		if m.modeStatus.NextStart {
+			body.WriteString("生效状态：配置已保存，下次启动生效\n")
+		}
+	}
+	body.WriteString("\n")
+	modes := []domain.RoutingMode{domain.RoutingModeGlobal, domain.RoutingModeRule, domain.RoutingModeDirect}
+	labels := []string{"全局代理", "规则分流", "全局直连"}
+	for i, mode := range modes {
+		cursor := "  "
+		if m.actionIndex == i {
+			cursor = "> "
+		}
+		radio := "○"
+		if m.modeSelected == mode {
+			radio = "●"
+		}
+		body.WriteString(fmt.Sprintf("%s%s %s\n", cursor, radio, labels[i]))
+	}
+	check := "[ ]"
+	if m.modeClose {
+		check = "[x]"
+	}
+	for index, label := range []string{check + " 关闭现有连接", "应用切换", "返回"} {
+		cursor := "  "
+		if m.actionIndex == index+3 {
+			cursor = "> "
+		}
+		body.WriteString(cursor + label + "\n")
+	}
+	if m.busy {
+		body.WriteString("\n正在处理，可按 Esc 取消\n")
+	}
+	if m.modeResult != "" {
+		body.WriteString("\n" + m.modeResult + "\n")
+	}
+	if m.modeErr != nil && m.modeResult == "" && m.modeStatus.ConfigMode != "" {
+		body.WriteString("\n" + modeErrorMessage(m.modeErr) + "\n")
+	}
+	for _, warning := range m.modeStatus.Warnings {
+		body.WriteString("警告：" + warning + "\n")
+	}
+	footer := fitFooter("↑/↓ 选择  Enter 确认  Space 勾选  Esc 返回  q 退出", m.width)
+	return fmt.Sprintf("%s\n\n%s\n%s", title, body.String(), footer)
+}
+
+func routingModeLabel(mode domain.RoutingMode) string {
+	switch mode {
+	case domain.RoutingModeGlobal:
+		return "全局代理"
+	case domain.RoutingModeRule:
+		return "规则分流"
+	case domain.RoutingModeDirect:
+		return "全局直连"
+	default:
+		return mode.String()
+	}
+}
+
+func effectivePath(status app.RoutingModeStatus) string {
+	node := strings.TrimSpace(status.EffectiveNode)
+	if node == "" {
+		node = "当前节点待 Core 启动后确认"
+	}
+	switch status.ConfigMode {
+	case domain.RoutingModeGlobal:
+		return "全部流量 -> GLOBAL -> " + node
+	case domain.RoutingModeDirect:
+		return "全部流量 -> DIRECT"
+	default:
+		return "非大陆流量 -> 🌐 代理 -> " + node
+	}
+}
+
+func ruleSetSummary(status app.RoutingModeStatus) string {
+	if status.ConfigMode != domain.RoutingModeRule {
+		return "当前模式无需核验"
+	}
+	if !status.RuntimeAvailable {
+		return "待 Core 启动后核验"
+	}
+	parts := make([]string, 0, len(status.RuleSets))
+	for _, item := range status.RuleSets {
+		state := "异常"
+		if item.Available && item.Loaded {
+			state = "正常"
+		}
+		parts = append(parts, item.Name+" "+state)
+	}
+	if len(parts) == 0 {
+		return "未报告"
+	}
+	return strings.Join(parts, "，")
 }

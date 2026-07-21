@@ -6,7 +6,7 @@
 
 以下变化必须遵守本规范：新增 Cobra 命令、修改应用服务接口、增加 table/json 输出、增加机器错误码或输出可能含秘密的字段。
 
-目标是让 `cmd/mm` 只负责进程装配，让 CLI/TUI 最终复用 `internal/app` 用例，并保证脚本可依赖 JSON 和退出码。A1 发布 `mm` 与 `mm tui`，A3 增加 daemon 命令，A5 增加 migrate 命令，A6 增加 core/config/group/node 和 legacy subscription/route/log 命令。
+目标是让 `cmd/mm` 只负责进程装配，让 CLI/TUI 复用 `internal/app` 用例，并保证脚本可依赖 JSON 和退出码。A1 发布 `mm` 与 `mm tui`，A3 增加 daemon 命令，A5 增加 migrate 命令，A6 增加 core/config/group/node 和 legacy subscription/route/log 命令，M4 增加 mode CLI/TUI。
 
 daemon `run` 只向 stderr 写诊断并保持前台运行；其他 daemon 命令通过 `internal/app.DaemonService` 访问 IPC/systemd，不直接读写 SQLite、socket 或 unit 文件。daemon 不可用/协议不兼容映射退出码 5，锁冲突映射 4，路径安全/权限拒绝映射 7。
 
@@ -30,6 +30,8 @@ func Execute(
 领域 ID 和枚举放在 `internal/domain`：`ProfileID`、`SubscriptionID`、`NodeID`、`GroupID`、`CoreType`、`CoreState`。
 
 模式能力通过 `internal/app.ModeService` / `CapabilityAPI.ModeStatus|SetMode` 暴露；请求使用 `SetRoutingModeRequest{ProfileID, Mode, CloseConnections, RequestID}`，返回 `RoutingModeStatus`，CLI/TUI 不直接解析 daemon map 或调用 mihomo `/configs`。
+
+模式 CLI 固定为 `mm mode status [--profile ID] [--output table|json]` 与 `mm mode set <global|rule|direct> [--profile ID] [--close-connections] [--output table|json]`；成功 kind 分别为 `RoutingModeStatus`、`RoutingModeChange`。daemon 不可用和未迁移错误必须分别给出 `mm daemon status/start`、`mm migrate plan/apply` 的可执行提示。
 
 ### 3. Contracts
 
@@ -126,3 +128,76 @@ result := cli.Result{
 ```
 
 命令只做输入和展示适配；业务调用通过 `internal/app` port 完成，不能直接访问 `internal/mihomo`、配置文件或未来 SQLite。
+
+## Scenario：模式 CLI 与 TUI daemon 表层
+
+### 1. Scope / Trigger
+
+新增或修改 `mm mode`、TUI 运行模式页面、TUI capability 注入或客户端本地编辑器时适用。目标是让 CLI/TUI 共用 daemon 单写者，且 Bubble Tea 状态机不执行网络、文件或进程副作用。
+
+### 2. Signatures
+
+```text
+mm mode status [--profile ID] [--output table|json]
+mm mode set <global|rule|direct> [--profile ID] [--close-connections] [--output table|json]
+```
+
+```go
+func app.RunInteractiveContext(context.Context, io.Reader, io.Writer, tea.Model) error
+func app.NewInteractiveCapabilities(app.CapabilityAPI, string) *app.InteractiveCapabilities
+func tui.NewWithContext(context.Context, tui.Capabilities) tui.Model
+```
+
+`tui.Capabilities` 只组合页面实际使用的 mode/core/group/node/subscription/route/config/log 方法和客户端本地 `EditConfig`，不接受 `*mihomo.Client`。
+
+### 3. Contracts
+
+- status/set 成功 kind 固定为 `RoutingModeStatus` / `RoutingModeChange`；JSON 使用 `mm/v1` envelope，warnings 始终为数组。
+- 模式命令没有秘密字段，不注册 `--show-secrets`；table 在状态字段之后输出 `警告:` 行。
+- `cmd/mm` 只构造一个 `DaemonCapabilities`，CLI 直接使用，TUI 通过 `InteractiveCapabilities` 复用同一实例。
+- TUI capability 调用必须封装为 `tea.Cmd`；`Update` 只转换消息状态，`View` 只渲染。测速和日志 follow 使用派生 context，离开页面时 cancel。
+- TUI 配置编辑通过 daemon 读取 content/SHA，在客户端 `0700` 临时目录内创建 `0600` 文件，运行 `EDITOR` 后携带 expected SHA 回传；内容未改变不提交。
+- mode partial failure 保留成功后的 typed status：CLI 放在 error `details.status`，TUI 更新已生效模式并单独显示关闭连接失败。
+
+### 4. Validation & Error Matrix
+
+| 条件 | 表层行为 |
+|---|---|
+| mode 非 `global|rule|direct` | `INVALID_ROUTING_MODE`，退出码 2，不调用 daemon |
+| daemon unavailable | 退出码 5；提示 `mm daemon status` / `mm daemon start`，不 fallback |
+| 无活动 legacy migration | `NOT_FOUND`，退出码 3；提示 `mm migrate plan` / `mm migrate apply` |
+| unsupported profile | `PROFILE_MODE_UNSUPPORTED`，退出码 4；TUI 保留原选择 |
+| runtime mismatch | `MODE_RUNTIME_MISMATCH`，退出码 8；不得显示切换成功 |
+| restore failed | `RESTORE_FAILED`，退出码 1；提示状态可能不确定及 daemon/core status |
+| connection close failed | `CONNECTION_CLOSE_FAILED`，退出码 8；保留已成功模式状态 |
+
+### 5. Good / Base / Bad Cases
+
+- Good：running core 切换后 CLI/TUI 同时显示 config/runtime mode、有效组/节点、连接数、规则集和 warnings。
+- Base：stopped core 只显示配置已保存、下次启动生效，规则集标记为待启动后核验。
+- Bad：daemon 不可用时 TUI 构造 `mihomo.Client`、读取 HOME 或直接调用 controller；任何一种都属于双写回退，禁止发布。
+
+### 6. Tests Required
+
+- CLI：help 不出现 `--show-secrets`；三枚举、非法输入、table/json kind、warnings、退出码和 partial `details.status`。
+- TUI：mode load/set 在执行返回的 `tea.Cmd` 前不得调用 fake；覆盖 stopped、三项选择、close checkbox、partial/restore/daemon/migration 提示、Esc cancel 和窄终端控制行。
+- 迁移回归：core/group/node/subscription/whitelist/route/config/log 使用 fake capability；配置编辑断言 `0600` 和 expected SHA；日志/测速离页触发 context cancel。
+- 静态检查：`internal/tui` 不得导入 `internal/mihomo`，不得出现 `os.WriteFile`、`exec.Command` 或原始 HTTP。
+
+### 7. Wrong vs Correct
+
+错误：在 `Update` 中直接调用业务客户端，daemon 失败后回退到 legacy client。
+
+```go
+err := m.client.Start()
+legacy := mihomo.New(config.Load())
+```
+
+正确：`Update` 返回命令，命令只调用注入的 daemon capability，结果再通过消息回到状态机。
+
+```go
+return m, func() tea.Msg {
+    err := capabilities.CoreAction(ctx, "", "start")
+    return actionDoneMsg{err: err}
+}
+```

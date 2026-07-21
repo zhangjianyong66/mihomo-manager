@@ -9,6 +9,7 @@ import (
 	"github.com/zhangjianyong66/mihomo-manager/internal/app"
 	"github.com/zhangjianyong66/mihomo-manager/internal/cli"
 	"github.com/zhangjianyong66/mihomo-manager/internal/config"
+	"github.com/zhangjianyong66/mihomo-manager/internal/tui"
 )
 
 func main() {
@@ -23,6 +24,7 @@ func main() {
 		migrationService = app.NewMigrationService(paths)
 		capabilityService = app.NewCapabilityService(paths)
 	}
+	interactiveCapabilities := app.NewInteractiveCapabilities(capabilityService, os.Getenv("EDITOR"))
 	code := cli.Execute(
 		ctx,
 		cli.Dependencies{
@@ -30,7 +32,11 @@ func main() {
 			Migrations:   migrationService,
 			Capabilities: capabilityService,
 			TUI: cli.TUIRunnerFunc(func(ctx context.Context, streams cli.IOStreams) error {
-				return app.RunInteractiveContext(ctx, streams.In, streams.Out)
+				if capabilityService == nil {
+					return &app.Error{Code: app.ErrorCodeInternal, Message: "无法解析 daemon 运行路径"}
+				}
+				model := tui.NewWithContext(ctx, interactiveCapabilities)
+				return app.RunInteractiveContext(ctx, streams.In, streams.Out, model)
 			}),
 		},
 		os.Args[1:],

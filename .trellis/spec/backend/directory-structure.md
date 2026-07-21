@@ -30,7 +30,7 @@
 
 - `cmd/mm/main.go`：注入真实 TUI runner 和进程 IO，调用 `cli.Execute()` 并执行唯一的 `os.Exit`。不要在这里定义 Cobra 树、输出或业务逻辑。
 - `internal/cli`：定义 Cobra 根命令、已实现子命令、table/json presenter、退出码和显式秘密值。不得直接读配置或调用 mihomo。
-- `internal/app`：定义按能力拆分的应用 ports、应用 DTO/错误，并装配现有 Bubble Tea TUI。新业务边界先在这里表达。
+- `internal/app`：定义按能力拆分的应用 ports、应用 DTO/错误，并提供 Bubble Tea runner 与客户端本地配置编辑桥接。新业务边界先在这里表达。
 - `internal/domain`：定义不依赖框架、SQLite 或 mihomo DTO 的稳定标识符、core、档案、订阅、节点、操作和设置类型。
 - `internal/store`：接收显式数据库路径，负责 SQLite 打开参数、权限、迁移/恢复点和领域仓储；不读取 HOME/XDG，不由 CLI/TUI 直接调用。
 - `internal/core`：定义不依赖 mihomo DTO 的 adapter/process/runtime 契约，并负责 managed generation 和 external 只读引用；不得导入 SQLite、CLI、TUI 或 `internal/mihomo`。
@@ -38,8 +38,8 @@
 - `internal/ipc`：只负责 `/v1/` HTTP/JSON over Unix socket、版本范围协商、请求取消、结构化错误和 NDJSON stream；不导入 store/mihomo/CLI。
 - `internal/platform`：隔离 Linux `SO_PEERCRED`、`O_NOFOLLOW` 文件锁、Unix listener、socket activation 和 systemd user unit 控制；协议层不得依赖 Linux syscall。
 - `internal/config/config.go`：统一生成 `config.Paths`。新增运行路径或环境变量时，应在这里提供默认值并由调用方注入，避免在业务包重复拼接 `$HOME` 路径。
-- `internal/mihomo/adapter.go`、`render.go`、`process.go`、`runtime.go`：2.x adapter 的渲染/验证、精确进程句柄和类型化 runtime API；`client.go` 暂时保留 1.x TUI 兼容业务。
-- `internal/tui/model.go`：Bubble Tea `Model`、消息类型、按键处理和视图渲染。它调用 `mihomo.Client`，不直接解析订阅或改写 YAML。
+- `internal/mihomo/adapter.go`、`render.go`、`process.go`、`runtime.go`：2.x adapter 的渲染/验证、精确进程句柄和类型化 runtime API；`client.go` 只保留未接入产品入口的 1.x 兼容业务。
+- `internal/tui/model.go`：Bubble Tea `Model`、消息类型、按键处理和视图渲染。它只调用注入的 app/daemon capability，不导入 `internal/mihomo`、不解析订阅或改写 YAML。
 
 ## 文件归属规则
 
@@ -48,7 +48,7 @@
 - 新增 SQLite 表只能追加 `internal/store/migrations/NNNN_name.sql`，已提交迁移不得改写；SQL/nullable/time 映射留在 `internal/store`。
 - 新增环境变量、默认路径或配置文件位置：放在 `internal/config` 的 `Paths`/`Load`。
 - 新增 mihomo API、配置变换、订阅解析或系统进程操作：放在 `internal/mihomo`。
-- 新增页面状态、按键、异步消息或渲染：放在 `internal/tui`，通过 `mihomo.Client` 暴露的类型和方法取数。
+- 新增页面状态、按键、异步消息或渲染：放在 `internal/tui`，通过窄接口注入 `internal/app` capability；所有业务调用封装为 `tea.Cmd`，不得放进 `View`。
 - 新增 Go 测试：与被测代码同包放置为 `*_test.go`。现有示例是 `internal/mihomo/client_route_test.go` 和 `client_start_test.go`。
 - 远程引导、安装和卸载分别维护 `scripts/bootstrap.sh`、`scripts/install.sh`、`scripts/uninstall.sh`；`launchd/` 仅保留旧 macOS 兼容资产。
 
@@ -61,4 +61,4 @@
 
 ## 遗留代码边界
 
-`bin/mihomo-manager`、`scripts/lib/*.sh` 和 `scripts/lib/proxy.py` 是旧的非交互式实现。当前 Go 产品已建立新 CLI 契约，但业务子命令尚未迁移；新功能默认实现于 Go 包，只有维护旧脚本兼容性或安装流程时才修改这些文件。
+`bin/mihomo-manager`、`scripts/lib/*.sh`、`scripts/lib/proxy.py` 和未接入入口的 `internal/mihomo/client.go` 是旧兼容实现。当前 Go CLI/TUI 业务入口均经 daemon capability；新功能默认实现于 Go 包和 daemon 边界，只有维护旧兼容或安装流程时才修改这些资产。

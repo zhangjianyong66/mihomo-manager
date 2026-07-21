@@ -20,13 +20,13 @@
 
 ## Acceptance Criteria
 
-- [ ] M4-AC1：CLI 三模式参数、help、table/json、非法输入、warnings 和退出码契约测试通过。
-- [ ] M4-AC2：core running/stopped 的 status 文案准确；set 成功、部分成功和恢复失败输出不混淆。
-- [ ] M4-AC3：TUI 能查看和切换三模式，选中状态、有效组/节点及“下次启动生效”展示正确。
-- [ ] M4-AC4：`mm` 与 `mm tui` 使用同一注入的 daemon capability，fake 测试不读取真实 HOME/socket/core。
-- [ ] M4-AC5：TUI 的 core/group/node/subscription/route/config/log 写路径均不再依赖 `mihomo.Client` 或 legacy pgrep/pkill。
-- [ ] M4-AC6：daemon 不可用或未迁移时提供 `mm daemon start`、`mm migrate plan/apply` 的可执行提示。
-- [ ] M4-AC7：现有 TUI 测速/日志取消、白名单编辑和配置编辑回归测试通过。
+- [x] M4-AC1：CLI 三模式参数、help、table/json、非法输入、warnings 和退出码契约测试通过。
+- [x] M4-AC2：core running/stopped 的 status 文案准确；set 成功、部分成功和恢复失败输出不混淆。
+- [x] M4-AC3：TUI 能查看和切换三模式，选中状态、有效组/节点及“下次启动生效”展示正确。
+- [x] M4-AC4：`mm` 与 `mm tui` 使用同一注入的 daemon capability，fake 测试不读取真实 HOME/socket/core。
+- [x] M4-AC5：TUI 的 core/group/node/subscription/route/config/log 写路径均不再依赖 `mihomo.Client` 或 legacy pgrep/pkill。
+- [x] M4-AC6：daemon 不可用或未迁移时提供 `mm daemon start`、`mm migrate plan/apply` 的可执行提示。
+- [x] M4-AC7：现有 TUI 测速/日志取消、白名单编辑和配置编辑回归测试通过。
 
 ## Out of Scope
 
