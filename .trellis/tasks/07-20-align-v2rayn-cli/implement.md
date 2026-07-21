@@ -33,7 +33,7 @@ align-v2rayn-cli（当前规划父任务）
 └── 3.0：Xray、sing-box 多内核
 ```
 
-规划审阅通过后按依赖创建并启动 A1、A2、A3、A4 独立子任务；A1/A2/A3 已归档，A4 已完成 adapter/generation/core 生命周期质量门，后续 legacy 迁移和业务能力仍不得提前声称完成。
+规划审阅通过后按依赖创建独立子任务。A1-A6 已完成并归档，形成可基本使用的 legacy 单档案 Alpha CLI；A7、A8 及 Beta 至 3.0 路线保留为后续独立任务，不纳入本规划父任务的归档完成度，也不得因父任务归档而声称已经实现。
 
 ## 3. 2.0.0-alpha.1
 
@@ -120,14 +120,14 @@ align-v2rayn-cli（当前规划父任务）
 
 按纵向能力逐项迁移，每项单独提交、单独测试：
 
-- [ ] `core status|start|stop|restart|reload|logs` 与 `config validate`。
-- [ ] `group list|show|select` 和 `node list|test|select`。
-- [ ] legacy `subscription show|set|update`，并在命令帮助中标明单来源兼容语义。
-- [ ] legacy `route whitelist list|add|edit|remove` 和 CN 路由预设/诊断。
-- [ ] legacy 配置 backup/restore/edit。
-- [ ] 日志跟随和测速 NDJSON 事件、取消和超时。
-- [ ] 为每个查询增加 table/json，为每个修改定义结构化结果和退出码。
-- [ ] 对 secret、URI、URL、日志和错误执行统一脱敏测试。
+- [x] `core status|start|stop|restart|reload|logs` 与 `config validate`。
+- [x] `group list|show|select` 和 `node list|test|select`。
+- [x] legacy `subscription show|set|update`，并在命令帮助中标明单来源兼容语义。
+- [x] legacy `route whitelist list|add|edit|remove` 和 CN 路由预设/诊断。
+- [x] legacy 配置 backup/restore/edit。
+- [x] 日志跟随和测速 NDJSON 事件、取消和超时。
+- [x] 为每个查询增加 table/json，为每个修改定义结构化结果和退出码。
+- [x] 对 secret、URI、URL、日志和错误执行统一脱敏测试。
 
 验收：`research/capability-matrix.md` 中标记为当前已有/部分的现有能力，在 CLI 上有等价结果；原回归测试迁移后仍保留失败恢复断言。
 
