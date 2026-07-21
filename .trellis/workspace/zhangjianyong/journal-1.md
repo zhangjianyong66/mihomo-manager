@@ -270,3 +270,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 9: 完成 A6 现有能力 CLI 等价迁移
+
+**Date**: 2026-07-21
+**Task**: 完成 A6 现有能力 CLI 等价迁移
+**Branch**: `master`
+
+### Summary
+
+完成 legacy core/config/node/group/subscription/route/log CLI、daemon IPC、NDJSON 流式协议、敏感信息脱敏与安全配置编辑；通过全量测试、race、vet、双架构构建并归档 A6 任务。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9c470e1` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
