@@ -5,6 +5,26 @@ import (
 	"testing"
 )
 
+func TestLoad_RulesetPathsFollowConfigDir(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "mihomo")
+	t.Setenv("CONFIG_DIR", configDir)
+	t.Setenv("MIHOMO_API_PORT", "invalid")
+
+	paths := Load()
+	if paths.ConfigDir != configDir || paths.RulesetDir != filepath.Join(configDir, "rulesets") {
+		t.Fatalf("unexpected config paths: %+v", paths)
+	}
+	if paths.CNDomainRuleset != filepath.Join(configDir, "rulesets", "cn-domain.mrs") {
+		t.Fatalf("unexpected domain ruleset path: %s", paths.CNDomainRuleset)
+	}
+	if paths.CNIPRuleset != filepath.Join(configDir, "rulesets", "cn-ip.mrs") {
+		t.Fatalf("unexpected IP ruleset path: %s", paths.CNIPRuleset)
+	}
+	if paths.APIAddr != "http://127.0.0.1:9090" {
+		t.Fatalf("invalid API port should use fallback: %s", paths.APIAddr)
+	}
+}
+
 func TestResolveManagerPaths_XDGAndFallback(t *testing.T) {
 	home := t.TempDir()
 	tests := []struct {

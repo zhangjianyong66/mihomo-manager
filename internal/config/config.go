@@ -12,6 +12,9 @@ type Paths struct {
 	ConfigDir       string
 	ConfigFile      string
 	BackupFile      string
+	RulesetDir      string
+	CNDomainRuleset string
+	CNIPRuleset     string
 	SubscriptionURL string
 	WhitelistFile   string
 	LogFile         string
@@ -106,6 +109,7 @@ func absoluteOrDefault(value, fallback string) string {
 func Load() Paths {
 	home, _ := os.UserHomeDir()
 	configDir := envOrDefault("CONFIG_DIR", filepath.Join(home, ".config", "mihomo"))
+	rulesetDir := filepath.Join(configDir, "rulesets")
 	apiPort := envOrDefault("MIHOMO_API_PORT", "9090")
 	if _, err := strconv.Atoi(apiPort); err != nil {
 		apiPort = "9090"
@@ -115,6 +119,9 @@ func Load() Paths {
 		ConfigDir:       configDir,
 		ConfigFile:      filepath.Join(configDir, "config.yaml"),
 		BackupFile:      filepath.Join(configDir, "config.yaml.bak"),
+		RulesetDir:      rulesetDir,
+		CNDomainRuleset: filepath.Join(rulesetDir, "cn-domain.mrs"),
+		CNIPRuleset:     filepath.Join(rulesetDir, "cn-ip.mrs"),
 		SubscriptionURL: filepath.Join(configDir, "subscription.url"),
 		WhitelistFile:   filepath.Join(configDir, "whitelist.yaml"),
 		LogFile:         filepath.Join(configDir, "mihomo.log"),

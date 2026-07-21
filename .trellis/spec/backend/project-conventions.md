@@ -16,12 +16,17 @@
 | 配置目录 | `~/.config/mihomo` | `CONFIG_DIR` |
 | 主配置 | `<CONFIG_DIR>/config.yaml` | 随配置目录变化 |
 | 备份 | `<CONFIG_DIR>/config.yaml.bak` | 随配置目录变化 |
+| CN 规则集目录 | `<CONFIG_DIR>/rulesets` | 随配置目录变化 |
+| CN domain 规则集 | `<CONFIG_DIR>/rulesets/cn-domain.mrs` | 随配置目录变化 |
+| CN IP 规则集 | `<CONFIG_DIR>/rulesets/cn-ip.mrs` | 随配置目录变化 |
 | 订阅地址 | `<CONFIG_DIR>/subscription.url` | 随配置目录变化 |
 | 白名单 | `<CONFIG_DIR>/whitelist.yaml` | 随配置目录变化 |
 | mihomo 日志 | `<CONFIG_DIR>/mihomo.log` | 随配置目录变化 |
 | external-controller | `http://127.0.0.1:9090` | `MIHOMO_API_PORT` 仅覆盖端口 |
 
 配置和订阅文件可能包含节点地址、密码或订阅凭据，不得写入测试夹具之外的仓库文件、日志或文档示例。
+
+安装器固定 `MetaCubeX/meta-rules-dat` commit `32ae0e8658ca541374b721efcee84955e8a59755`，两份 `.mrs` 经 SHA-256 和 mihomo 原生 provider 配置校验后以 `0700/0600` 权限发布。覆盖 `MM_RULESET_BASE_URL` 或 `MM_RULESET_REF` 时必须同时提供 `MM_RULESET_DOMAIN_SHA256` 与 `MM_RULESET_IP_SHA256`，不得绕过完整性校验。
 
 ## 路由规则语义
 

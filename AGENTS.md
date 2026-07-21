@@ -7,6 +7,8 @@
 - 安装器需以普通用户运行，只在安装缺失 apt 包时局部使用 sudo；支持 `--yes`/`MM_ASSUME_YES=1` 无交互确认。
 - 安装产物是独立的 `~/.local/bin/mm` 普通文件，不再软链接仓库 `bin/mm`；移动或删除仓库不会影响已安装命令。
 - 安装器会自动安装并校验 mihomo core，默认固定 `v1.19.28`，支持 `MIHOMO_VERSION` 覆盖；默认 core 路径为 `~/.local/bin/mihomo`，可用 `MIHOMO_BIN` 覆盖。
+- 安装器会把固定 commit `32ae0e8658ca541374b721efcee84955e8a59755` 的 CN domain/IP `.mrs` 安装到 `<CONFIG_DIR>/rulesets/{cn-domain,cn-ip}.mrs`，目录/文件权限为 `0700/0600`；支持 `MM_RULESET_BASE_URL`、`MM_RULESET_REF` 覆盖，但必须成对提供 `MM_RULESET_DOMAIN_SHA256`、`MM_RULESET_IP_SHA256`。
+- 规则集首次无有效缓存失败时安装失败；升级失败只复用与 install-state 路径、摘要和 mihomo 格式校验一致的旧缓存，两份资产成对原子发布并在第二份失败时恢复旧版本。
 - 系统 Go 低于 1.22 或缺失时，安装器会把官方 Go 1.26.4 安装到 `~/.local/share/mihomo-manager/toolchains/go1.26.4`，不替换系统 Go。
 - 当前本机已安装 MetaCubeX/mihomo `v1.19.28` Linux amd64 v1 构建到 `~/.local/bin/mihomo`。
 - 运行命令：`mm` 或 `mm tui` 打开相同 TUI；A6 已提供 `core`、`config`、`group`、`node`、legacy `subscription`、`route` 业务命令，可用 `mm --help` 和各二级 `--help` 做非交互冒烟验证。
@@ -22,10 +24,12 @@
 - A6 daemon 路由位于 `/v1/core/*`、`/v1/config/*`、`/v1/groups*`、`/v1/nodes*`、`/v1/subscription`、`/v1/routes/*`、`/v1/logs*`；CLI 不可用 daemon 时不会回退到旧的 `pgrep/pkill`、配置直写或 mihomo API 直连。
 - `mm config edit` 在 CLI 本地以 `0600` 临时文件启动 `EDITOR`，再携带 expected SHA-256 回传 daemon；daemon 核对摘要、原子写入并验证，systemd daemon 不直接占用终端。
 - daemon 前台入口为 `mm daemon run`，状态/控制入口为 `mm daemon status|start|stop|enable|disable`；默认使用 XDG 下的 `~/.local/share/mihomo-manager/state.db`、`~/.local/state/mihomo-manager/run/mm.sock`，有 `XDG_RUNTIME_DIR` 时运行目录改为 `$XDG_RUNTIME_DIR/mihomo-manager`。
+- 一键安装会通过正式 CLI 安装/启用/启动 manager daemon，但保持 core stopped；仅本次新建配置自动 `migrate apply`，已有配置只提示显式迁移。升级只有在 core 明确为 stopped 且 stop 前复核仍为 stopped 时才重启 daemon，其他状态均保持现有进程。
 - daemon 启动会装配 CoreManager，但 core 初始状态始终为 `stopped`，不会自动启动代理；后续显式切换使用 operation 阶段记录，失败时恢复旧 RuntimeSpec，恢复失败进入明确 `failed`。
 - daemon 只监听 Unix socket，不监听 TCP；socket 父目录为 `0700`、socket/锁为 `0600`，Linux 通过 `SO_PEERCRED` 限制为当前 UID，root daemon 被拒绝。IPC 使用 `/v1/`、`MM-Protocol-Min/Max` 和 `MM-Request-ID`，流式扩展采用 NDJSON。
 - A5 legacy 恢复点位于 `${XDG_DATA_HOME:-~/.local/share}/mihomo-manager/backups/<restore-point-id>/files`，目录/快照文件权限为 `0700/0600`；`migrate rollback` 必须显式指定 `--restore-point`，daemon 会核对 expected SHA-256 后才恢复。
 - systemd user unit 模板位于 `internal/platform/systemd/units`；`mm daemon enable` 在无 systemd 用户会话时只安装并报告“已安装未启用”，不会启用 linger、sudo 或启动 mihomo core。
+- systemd user unit 模板版本为 2；安装器把 `CONFIG_DIR`、`MIHOMO_BIN`、`MIHOMO_API_PORT` 作为受校验的 `Environment=` 写入 service，未显式带环境的后续 `mm daemon enable` 会保留已有受管环境块，保证 daemon 重启后继续使用同一 legacy 路径。
 - 测试命令：`go test ./...`；存储/领域变更还需执行 `GOTOOLCHAIN=go1.22.12 go test -race ./...`、`go vet ./...` 和 Linux amd64/arm64 的 `CGO_ENABLED=0` 构建；安装流程测试为 `bash scripts/tests/test_install.sh`；Shell 语法检查为 `bash -n scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh tests/*.sh`。
 - Go 版路径和端口可通过环境变量覆盖：`CONFIG_DIR` 修改配置目录，`MIHOMO_API_PORT` 修改 external-controller 端口，`EDITOR` 修改配置编辑器；`MIHOMO_BIN` 修改 core 路径。
 - `tests/test.sh` 与 `scripts/tests/test_manager.sh` 面向旧非交互式 Shell 实现或依赖本机运行状态，不作为当前 Go TUI 的默认验收命令。
@@ -33,7 +37,8 @@
 - 配置测试命令：`~/.local/bin/mihomo -t -d ~/.config/mihomo -f ~/.config/mihomo/config.yaml`。当前配置已修复 10 组重复 VLESS 节点名并通过校验，文件权限为 `600`；修复前备份为 `~/.config/mihomo/config.yaml.20260714_214929.bak`。
 - Go 版订阅更新逻辑支持完整 YAML 配置，也支持纯文本或 base64 编码的节点 URI 列表；当前覆盖 `vless://`、`vmess://`、`trojan://`、`ss://`。
 - 订阅更新默认保留本地端口配置，并生成不依赖 Geo 数据下载的规则：白名单域名直连，其余走 `🌐 代理`；需要大陆直连时再手动执行“配置管理 -> 应用分流规则（大陆直连/其他走GLOBAL）”。
-- 当前本机 mihomo 未运行；`10808` 当前由 xray 进程监听，`7891` 与 `9090` 未监听。启动 mihomo 前需先处理 `10808` 端口冲突。
+- 当前本机 manager daemon 已由 systemd user socket/service 启用并运行，schema v3，mihomo core 状态为 `stopped`；`~/.config/mihomo/rulesets` 已安装固定版本两份规则集并通过摘要/权限校验。
+- 当前本机 mihomo core 未运行；`10808` 当前由 xray 进程监听，`7891` 与 `9090` 未监听。启动 mihomo 前需先处理 `10808` 端口冲突。
 - 当前 GNOME 系统代理地址已配置为 HTTP/HTTPS/SOCKS 均指向 `127.0.0.1:10808`，且 `org.gnome.system.proxy mode` 为 `manual`。由于当前监听该端口的是 xray，Chrome 等遵循系统代理的应用目前会走 xray；本地忽略地址为 `localhost`、`127.0.0.0/8`、`::1`。
 - `~/.config/mihomo/config.yaml` 已写入 `mode: rule`；当前 mihomo 未运行，因此不存在可查询的 mihomo 运行态。
 - mihomo 的 `global` 模式会绕过 `rules`，因此白名单域名直连规则不会生效；当前采用 `rule` 模式，并在规则末尾保留 `MATCH,GLOBAL`，实现“白名单直连，其余全部走 GLOBAL 分组”。

@@ -21,13 +21,13 @@
 
 ## Acceptance Criteria
 
-- [ ] M1-AC1：本地 `make install` 和远程 bootstrap 均只调用 `scripts/install.sh` 的同一规则集函数。
-- [ ] M1-AC2：固定资产下载、摘要匹配、权限、原子替换和 install-state 字段测试通过。
-- [ ] M1-AC3：无缓存失败为非零退出且不产生伪成功；有缓存失败保留文件内容和摘要。
-- [ ] M1-AC4：systemd 可用时 daemon 已启用/运行且 core 为 stopped；不可用时 unit 保留且输出可执行提示。
-- [ ] M1-AC5：安装器新建配置会注册活动 legacy profile；已有配置内容/摘要不变且只输出迁移提示。
-- [ ] M1-AC6：core running 的升级不会停止 core 或强制重启 daemon。
-- [ ] M1-AC7：安装/卸载测试、Shell 语法检查和 Go 构建通过，真实 HOME/systemd/core 未被测试访问。
+- [x] M1-AC1：本地 `make install` 和远程 bootstrap 均只调用 `scripts/install.sh` 的同一规则集函数。
+- [x] M1-AC2：固定资产下载、摘要匹配、权限、原子替换和 install-state 字段测试通过。
+- [x] M1-AC3：无缓存失败为非零退出且不产生伪成功；有缓存失败保留文件内容和摘要。
+- [x] M1-AC4：systemd 可用时 daemon 已启用/运行且 core 为 stopped；不可用时 unit 保留且输出可执行提示。
+- [x] M1-AC5：安装器新建配置会注册活动 legacy profile；已有配置内容/摘要不变且只输出迁移提示。
+- [x] M1-AC6：core running 的升级不会停止 core 或强制重启 daemon。
+- [x] M1-AC7：安装/卸载测试、Shell 语法检查和 Go 构建通过，真实 HOME/systemd/core 未被测试访问。
 
 ## Out of Scope
 

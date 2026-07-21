@@ -44,6 +44,9 @@ make install
 ## 配置与 PATH
 
 - 默认配置目录为 `~/.config/mihomo`，仍可通过 `CONFIG_DIR` 覆盖。
+- 安装器固定下载 `MetaCubeX/meta-rules-dat` commit `32ae0e8658ca541374b721efcee84955e8a59755` 的 `geo/geosite/cn.mrs` 与 `geo/geoip/cn.mrs`，SHA-256 分别为 `52c146262ef51dc23a84533a0d13f8addd031c61708a863d17cdb75cc3089ee4`、`206ad4cc22005976e8bfb50a869e5483cb81cc174a56c9a79c8a13e3e64e2eea`，安装路径为 `<CONFIG_DIR>/rulesets/cn-domain.mrs` 和 `cn-ip.mrs`。
+- 规则集目录/文件权限为 `0700/0600`；两份文件先全部下载、SHA-256 与 mihomo provider 原生校验，再成对发布。第二份发布失败必须恢复完整旧版本。
+- 首次无有效缓存失败时安装非零退出；升级仅可复用路径、摘要和格式均与 install-state 一致的旧缓存。
 - `config.yaml` 不存在时创建最小 `DIRECT` 配置并执行 mihomo 配置测试；已有配置只验证、不改写。
 - 安装器不启动 core、不修改系统代理。
 - Bash/Zsh 缺少等效 PATH 配置时，安装器使用稳定标记块写入 `~/.bashrc` 或 `~/.zshrc`；重复安装不得重复追加。
@@ -53,8 +56,11 @@ make install
 
 - `mm daemon run` 以普通用户前台运行 manager daemon；只打开 XDG manager database、Unix socket 和单实例锁，不启动 mihomo core。
 - IPC socket 默认位于 `$XDG_RUNTIME_DIR/mihomo-manager/mm.sock`，缺失时回退到 `${XDG_STATE_HOME:-$HOME/.local/state}/mihomo-manager/run/mm.sock`；父目录 `0700`，socket/lock `0600`。
-- systemd unit 模板由 Go 二进制嵌入并写入 `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/mm.socket` 与 `mm.service`。`mm.socket` 使用 `%t`、`Accept=no`、`RemoveOnStop=yes`，service 设置 `NoNewPrivileges=yes`、`UMask=0077`、失败退避，且只启动 `mm daemon run`。
+- systemd unit 模板 v2 由 Go 二进制嵌入并写入 `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/mm.socket` 与 `mm.service`。`mm.socket` 使用 `%t`、`Accept=no`、`RemoveOnStop=yes`，service 设置 `NoNewPrivileges=yes`、`UMask=0077`、失败退避，且只启动 `mm daemon run`。
+- 安装器调用正式 daemon CLI 时显式传入 `CONFIG_DIR`、`MIHOMO_BIN`、`MIHOMO_API_PORT`；controller 将其写入受校验的 service `Environment=` 块，未显式带环境的后续 enable 保留已有块，避免 systemd 重启后回落到默认 legacy 路径。
 - `mm daemon enable` 原子写入并保存未知/本地修改 unit 的备份；daemon-reload 或 enable 失败会恢复原文件。systemd 用户会话不可用时保留已校验 unit，返回“已安装未启用”和 `mm daemon run` 提示，不启用 linger 或 sudo。
+- 一键安装在正式 `mm` 发布后调用 `daemon enable/start/status`。本次新建配置且 daemon 可用时自动执行 `migrate apply`；已有配置只提示 `migrate plan/apply`。
+- 升级前通过旧 `mm daemon status --output json` 探测 core，并在 stop 前再次核对：只有 core stopped 才允许重启 daemon 加载新二进制，running/starting/degraded/未知状态均保持现有进程。
 
 ## 状态与卸载
 
@@ -115,8 +121,12 @@ scripts/uninstall.sh [--purge] [--purge-config] [--yes]
 | `MM_GITHUB_BASE_URL` | 是 | GitHub 源码/资产下载基地址 |
 | `MM_GITHUB_API_BASE_URL` | 是 | GitHub Release API 基地址 |
 | `MM_GO_DOWNLOAD_BASE_URL` | 是 | Go 归档下载基地址 |
+| `MM_RULESET_BASE_URL` | 是 | CN 规则集下载基地址，默认 MetaCubeX raw；覆盖时必须成对提供可信摘要 |
+| `MM_RULESET_REF` | 是 | CN 规则集固定引用；覆盖时必须成对提供可信摘要 |
+| `MM_RULESET_DOMAIN_SHA256` | 条件必填 | 自定义来源的 domain `.mrs` 64 位十六进制 SHA-256 |
+| `MM_RULESET_IP_SHA256` | 条件必填 | 自定义来源的 IP `.mrs` 64 位十六进制 SHA-256 |
 | `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` | 是 | 由 curl/Go 自然继承，不自动改写 |
-| `install-state` | 内部 | 只允许非敏感 `key=value`；记录 mm、Go、PATH、core 归属和配置路径 |
+| `install-state` | 内部 | 只允许非敏感 `key=value`；记录 mm、Go、PATH、core 归属、配置路径，以及两份规则集的来源、引用、路径和摘要 |
 
 状态字段发生增删时，安装写入和卸载读取必须在同一变更中更新，并补回归测试。
 
@@ -131,6 +141,8 @@ scripts/uninstall.sh [--purge] [--purge-config] [--yes]
 | core 资产缺少 SHA-256 | 不下载或替换 core |
 | core 校验/版本冒烟失败 | 保留已有 core，不生成备份替换 |
 | mm 构建或 `--help` 失败 | 保留已有 mm |
+| 任一规则集下载/摘要/格式失败且无有效缓存 | 不发布任一新规则集，安装失败 |
+| 第二份规则集发布失败 | 恢复两份旧规则集，不留下混合版本 |
 | 已有 `config.yaml` | 只验证，不改写 |
 | PATH 标记块不完整 | 卸载时保留文件并警告，不允许截断 shell 配置 |
 | `--purge` 无归属或路径非默认 | 保留 core 与状态并警告 |
@@ -143,7 +155,7 @@ scripts/uninstall.sh [--purge] [--purge-config] [--yes]
 
 ### 6. 必需测试与断言点
 
-- `bash scripts/tests/test_install.sh`：断言预检无变更、Go 选择、core 不降级/强制备份、SHA 拒绝、PATH 幂等与异常块保护、卸载归属。
+- `bash scripts/tests/test_install.sh`：断言预检无变更、Go 选择、core 不降级/强制备份、规则集来源/摘要/事务回滚/缓存降级、daemon 分支、fresh migrate、PATH 幂等与卸载归属。
 - 隔离 HOME 端到端：断言 `mm --help`、`mihomo -t` 成功；默认卸载后 mm 消失、core/config 保留、core 归属状态仍在。
 - `bash -n ...`：覆盖所有 Shell 脚本。
 - `go test ./...` 与临时路径 `go build`：保证安装改动不影响 Go 产品。

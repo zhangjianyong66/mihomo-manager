@@ -32,7 +32,8 @@ CLI 签名：`mm daemon run|status|start|stop|enable|disable`；除 `run` 外均
 - NDJSON：`seq` 从 1 单调递增，`kind` 只能是 `event|done|error`，且必须以 `done` 或 `error` 终止；终止后禁止继续写。
 - 安全：Linux listener 在 HTTP 前以 `SO_PEERCRED` 校验 peer UID；root daemon 拒绝启动；daemon 不监听 TCP、不调用 sudo、不启用 linger。启动 daemon 不自动启动 mihomo core，显式 CoreManager 操作才可托管。
 - 幂等：完成且非 5xx/非流式的 JSON 响应按 request ID 缓存 5 分钟、最多 1024 条；同 ID 不同 method/path/body 返回 `REQUEST_ID_CONFLICT`。
-- systemd：`mm.socket` 使用 `%t/mihomo-manager/mm.sock`、`0600/0700`、`Accept=no`、`RemoveOnStop=yes`；service 只执行 `%h/.local/bin/mm daemon run`，设置 `Restart=on-failure`、退避、`NoNewPrivileges=yes`、`UMask=0077`。unit 带 owner/version/content checksum marker，以临时文件 fsync+rename 安装。
+- systemd：`mm.socket` 使用 `%t/mihomo-manager/mm.sock`、`0600/0700`、`Accept=no`、`RemoveOnStop=yes`；service 只执行 `%h/.local/bin/mm daemon run`，设置 `Restart=on-failure`、退避、`NoNewPrivileges=yes`、`UMask=0077`。unit 模板版本为 2，带 owner/version/content checksum marker，以临时文件 fsync+rename 安装。
+- 显式执行 `CONFIG_DIR=... MIHOMO_BIN=... MIHOMO_API_PORT=... mm daemon enable` 时，controller 将三个白名单变量校验、转义并写入受管 `Environment=` 块；后续未显式传环境的重复 enable 保留该块，确保 systemd 重启后 legacy 迁移与兼容操作仍使用同一路径。环境值不得包含凭据或控制字符，两个路径必须绝对，端口必须为 1-65535。
 
 ## 4. Validation & Error Matrix
 
@@ -60,7 +61,7 @@ CLI 签名：`mm daemon run|status|start|stop|enable|disable`；除 `run` 外均
 - `internal/platform`：目录/lock/socket mode、符号链接、普通文件目标、flock 竞争、同 UID 成功和错误 UID 断连。
 - `internal/ipc`：协议交集/无交集、request ID、超大 body/line、JSON envelope、NDJSON 序号/终止/取消。
 - `internal/daemon`：真实临时 Unix socket、两个 client、schema status、operation conflict、幂等重放/冲突/过期、graceful cleanup；不得启动真实 core。
-- `internal/platform/systemd`：模板结构/checksum、无 systemd 降级、fake systemctl 调用范围、失败恢复和未知 unit 备份。
+- `internal/platform/systemd`：模板结构/checksum、受管环境 round-trip/转义/保留、无 systemd 降级、fake systemctl 调用范围、失败恢复和未知 unit 备份。
 - 完成门：`go test ./...`、`go test -race ./...`、`go vet ./...`、Linux amd64/arm64 `CGO_ENABLED=0` 构建、隔离 XDG 前台 daemon/status/SIGTERM 冒烟。
 
 ## 7. Wrong vs Correct

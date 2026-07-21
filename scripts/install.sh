@@ -14,6 +14,10 @@ GO_VERSION="1.26.4"
 MIN_GO_MAJOR=1
 MIN_GO_MINOR=22
 DEFAULT_MIHOMO_VERSION="v1.19.28"
+DEFAULT_RULESET_BASE_URL="https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat"
+DEFAULT_RULESET_REF="32ae0e8658ca541374b721efcee84955e8a59755"
+DEFAULT_RULESET_DOMAIN_SHA256="52c146262ef51dc23a84533a0d13f8addd031c61708a863d17cdb75cc3089ee4"
+DEFAULT_RULESET_IP_SHA256="206ad4cc22005976e8bfb50a869e5483cb81cc174a56c9a79c8a13e3e64e2eea"
 
 ASSUME_YES=0
 FORCE_CORE=0
@@ -24,6 +28,22 @@ CORE_MANAGED=0
 CORE_VERSION=""
 PATH_RC_MODIFIED=""
 CONFIG_WARNING=0
+CONFIG_CREATED=0
+RULESET_DIR="$CONFIG_DIR/rulesets"
+RULESET_DOMAIN_PATH="$RULESET_DIR/cn-domain.mrs"
+RULESET_IP_PATH="$RULESET_DIR/cn-ip.mrs"
+RULESET_INSTALLED_BASE_URL=""
+RULESET_INSTALLED_REF=""
+RULESET_INSTALLED_DOMAIN_SHA256=""
+RULESET_INSTALLED_IP_SHA256=""
+RULESET_REQUESTED_BASE_URL=""
+RULESET_REQUESTED_REF=""
+RULESET_REQUESTED_DOMAIN_SHA256=""
+RULESET_REQUESTED_IP_SHA256=""
+DAEMON_CORE_RUNNING=0
+DAEMON_AVAILABLE=0
+DAEMON_PREEXISTING=0
+DAEMON_PREVIOUS_CORE_STATE=""
 
 TEMP_PATHS=()
 
@@ -86,6 +106,10 @@ Mihomo Manager 安装器
   MM_GITHUB_BASE_URL=...      覆盖 GitHub 下载基地址
   MM_GITHUB_API_BASE_URL=...  覆盖 GitHub API 基地址
   MM_GO_DOWNLOAD_BASE_URL=... 覆盖 Go 下载基地址
+  MM_RULESET_BASE_URL=...       覆盖 CN 规则集下载基地址
+  MM_RULESET_REF=...            覆盖 CN 规则集仓库引用
+  MM_RULESET_DOMAIN_SHA256=...  自定义来源的 domain 规则集摘要
+  MM_RULESET_IP_SHA256=...      自定义来源的 IP 规则集摘要
 EOF
 }
 
@@ -216,7 +240,7 @@ install_system_dependencies() {
 }
 
 verify_required_commands() {
-    local required=(curl tar gzip jq sha256sum pgrep pkill awk sed grep head mktemp mv cp chmod mkdir dirname basename cat touch)
+    local required=(curl tar gzip jq sha256sum pgrep pkill awk sed grep head mktemp mv cp chmod mkdir dirname basename cat touch rm)
     local command_name missing=()
     for command_name in "${required[@]}"; do
         command -v "$command_name" >/dev/null 2>&1 || missing+=("$command_name")
@@ -231,7 +255,7 @@ download_file() {
     if ! curl --fail --location --silent --show-error \
         --retry 3 --connect-timeout 15 \
         "$url" --output "$output"; then
-        warn "下载失败: $url"
+        warn "下载失败，请检查下载源和网络连接。"
         warn "可设置 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY，或使用显式下载源覆盖变量。"
         return 1
     fi
@@ -241,6 +265,262 @@ verify_sha256() {
     local file="$1"
     local expected="$2"
     printf '%s  %s\n' "$expected" "$file" | sha256sum --check --status
+}
+
+single_line_value() {
+    local value="$1"
+    [[ -n "$value" && "$value" != *$'\n'* && "$value" != *$'\r'* ]]
+}
+
+validate_ruleset_settings() {
+    local custom_source=0
+    RULESET_REQUESTED_BASE_URL="${MM_RULESET_BASE_URL:-$DEFAULT_RULESET_BASE_URL}"
+    RULESET_REQUESTED_REF="${MM_RULESET_REF:-$DEFAULT_RULESET_REF}"
+    RULESET_REQUESTED_DOMAIN_SHA256="${MM_RULESET_DOMAIN_SHA256:-$DEFAULT_RULESET_DOMAIN_SHA256}"
+    RULESET_REQUESTED_IP_SHA256="${MM_RULESET_IP_SHA256:-$DEFAULT_RULESET_IP_SHA256}"
+
+    single_line_value "$RULESET_REQUESTED_BASE_URL" || die "MM_RULESET_BASE_URL 不能为空或包含换行。"
+    case "$RULESET_REQUESTED_BASE_URL" in
+        http://*|https://*|file://*) ;;
+        *) die "MM_RULESET_BASE_URL 必须使用 http、https 或 file URL。" ;;
+    esac
+    [[ "$RULESET_REQUESTED_BASE_URL" != *[[:space:]]* ]] || die "MM_RULESET_BASE_URL 不能包含空白字符。"
+    [[ "$RULESET_REQUESTED_BASE_URL" != *"@"* && "$RULESET_REQUESTED_BASE_URL" != *"?"* && "$RULESET_REQUESTED_BASE_URL" != *"#"* ]] \
+        || die "MM_RULESET_BASE_URL 不能包含凭据、查询参数或片段。"
+    RULESET_REQUESTED_BASE_URL="${RULESET_REQUESTED_BASE_URL%/}"
+
+    single_line_value "$RULESET_REQUESTED_REF" || die "MM_RULESET_REF 不能为空或包含换行。"
+    [[ "$RULESET_REQUESTED_REF" =~ ^[A-Za-z0-9._/-]+$ ]] \
+        || die "MM_RULESET_REF 只能包含字母、数字、点、下划线、斜线和连字符。"
+    [[ "$RULESET_REQUESTED_REF" != /* && "/$RULESET_REQUESTED_REF/" != *"/../"* ]] \
+        || die "MM_RULESET_REF 不能是绝对路径或包含 .. 路径段。"
+
+    if [[ "$RULESET_REQUESTED_BASE_URL" != "$DEFAULT_RULESET_BASE_URL" || "$RULESET_REQUESTED_REF" != "$DEFAULT_RULESET_REF" ]]; then
+        custom_source=1
+    fi
+    if ((custom_source == 1)) && [[ -z "${MM_RULESET_DOMAIN_SHA256:-}" || -z "${MM_RULESET_IP_SHA256:-}" ]]; then
+        die "覆盖规则集来源时必须同时设置 MM_RULESET_DOMAIN_SHA256 和 MM_RULESET_IP_SHA256。"
+    fi
+    if [[ -n "${MM_RULESET_DOMAIN_SHA256:-}" || -n "${MM_RULESET_IP_SHA256:-}" ]]; then
+        [[ -n "${MM_RULESET_DOMAIN_SHA256:-}" && -n "${MM_RULESET_IP_SHA256:-}" ]] \
+            || die "规则集摘要必须成对覆盖。"
+    fi
+    RULESET_REQUESTED_DOMAIN_SHA256="${RULESET_REQUESTED_DOMAIN_SHA256,,}"
+    RULESET_REQUESTED_IP_SHA256="${RULESET_REQUESTED_IP_SHA256,,}"
+    [[ "$RULESET_REQUESTED_DOMAIN_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+        || die "MM_RULESET_DOMAIN_SHA256 必须是 64 位十六进制。"
+    [[ "$RULESET_REQUESTED_IP_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+        || die "MM_RULESET_IP_SHA256 必须是 64 位十六进制。"
+}
+
+path_has_symlink_component() {
+    local current="$1"
+    while [[ "$current" != "/" && "$current" != "." ]]; do
+        [[ -L "$current" ]] && return 0
+        current="$(dirname "$current")"
+    done
+    return 1
+}
+
+prepare_install_state_dir() {
+    single_line_value "$STATE_DIR" || die "MM_STATE_DIR 不能为空或包含换行。"
+    [[ "$STATE_DIR" == /* && "$STATE_DIR" != "/" && "$STATE_DIR" != "$HOME" ]] \
+        || die "MM_STATE_DIR 必须是非 HOME 的安全绝对路径。"
+    [[ "$STATE_DIR" != *"//"* ]] || die "MM_STATE_DIR 不能包含重复路径分隔符。"
+    [[ "/${STATE_DIR#/}/" != *"/../"* && "/${STATE_DIR#/}/" != *"/./"* ]] \
+        || die "MM_STATE_DIR 不能包含 . 或 .. 路径段。"
+    case "$STATE_DIR" in
+        /tmp|/var|/usr|/etc|/home|/root) die "拒绝使用危险 MM_STATE_DIR: $STATE_DIR" ;;
+    esac
+    path_has_symlink_component "$STATE_DIR" && die "MM_STATE_DIR 路径不能包含符号链接: $STATE_DIR"
+    [[ ! -e "$STATE_DIR" || -d "$STATE_DIR" ]] || die "MM_STATE_DIR 不是目录: $STATE_DIR"
+    mkdir -p "$STATE_DIR"
+    chmod 0700 "$STATE_DIR"
+}
+
+validate_ruleset_target() {
+    local target="$1"
+    [[ ! -L "$target" ]] || die "规则集目标不能是符号链接: $target"
+    [[ ! -e "$target" || -f "$target" ]] || die "规则集目标不是普通文件: $target"
+}
+
+prepare_ruleset_dir() {
+    single_line_value "$CONFIG_DIR" || die "CONFIG_DIR 不能为空或包含换行。"
+    [[ "$CONFIG_DIR" == /* && "$CONFIG_DIR" != "/" && "$CONFIG_DIR" != "$HOME" ]] \
+        || die "CONFIG_DIR 必须是非 HOME 的安全绝对路径。"
+    [[ "$CONFIG_DIR" != *"//"* ]] || die "CONFIG_DIR 不能包含重复路径分隔符。"
+    [[ "/${CONFIG_DIR#/}/" != *"/../"* && "/${CONFIG_DIR#/}/" != *"/./"* ]] \
+        || die "CONFIG_DIR 不能包含 . 或 .. 路径段。"
+    CONFIG_DIR="${CONFIG_DIR%/}"
+    RULESET_DIR="$CONFIG_DIR/rulesets"
+    RULESET_DOMAIN_PATH="$RULESET_DIR/cn-domain.mrs"
+    RULESET_IP_PATH="$RULESET_DIR/cn-ip.mrs"
+
+    path_has_symlink_component "$CONFIG_DIR" && die "CONFIG_DIR 路径不能包含符号链接: $CONFIG_DIR"
+    [[ ! -e "$CONFIG_DIR" || -d "$CONFIG_DIR" ]] || die "CONFIG_DIR 不是目录: $CONFIG_DIR"
+    [[ ! -L "$RULESET_DIR" ]] || die "规则集目录不能是符号链接: $RULESET_DIR"
+    [[ ! -e "$RULESET_DIR" || -d "$RULESET_DIR" ]] || die "规则集路径不是目录: $RULESET_DIR"
+
+    mkdir -p "$RULESET_DIR"
+    chmod 0700 "$RULESET_DIR"
+    validate_ruleset_target "$RULESET_DOMAIN_PATH"
+    validate_ruleset_target "$RULESET_IP_PATH"
+}
+
+validate_ruleset_pair() {
+    local domain_file="$1"
+    local ip_file="$2"
+    local validation_dir validation_config
+    validation_dir="$(mktemp -d "$RULESET_DIR/.ruleset-validate.XXXXXX")" || return 1
+    validation_config="$validation_dir/config.yaml"
+    TEMP_PATHS+=("$validation_dir")
+
+    cp -- "$domain_file" "$validation_dir/cn-domain.mrs" || return 1
+    cp -- "$ip_file" "$validation_dir/cn-ip.mrs" || return 1
+    chmod 0600 "$validation_dir/cn-domain.mrs" "$validation_dir/cn-ip.mrs" || return 1
+    cat >"$validation_config" <<'EOF' || return 1
+mode: rule
+log-level: silent
+rule-providers:
+  mm-cn-domain:
+    type: file
+    behavior: domain
+    format: mrs
+    path: ./cn-domain.mrs
+  mm-cn-ip:
+    type: file
+    behavior: ipcidr
+    format: mrs
+    path: ./cn-ip.mrs
+rules:
+  - RULE-SET,mm-cn-domain,DIRECT
+  - RULE-SET,mm-cn-ip,DIRECT,no-resolve
+  - MATCH,DIRECT
+EOF
+    chmod 0600 "$validation_config" || return 1
+    "$MIHOMO_BIN" -t -d "$validation_dir" -f "$validation_config" >/dev/null 2>&1
+}
+
+load_valid_ruleset_cache() {
+    local recorded_base recorded_ref recorded_domain_path recorded_ip_path
+    local recorded_domain_sha recorded_ip_sha
+    recorded_base="$(state_value ruleset_base_url 2>/dev/null || true)"
+    recorded_ref="$(state_value ruleset_ref 2>/dev/null || true)"
+    recorded_domain_path="$(state_value ruleset_domain_path 2>/dev/null || true)"
+    recorded_ip_path="$(state_value ruleset_ip_path 2>/dev/null || true)"
+    recorded_domain_sha="$(state_value ruleset_domain_sha256 2>/dev/null || true)"
+    recorded_ip_sha="$(state_value ruleset_ip_sha256 2>/dev/null || true)"
+
+    [[ "$recorded_domain_path" == "$RULESET_DOMAIN_PATH" && "$recorded_ip_path" == "$RULESET_IP_PATH" ]] || return 1
+    single_line_value "$recorded_base" && single_line_value "$recorded_ref" || return 1
+    case "$recorded_base" in
+        http://*|https://*|file://*) ;;
+        *) return 1 ;;
+    esac
+    [[ "$recorded_base" != *[[:space:]]* && "$recorded_base" != *"@"* && "$recorded_base" != *"?"* && "$recorded_base" != *"#"* ]] || return 1
+    [[ "$recorded_ref" =~ ^[A-Za-z0-9._/-]+$ && "$recorded_ref" != /* && "/$recorded_ref/" != *"/../"* ]] || return 1
+    [[ "$recorded_domain_sha" =~ ^[0-9a-fA-F]{64}$ && "$recorded_ip_sha" =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+    validate_ruleset_target "$RULESET_DOMAIN_PATH"
+    validate_ruleset_target "$RULESET_IP_PATH"
+    [[ -f "$RULESET_DOMAIN_PATH" && -f "$RULESET_IP_PATH" ]] || return 1
+    verify_sha256 "$RULESET_DOMAIN_PATH" "$recorded_domain_sha" || return 1
+    verify_sha256 "$RULESET_IP_PATH" "$recorded_ip_sha" || return 1
+    validate_ruleset_pair "$RULESET_DOMAIN_PATH" "$RULESET_IP_PATH" || return 1
+    chmod 0600 "$RULESET_DOMAIN_PATH" "$RULESET_IP_PATH" || return 1
+
+    RULESET_INSTALLED_BASE_URL="$recorded_base"
+    RULESET_INSTALLED_REF="$recorded_ref"
+    RULESET_INSTALLED_DOMAIN_SHA256="${recorded_domain_sha,,}"
+    RULESET_INSTALLED_IP_SHA256="${recorded_ip_sha,,}"
+}
+
+ruleset_publish_file() {
+    mv -f -- "$1" "$2"
+}
+
+restore_ruleset_target() {
+    local target="$1"
+    local backup="$2"
+    local existed="$3"
+    if [[ "$existed" == "1" ]]; then
+        cp -p -- "$backup" "$target"
+    else
+        rm -f -- "$target"
+    fi
+}
+
+publish_ruleset_pair() {
+    local domain_temp="$1"
+    local ip_temp="$2"
+    local domain_backup ip_backup domain_existed=0 ip_existed=0
+    validate_ruleset_target "$RULESET_DOMAIN_PATH"
+    validate_ruleset_target "$RULESET_IP_PATH"
+    domain_backup="$(mktemp "$RULESET_DIR/.cn-domain.previous.XXXXXX")" || return 1
+    TEMP_PATHS+=("$domain_backup")
+    ip_backup="$(mktemp "$RULESET_DIR/.cn-ip.previous.XXXXXX")" || return 1
+    TEMP_PATHS+=("$ip_backup")
+
+    if [[ -f "$RULESET_DOMAIN_PATH" ]]; then
+        cp -p -- "$RULESET_DOMAIN_PATH" "$domain_backup" || return 1
+        domain_existed=1
+    fi
+    if [[ -f "$RULESET_IP_PATH" ]]; then
+        cp -p -- "$RULESET_IP_PATH" "$ip_backup" || return 1
+        ip_existed=1
+    fi
+
+    if ! ruleset_publish_file "$domain_temp" "$RULESET_DOMAIN_PATH"; then
+        return 1
+    fi
+    if ! ruleset_publish_file "$ip_temp" "$RULESET_IP_PATH"; then
+        restore_ruleset_target "$RULESET_DOMAIN_PATH" "$domain_backup" "$domain_existed" \
+            || die "规则集发布失败，且无法恢复 domain 规则集。"
+        restore_ruleset_target "$RULESET_IP_PATH" "$ip_backup" "$ip_existed" \
+            || die "规则集发布失败，且无法恢复 IP 规则集。"
+        return 1
+    fi
+    if ! chmod 0600 "$RULESET_DOMAIN_PATH" "$RULESET_IP_PATH"; then
+        restore_ruleset_target "$RULESET_DOMAIN_PATH" "$domain_backup" "$domain_existed" \
+            || die "规则集权限设置失败，且无法恢复 domain 规则集。"
+        restore_ruleset_target "$RULESET_IP_PATH" "$ip_backup" "$ip_existed" \
+            || die "规则集权限设置失败，且无法恢复 IP 规则集。"
+        return 1
+    fi
+}
+
+install_rulesets() {
+    local domain_url ip_url domain_temp ip_temp
+    domain_url="$RULESET_REQUESTED_BASE_URL/$RULESET_REQUESTED_REF/geo/geosite/cn.mrs"
+    ip_url="$RULESET_REQUESTED_BASE_URL/$RULESET_REQUESTED_REF/geo/geoip/cn.mrs"
+    domain_temp="$(mktemp "$RULESET_DIR/.cn-domain.download.XXXXXX")" \
+        || die "无法在规则集目录创建 domain 临时文件。"
+    TEMP_PATHS+=("$domain_temp")
+    ip_temp="$(mktemp "$RULESET_DIR/.cn-ip.download.XXXXXX")" \
+        || die "无法在规则集目录创建 IP 临时文件。"
+    TEMP_PATHS+=("$ip_temp")
+    chmod 0600 "$domain_temp" "$ip_temp"
+
+    info "下载固定 CN 规则集: $RULESET_REQUESTED_REF"
+    if download_file "$domain_url" "$domain_temp" \
+        && download_file "$ip_url" "$ip_temp" \
+        && verify_sha256 "$domain_temp" "$RULESET_REQUESTED_DOMAIN_SHA256" \
+        && verify_sha256 "$ip_temp" "$RULESET_REQUESTED_IP_SHA256" \
+        && validate_ruleset_pair "$domain_temp" "$ip_temp"; then
+        publish_ruleset_pair "$domain_temp" "$ip_temp" || die "无法原子发布 CN 规则集，旧缓存已恢复。"
+        RULESET_INSTALLED_BASE_URL="$RULESET_REQUESTED_BASE_URL"
+        RULESET_INSTALLED_REF="$RULESET_REQUESTED_REF"
+        RULESET_INSTALLED_DOMAIN_SHA256="$RULESET_REQUESTED_DOMAIN_SHA256"
+        RULESET_INSTALLED_IP_SHA256="$RULESET_REQUESTED_IP_SHA256"
+        success "已安装 CN 规则集: $RULESET_DIR"
+        return 0
+    fi
+
+    warn "新 CN 规则集下载、摘要或格式校验失败。"
+    if load_valid_ruleset_cache; then
+        warn "继续使用 install-state 已验证的旧 CN 规则集缓存。"
+        return 0
+    fi
+    die "没有可安全复用的 CN 规则集缓存，安装已停止。"
 }
 
 go_meets_minimum() {
@@ -375,6 +655,7 @@ fetch_core_metadata() {
     github_base="${github_base%/}"
 
     mkdir -p "$STATE_DIR"
+    chmod 0700 "$STATE_DIR"
     metadata="$(mktemp "$STATE_DIR/.mihomo-release.XXXXXX.json")"
     TEMP_PATHS+=("$metadata")
     download_file "$api_base/repos/MetaCubeX/mihomo/releases/tags/$version" "$metadata" \
@@ -460,6 +741,7 @@ build_mm() {
 configure_mihomo() {
     local config_file="$CONFIG_DIR/config.yaml"
     local temp_config
+    CONFIG_CREATED=0
     mkdir -p "$CONFIG_DIR"
 
     if [[ -f "$config_file" ]]; then
@@ -488,6 +770,7 @@ EOF
     "$MIHOMO_BIN" -t -d "$CONFIG_DIR" -f "$temp_config" >/dev/null 2>&1 \
         || die "新建的最小配置未通过 mihomo 校验。"
     mv -f -- "$temp_config" "$config_file"
+    CONFIG_CREATED=1
     success "已创建最小 DIRECT 配置: $config_file"
 }
 
@@ -497,6 +780,135 @@ install_mm_binary() {
     mv -f -- "$MM_BUILD_PATH" "$target"
     "$target" --help >/dev/null
     success "已安装独立 mm 命令: $target"
+}
+
+probe_daemon_before_upgrade() {
+    local installed_mm="$INSTALL_DIR/mm"
+    local status_file core_state
+    DAEMON_PREEXISTING=0
+    DAEMON_CORE_RUNNING=0
+    DAEMON_PREVIOUS_CORE_STATE=""
+    [[ -x "$installed_mm" ]] || return 0
+
+    mkdir -p "$STATE_DIR"
+    status_file="$(mktemp "$STATE_DIR/.daemon-before-upgrade.XXXXXX.json")"
+    TEMP_PATHS+=("$status_file")
+    if ! "$installed_mm" daemon status --output json >"$status_file" 2>/dev/null; then
+        return 0
+    fi
+    jq -e '.apiVersion == "mm/v1" and .kind == "DaemonStatus" and (.data | type == "object")' "$status_file" >/dev/null \
+        || return 0
+    core_state="$(jq -er '.data.core.state' "$status_file" 2>/dev/null || true)"
+    [[ -n "$core_state" ]] || return 0
+    DAEMON_PREEXISTING=1
+    DAEMON_PREVIOUS_CORE_STATE="$core_state"
+    if [[ "$core_state" == "running" ]]; then
+        DAEMON_CORE_RUNNING=1
+        info "检测到受管 core 正在运行；本次升级不会停止或重启 daemon。"
+    fi
+}
+
+run_installed_mm_json() {
+    local output_file="$1"
+    local expected_kind="$2"
+    shift 2
+    if ! CONFIG_DIR="$CONFIG_DIR" MIHOMO_BIN="$MIHOMO_BIN" MIHOMO_API_PORT="${MIHOMO_API_PORT:-9090}" \
+        "$INSTALL_DIR/mm" "$@" --output json >"$output_file"; then
+        return 1
+    fi
+    jq -e --arg kind "$expected_kind" \
+        '.apiVersion == "mm/v1" and .kind == $kind and (.data | type == "object")' \
+        "$output_file" >/dev/null
+}
+
+apply_fresh_migration() {
+    local migrate_file migration_state
+    migrate_file="$(mktemp "$STATE_DIR/.migration-apply.XXXXXX.json")"
+    TEMP_PATHS+=("$migrate_file")
+    info "注册本次新建的 legacy 配置..."
+    run_installed_mm_json "$migrate_file" "MigrationApply" migrate apply \
+        || die "mm 已安装且 daemon 可用，但新建配置注册失败；请运行 mm migrate plan 后重试。"
+    migration_state="$(jq -er '.data.migration.state' "$migrate_file" 2>/dev/null || true)"
+    [[ "$migration_state" == "succeeded" ]] \
+        || die "新建配置迁移未进入 succeeded 状态，请运行 mm migrate status 检查。"
+    success "已注册新建配置为活动 legacy 档案。"
+}
+
+configure_daemon_and_migration() {
+    local enable_file start_file stop_file status_file enabled core_state daemon_state hint preserve_existing=0
+    enable_file="$(mktemp "$STATE_DIR/.daemon-enable.XXXXXX.json")"
+    start_file="$(mktemp "$STATE_DIR/.daemon-start.XXXXXX.json")"
+    stop_file="$(mktemp "$STATE_DIR/.daemon-stop.XXXXXX.json")"
+    status_file="$(mktemp "$STATE_DIR/.daemon-status.XXXXXX.json")"
+    TEMP_PATHS+=("$enable_file" "$start_file" "$stop_file" "$status_file")
+
+    info "安装并启用 systemd user manager daemon..."
+    run_installed_mm_json "$enable_file" "DaemonControl" daemon enable \
+        || die "mm 与规则集已安装，但 daemon unit 安装或启用失败；请运行 mm daemon enable 检查。"
+    enabled="$(jq -er '.data.enabled' "$enable_file" 2>/dev/null || true)"
+    [[ "$enabled" == "true" || "$enabled" == "false" ]] \
+        || die "daemon enable 返回了无效 enabled 状态。"
+
+    if ((DAEMON_PREEXISTING == 1)) && [[ "$DAEMON_PREVIOUS_CORE_STATE" != "stopped" ]]; then
+        preserve_existing=1
+    elif ((DAEMON_PREEXISTING == 1)) && [[ "$enabled" == "true" ]]; then
+        run_installed_mm_json "$status_file" "DaemonStatus" daemon status \
+            || die "重启 daemon 前无法复核 core 状态；为避免中断 core，已停止升级编排。"
+        core_state="$(jq -er '.data.core.state' "$status_file" 2>/dev/null || true)"
+        if [[ "$core_state" != "stopped" ]]; then
+            preserve_existing=1
+            DAEMON_PREVIOUS_CORE_STATE="$core_state"
+            [[ "$core_state" == "running" ]] && DAEMON_CORE_RUNNING=1
+        fi
+    fi
+
+    if ((preserve_existing == 1)); then
+        DAEMON_AVAILABLE=1
+        warn "受管 core 状态为 $DAEMON_PREVIOUS_CORE_STATE，已跳过 daemon stop/start；新 mm 将在后续 daemon 重启时加载。"
+    elif [[ "$enabled" == "true" ]]; then
+        if ((DAEMON_PREEXISTING == 1)); then
+            info "core 已停止，重启 daemon 以加载新 mm..."
+            run_installed_mm_json "$stop_file" "DaemonControl" daemon stop \
+                || die "core 已停止，但旧 daemon 停止失败；请运行 mm daemon status 检查。"
+        fi
+        run_installed_mm_json "$start_file" "DaemonControl" daemon start \
+            || die "daemon socket 启动失败；请运行 mm daemon start 检查。"
+        DAEMON_AVAILABLE=1
+    elif ((DAEMON_PREEXISTING == 1)); then
+        DAEMON_AVAILABLE=1
+        warn "systemd user 会话不可用，现有 daemon 保持运行且未自动重启。"
+    else
+        DAEMON_AVAILABLE=0
+        hint="$(jq -r '.data.hint // empty' "$enable_file")"
+        warn "systemd user unit 已安装但未启用。"
+        [[ -z "$hint" ]] || warn "$hint"
+        printf -v hint 'CONFIG_DIR=%q MIHOMO_BIN=%q MIHOMO_API_PORT=%q mm daemon run' \
+            "$CONFIG_DIR" "$MIHOMO_BIN" "${MIHOMO_API_PORT:-9090}"
+        warn "前台启动并保持相同路径: $hint"
+    fi
+
+    if ((DAEMON_AVAILABLE == 1)); then
+        run_installed_mm_json "$status_file" "DaemonStatus" daemon status \
+            || die "daemon 启动或升级后状态确认失败；请运行 mm daemon status 检查。"
+        daemon_state="$(jq -er '.data.state' "$status_file" 2>/dev/null || true)"
+        core_state="$(jq -er '.data.core.state' "$status_file" 2>/dev/null || true)"
+        [[ "$daemon_state" == "running" ]] || die "daemon 未进入 running 状态。"
+        if ((preserve_existing == 0)) && [[ "$core_state" != "stopped" ]]; then
+            die "安装器未启动 core，但 daemon 报告 core 状态为 $core_state；请人工检查。"
+        fi
+        success "manager daemon 已就绪，core 状态: $core_state"
+    fi
+
+    if ((CONFIG_CREATED == 1)); then
+        if ((DAEMON_AVAILABLE == 1)); then
+            apply_fresh_migration
+        else
+            warn "新建配置尚未注册；启动 daemon 后运行: mm migrate apply"
+        fi
+    else
+        info "已有配置未自动迁移。请先运行: mm migrate plan"
+        info "确认后显式运行: mm migrate apply"
+    fi
 }
 
 path_block_exists() {
@@ -560,6 +972,7 @@ configure_path() {
 write_state() {
     local temp_state go_toolchain_path=""
     mkdir -p "$STATE_DIR"
+    chmod 0700 "$STATE_DIR"
 
     if [[ "$GO_BIN" == "$STATE_DIR"/toolchains/*/bin/go ]]; then
         go_toolchain_path="$(dirname "$(dirname "$GO_BIN")")"
@@ -570,7 +983,7 @@ write_state() {
     temp_state="$(mktemp "$STATE_DIR/.install-state.XXXXXX")"
     TEMP_PATHS+=("$temp_state")
     {
-        printf 'installer_version=1\n'
+        printf 'installer_version=2\n'
         printf 'mm_path=%s\n' "$INSTALL_DIR/mm"
         printf 'go_toolchain_path=%s\n' "$go_toolchain_path"
         printf 'path_rc=%s\n' "$PATH_RC_MODIFIED"
@@ -578,6 +991,12 @@ write_state() {
         printf 'core_path=%s\n' "$MIHOMO_BIN"
         printf 'core_version=%s\n' "$CORE_VERSION"
         printf 'config_dir=%s\n' "$CONFIG_DIR"
+        printf 'ruleset_base_url=%s\n' "$RULESET_INSTALLED_BASE_URL"
+        printf 'ruleset_ref=%s\n' "$RULESET_INSTALLED_REF"
+        printf 'ruleset_domain_path=%s\n' "$RULESET_DOMAIN_PATH"
+        printf 'ruleset_domain_sha256=%s\n' "$RULESET_INSTALLED_DOMAIN_SHA256"
+        printf 'ruleset_ip_path=%s\n' "$RULESET_IP_PATH"
+        printf 'ruleset_ip_sha256=%s\n' "$RULESET_INSTALLED_IP_SHA256"
     } >"$temp_state"
     chmod 0600 "$temp_state"
     mv -f -- "$temp_state" "$STATE_FILE"
@@ -589,6 +1008,7 @@ print_summary() {
     printf '  mm:      %s\n' "$INSTALL_DIR/mm"
     printf '  mihomo:  %s (%s)\n' "$MIHOMO_BIN" "$CORE_VERSION"
     printf '  配置目录: %s\n' "$CONFIG_DIR"
+    printf '  CN 规则集: %s (%s)\n' "$RULESET_DIR" "$RULESET_INSTALLED_REF"
     printf '\n安装器没有启动 mihomo，也没有修改系统代理。\n'
     if ((CONFIG_WARNING == 1)); then
         warn "mm 已安装，但现有配置需要修复后才能启动 mihomo。"
@@ -603,14 +1023,20 @@ print_summary() {
 main() {
     parse_args "$@"
     preflight
+    validate_ruleset_settings
     install_system_dependencies
     verify_required_commands
+    prepare_install_state_dir
+    prepare_ruleset_dir
     select_go
     build_mm
     install_mihomo_core
+    install_rulesets
     configure_mihomo
+    probe_daemon_before_upgrade
     install_mm_binary
     configure_path
+    configure_daemon_and_migration
     write_state
     print_summary
 }

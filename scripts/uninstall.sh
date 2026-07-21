@@ -231,6 +231,22 @@ purge_config_if_requested() {
     fi
 }
 
+report_retained_rulesets() {
+    ((PURGE_CONFIG == 0)) || return 0
+
+    local config_dir domain_path ip_path expected_dir
+    config_dir="$(state_value config_dir 2>/dev/null || true)"
+    domain_path="$(state_value ruleset_domain_path 2>/dev/null || true)"
+    ip_path="$(state_value ruleset_ip_path 2>/dev/null || true)"
+    [[ -n "$config_dir" ]] || return 0
+    expected_dir="$config_dir/rulesets"
+    if [[ "$domain_path" == "$expected_dir/cn-domain.mrs" && "$ip_path" == "$expected_dir/cn-ip.mrs" ]]; then
+        if [[ -f "$domain_path" || -f "$ip_path" ]]; then
+            info "CN 规则集随配置保留: $expected_dir"
+        fi
+    fi
+}
+
 cleanup_legacy_launchd() {
     local launchd_dir="$HOME/Library/LaunchAgents"
     local plist
@@ -267,6 +283,7 @@ main() {
     remove_toolchain
     purge_core_if_owned
     purge_config_if_requested
+    report_retained_rulesets
     cleanup_legacy_launchd
     cleanup_state
 

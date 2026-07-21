@@ -3,7 +3,7 @@
   "name": "m1-ruleset-install",
   "title": "M1 安装 CN 规则集与用户 daemon",
   "description": "在统一安装链路中安全安装 CN 专用规则资产，并安装启用用户级 manager daemon。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,9 +61,10 @@ func (ExecRunner) Run(ctx context.Context, args ...string) error {
 }
 
 type Controller struct {
-	UnitDir string
-	Runner  Runner
-	Clock   func() time.Time
+	UnitDir     string
+	Runner      Runner
+	Clock       func() time.Time
+	Environment map[string]string
 }
 
 func (c *Controller) Status(ctx context.Context) (Result, error) {
@@ -145,13 +148,17 @@ func (c *Controller) installUnits() ([]backup, error) {
 	backups := make([]backup, 0, len(units))
 	for _, unit := range units {
 		path := filepath.Join(c.UnitDir, unit.name)
-		rendered := renderUnit(unit.content)
 		state, err := readBackup(path)
 		if err != nil {
 			c.restore(backups)
 			return nil, err
 		}
 		backups = append(backups, state)
+		rendered, err := c.renderUnit(unit.name, unit.content, state.content)
+		if err != nil {
+			c.restore(backups)
+			return nil, err
+		}
 		if state.existed && !bytes.Equal(state.content, rendered) {
 			clock := c.Clock
 			if clock == nil {
@@ -171,10 +178,136 @@ func (c *Controller) installUnits() ([]backup, error) {
 	return backups, nil
 }
 
-func renderUnit(content []byte) []byte {
-	digest := sha256.Sum256(content)
+const (
+	environmentBegin = "# >>> mihomo-manager environment >>>"
+	environmentEnd   = "# <<< mihomo-manager environment <<<"
+)
+
+func (c *Controller) renderUnit(name string, content, previous []byte) ([]byte, error) {
+	body := append([]byte(nil), content...)
+	if name == "mm.service" {
+		environment, err := parseManagedEnvironment(previous)
+		if err != nil {
+			return nil, err
+		}
+		if len(c.Environment) > 0 {
+			if environment == nil {
+				environment = make(map[string]string, len(c.Environment))
+			}
+			for key, value := range c.Environment {
+				environment[key] = value
+			}
+		}
+		block, err := renderManagedEnvironment(environment)
+		if err != nil {
+			return nil, err
+		}
+		if len(block) > 0 {
+			marker := []byte("[Service]\n")
+			if !bytes.Contains(body, marker) {
+				return nil, errors.New("service unit has no Service section")
+			}
+			body = bytes.Replace(body, marker, append(marker, block...), 1)
+		}
+	}
+	digest := sha256.Sum256(body)
 	header := fmt.Sprintf("# Managed by mihomo-manager; content-sha256=%x\n", digest)
-	return append([]byte(header), content...)
+	return append([]byte(header), body...), nil
+}
+
+func renderManagedEnvironment(environment map[string]string) ([]byte, error) {
+	if len(environment) == 0 {
+		return nil, nil
+	}
+	keys := make([]string, 0, len(environment))
+	for key := range environment {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	var result strings.Builder
+	result.WriteString(environmentBegin + "\n")
+	for _, key := range keys {
+		value := environment[key]
+		if err := validateEnvironment(key, value); err != nil {
+			return nil, err
+		}
+		value = strings.ReplaceAll(value, "%", "%%")
+		result.WriteString("Environment=")
+		result.WriteString(strconv.Quote(key + "=" + value))
+		result.WriteByte('\n')
+	}
+	result.WriteString(environmentEnd + "\n")
+	return []byte(result.String()), nil
+}
+
+func parseManagedEnvironment(content []byte) (map[string]string, error) {
+	if len(content) == 0 {
+		return nil, nil
+	}
+	text := string(content)
+	if !strings.HasPrefix(text, "# Managed by mihomo-manager; content-sha256=") {
+		return nil, nil
+	}
+	start := strings.Index(text, environmentBegin)
+	end := strings.Index(text, environmentEnd)
+	if start < 0 && end < 0 {
+		return nil, nil
+	}
+	if start < 0 || end < start {
+		return nil, errors.New("managed service environment block is incomplete")
+	}
+	block := text[start+len(environmentBegin) : end]
+	environment := make(map[string]string)
+	for _, line := range strings.Split(block, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		quoted, ok := strings.CutPrefix(line, "Environment=")
+		if !ok {
+			return nil, errors.New("managed service environment block contains an invalid line")
+		}
+		assignment, err := strconv.Unquote(quoted)
+		if err != nil {
+			return nil, fmt.Errorf("decode managed service environment: %w", err)
+		}
+		key, value, ok := strings.Cut(assignment, "=")
+		if !ok || key == "" {
+			return nil, errors.New("managed service environment assignment is invalid")
+		}
+		value = strings.ReplaceAll(value, "%%", "%")
+		if err := validateEnvironment(key, value); err != nil {
+			return nil, err
+		}
+		if _, exists := environment[key]; exists {
+			return nil, fmt.Errorf("managed service environment contains duplicate key %q", key)
+		}
+		environment[key] = value
+	}
+	return environment, nil
+}
+
+func validateEnvironment(key, value string) error {
+	switch key {
+	case "CONFIG_DIR", "MIHOMO_BIN":
+		if !filepath.IsAbs(value) {
+			return fmt.Errorf("systemd environment %s must be an absolute path", key)
+		}
+	case "MIHOMO_API_PORT":
+		port, err := strconv.Atoi(value)
+		if err != nil || port < 1 || port > 65535 {
+			return errors.New("systemd environment MIHOMO_API_PORT must be a valid port")
+		}
+	default:
+		return fmt.Errorf("unsupported systemd environment key %q", key)
+	}
+	for _, character := range value {
+		if character == 0 || character == '\n' || character == '\r' || character < 0x20 || character == 0x7f {
+			return fmt.Errorf("systemd environment %s contains control characters", key)
+		}
+	}
+	return nil
 }
 
 func readBackup(path string) (backup, error) {
@@ -249,7 +382,7 @@ func validateUnits() error {
 			return fmt.Errorf("invalid socket unit: missing %s", required)
 		}
 	}
-	if !strings.Contains(socket, "template-version=1") || !strings.Contains(service, "template-version=1") {
+	if !strings.Contains(socket, "template-version=2") || !strings.Contains(service, "template-version=2") {
 		return errors.New("unit template version missing")
 	}
 	for _, required := range []string{"mm daemon run", "Restart=on-failure", "RestartSec=2s", "NoNewPrivileges=yes", "UMask=0077"} {

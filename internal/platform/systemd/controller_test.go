@@ -74,6 +74,94 @@ func TestEnable_RollsBackOnSystemctlFailure(t *testing.T) {
 	}
 }
 
+func TestEnable_PersistsAndPreservesManagedEnvironment(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "systemd", "user")
+	want := map[string]string{
+		"CONFIG_DIR":      "/tmp/配置 path/100%",
+		"MIHOMO_BIN":      "/tmp/bin/mihomo",
+		"MIHOMO_API_PORT": "19090",
+	}
+	controller := &Controller{UnitDir: dir, Runner: &fakeRunner{}, Environment: want}
+	if _, err := controller.Enable(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	servicePath := filepath.Join(dir, "mm.service")
+	content, err := os.ReadFile(servicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := parseManagedEnvironment(content)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected managed environment: %#v err=%v\n%s", got, err, content)
+	}
+
+	controller = &Controller{UnitDir: dir, Runner: &fakeRunner{}}
+	if _, err := controller.Enable(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	content, err = os.ReadFile(servicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = parseManagedEnvironment(content)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("managed environment was not preserved: %#v err=%v", got, err)
+	}
+
+	controller = &Controller{UnitDir: dir, Runner: &fakeRunner{}, Environment: map[string]string{"MIHOMO_API_PORT": "29090"}}
+	if _, err := controller.Enable(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	content, err = os.ReadFile(servicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = parseManagedEnvironment(content)
+	want["MIHOMO_API_PORT"] = "29090"
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("managed environment override did not preserve other keys: %#v err=%v", got, err)
+	}
+}
+
+func TestEnable_RejectsUnsafeEnvironmentAndRollsBackUnits(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "systemd", "user")
+	controller := &Controller{
+		UnitDir:     dir,
+		Runner:      &fakeRunner{},
+		Environment: map[string]string{"CONFIG_DIR": "/tmp/unsafe\npath"},
+	}
+	if _, err := controller.Enable(context.Background()); err == nil {
+		t.Fatal("expected unsafe environment failure")
+	}
+	for _, name := range []string{"mm.socket", "mm.service"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("unit %s should have been rolled back: %v", name, err)
+		}
+	}
+}
+
+func TestEnable_DoesNotPreserveEnvironmentFromUnknownUnit(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "systemd", "user")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unknown := []byte("[Service]\n" + environmentBegin + "\nEnvironment=\"CONFIG_DIR=/tmp/untrusted\"\n" + environmentEnd + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "mm.service"), unknown, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	controller := &Controller{UnitDir: dir, Runner: &fakeRunner{}}
+	if _, err := controller.Enable(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "mm.service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(content), "/tmp/untrusted") {
+		t.Fatalf("unknown unit environment was preserved: %s", content)
+	}
+}
+
 func TestEnable_BacksUpModifiedManagedUnit(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "systemd", "user")
 	runner := &fakeRunner{}

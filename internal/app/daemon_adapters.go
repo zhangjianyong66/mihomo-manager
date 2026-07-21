@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/zhangjianyong66/mihomo-manager/internal/config"
@@ -19,11 +20,28 @@ import (
 )
 
 func NewDaemonService(paths config.ManagerPaths) *DaemonService {
+	controller := systemd.New(paths.UserUnitDir)
+	controller.Environment = daemonUnitEnvironment()
 	return &DaemonService{
 		Client:     daemonIPCClient{client: ipc.NewClient(paths.Socket)},
 		Runner:     localDaemonRunner{paths: paths},
-		Controller: systemdController{controller: systemd.New(paths.UserUnitDir)},
+		Controller: systemdController{controller: controller},
 	}
+}
+
+func daemonUnitEnvironment() map[string]string {
+	paths := config.Load()
+	environment := make(map[string]string, 3)
+	if _, ok := os.LookupEnv("CONFIG_DIR"); ok {
+		environment["CONFIG_DIR"] = paths.ConfigDir
+	}
+	if _, ok := os.LookupEnv("MIHOMO_BIN"); ok {
+		environment["MIHOMO_BIN"] = paths.MihomoBin
+	}
+	if _, ok := os.LookupEnv("MIHOMO_API_PORT"); ok {
+		environment["MIHOMO_API_PORT"] = strings.TrimPrefix(paths.APIAddr, "http://127.0.0.1:")
+	}
+	return environment
 }
 
 func NewMigrationService(paths config.ManagerPaths) *MigrationService {

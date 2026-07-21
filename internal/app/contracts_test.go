@@ -4,10 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"testing"
 
 	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
 )
+
+func TestDaemonUnitEnvironmentUsesExplicitRuntimePaths(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CONFIG_DIR", filepath.Join(root, "配置 path"))
+	t.Setenv("MIHOMO_BIN", filepath.Join(root, "bin", "mihomo"))
+	t.Setenv("MIHOMO_API_PORT", "19090")
+
+	got := daemonUnitEnvironment()
+	if got["CONFIG_DIR"] != filepath.Join(root, "配置 path") || got["MIHOMO_BIN"] != filepath.Join(root, "bin", "mihomo") || got["MIHOMO_API_PORT"] != "19090" {
+		t.Fatalf("unexpected daemon environment: %#v", got)
+	}
+}
 
 type fakeServices struct{}
 

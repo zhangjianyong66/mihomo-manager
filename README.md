@@ -16,7 +16,10 @@ curl -fsSL https://raw.githubusercontent.com/zhangjianyong66/mihomo-manager/mast
 - 复用 Go 1.22+，或安装隔离的官方 Go 1.26.4；
 - 从源码构建独立的 `$HOME/.local/bin/mm`；
 - 下载并校验官方 mihomo core，默认固定为 `v1.19.28`；
+- 下载并校验固定版本的 CN domain/IP `.mrs` 到 `$CONFIG_DIR/rulesets`；
 - 在缺少配置时创建最小 `DIRECT` 配置；
+- 安装并启用 systemd user manager daemon，但保持 mihomo core 为停止状态；
+- 仅对本次新建的配置自动执行 legacy 注册，已有配置只给出迁移提示；
 - 为 Bash/Zsh 幂等配置 `$HOME/.local/bin`。
 
 安装过程不会启动 mihomo，也不会修改系统代理。完成后重开终端并运行：
@@ -64,9 +67,12 @@ make install
 - `MM_GITHUB_BASE_URL`：覆盖 GitHub 下载基地址。
 - `MM_GITHUB_API_BASE_URL`：覆盖 GitHub API 基地址。
 - `MM_GO_DOWNLOAD_BASE_URL`：覆盖 Go 下载基地址。
+- `MM_RULESET_BASE_URL`、`MM_RULESET_REF`：覆盖 CN 规则集来源；覆盖任一项时必须同时提供下面两个可信摘要。
+- `MM_RULESET_DOMAIN_SHA256`、`MM_RULESET_IP_SHA256`：成对覆盖 domain/IP 规则集 SHA-256。
 - `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`：标准下载代理变量。
 
 安装器不会自动切换第三方镜像。覆盖下载源时，应自行确认来源可信。
+首次下载或校验失败且没有 install-state 可验证缓存时，安装直接失败；升级失败时只会保留摘要和格式仍与 install-state 一致的旧缓存。
 
 ## 卸载
 
@@ -110,6 +116,10 @@ mm daemon --help
 ```
 
 `mm daemon run` 是不依赖 systemd 的前台 manager daemon。daemon 会装配 mihomo adapter 和单实例 supervisor，但不会自动启动 mihomo；CLI 在 daemon 不可用时不会回退为直接写 SQLite、配置或控制 core。managed generation 默认写入 `${XDG_DATA_HOME:-~/.local/share}/mihomo-manager/generations`，core 日志与 runtime metadata 写入 `${XDG_STATE_HOME:-~/.local/state}/mihomo-manager/core`。可用 `XDG_DATA_HOME`、`XDG_STATE_HOME`、`XDG_RUNTIME_DIR`、`XDG_CONFIG_HOME` 隔离测试环境。
+
+安装升级只有在受管 core 明确为 `stopped` 且 stop 前复核仍为 `stopped` 时才重启 daemon；其他状态不会停止现有 daemon，新二进制在后续 daemon 重启时生效。systemd user 会话不可用时只保留已安装 unit，并提示使用 `mm daemon run`，不会启用 linger 或创建临时后台进程。
+
+通过安装器设置的 `CONFIG_DIR`、`MIHOMO_BIN` 和 `MIHOMO_API_PORT` 会写入受管 systemd service 环境，并在后续未显式覆盖的 `mm daemon enable` 中保留，确保 daemon 重启后继续使用同一 legacy 配置和 core 路径。
 
 2.0 Alpha 的业务 CLI 默认作用于唯一活动 legacy 档案，也可用 `--profile <id>` 显式指定。查询命令使用 `--output table|json`；`node test` 和 `core logs --follow` 使用 `--output text|ndjson`。订阅地址、节点 URI、UUID、密码和日志凭据默认脱敏，只有显式 `--show-secrets` 才显示完整值。
 
