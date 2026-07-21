@@ -30,17 +30,20 @@
 
 ## 路由规则语义
 
-- 白名单域名始终生成 `DOMAIN-SUFFIX,<domain>,DIRECT`，并排在最终兜底规则之前。
-- mihomo 的 `global` 模式会绕过 `rules`。需要“白名单直连、其他走 GLOBAL”时，运行态必须是 `rule`，规则末尾使用 `MATCH,GLOBAL`。
-- `ApplyRouteCN()` 生成的托管规则为 `GEOSITE,CN,DIRECT`、`GEOIP,CN,DIRECT,no-resolve`、`MATCH,GLOBAL`，写入后必须通过 mihomo 配置测试，否则恢复备份。
-- 路由或白名单变更必须保持唯一的最终 `MATCH` 规则，并清理旧的冲突规则；回归测试在 `internal/mihomo/client_route_test.go`。
+- `domain.RoutingMode` 仅允许 `global|rule|direct`，不得与 `ProfileMode(managed|external|legacy)` 混用；缺少配置 `mode` 时 policy 按 `rule` 解析。
+- `internal/mihomo/routing_policy.go` 是 Rule 规则、CN providers 与 DNS 所有权的唯一来源。顺序固定为本机/局域网、自定义规则、白名单、`mm-cn-domain`、`mm-cn-ip`、唯一 `MATCH,🌐 代理`。
+- 白名单域名生成 `DOMAIN-SUFFIX,<domain>,DIRECT`；清理 manager 本机规则、旧 CN Geo 规则、两个 manager provider 规则和所有旧 `MATCH`，其他 custom rules/providers 保持内容及相对顺序。
+- CN providers 使用 `type: http`、`format: mrs`、`behavior: domain|ipcidr`、相对 `<CONFIG_DIR>/rulesets` 路径、MetaCubeX `meta` 更新 URL 和 `interval: 86400`。
+- Rule DNS 管理 `enable`、`respect-rules`、`default-nameserver`、`nameserver`、`proxy-server-nameserver` 及本机/CN nameserver policy；保留 fake-IP、IPv6 和不冲突的用户 policy，移除会绕开该模型的旧 fallback 字段。
+- `ApplyRouteCN()` 是设置 `mode: rule` 并应用同一 policy 的兼容入口，不得恢复独立 `GEOSITE/GEOIP + MATCH,GLOBAL` 算法。所有写入使用 `mihomo -t -d <dir> -f <file>` 校验，失败恢复内容和权限。
 
 ## 订阅更新
 
 - `UpdateSubscription()` 支持完整 YAML，以及纯文本或 base64 编码的 URI 列表；Go 版当前解析 `vless://`、`vmess://`、`trojan://`、`ss://`。
 - 更新前读取旧配置和白名单并备份主配置；下载默认绕过系统代理，最多重试 3 次。
 - 订阅内容不能覆盖本地 `mixed-port`、`socks-port` 和 `external-controller`；缺失时分别使用 `7890`、`7891`、`127.0.0.1:9090`。
-- 默认订阅更新不引入 Geo 规则，避免热重载时阻塞 Geo 数据下载；它创建 `🌐 代理`/`🎯 直连` 分组并以 `MATCH,🌐 代理` 兜底。
+- 更新仅替换 proxies/proxy-providers 和 `🌐 代理`/`🎯 直连`候选，随后重放旧 mode、custom rules/providers、白名单、CN providers 和 DNS policy。
+- core API 可用时分别保存/恢复 `GLOBAL` 与 `🌐 代理`选择；节点消失按节点名排序选择首个候选并返回 typed warning，reload/selection 失败恢复旧配置和旧选择。
 - YAML 重写可能改变字段顺序并丢失注释，这是当前实现的已知行为。
 
 ## 白名单

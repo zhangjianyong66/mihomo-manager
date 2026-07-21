@@ -76,3 +76,17 @@ func TestCoreStateValidate(t *testing.T) {
 		t.Fatal("expected unsupported core state error")
 	}
 }
+
+func TestRoutingModeValidate(t *testing.T) {
+	for _, mode := range []RoutingMode{RoutingModeGlobal, RoutingModeRule, RoutingModeDirect} {
+		if err := mode.Validate(); err != nil {
+			t.Fatalf("validate %q: %v", mode, err)
+		}
+		if mode.String() != string(mode) {
+			t.Fatalf("unexpected string for %q", mode)
+		}
+	}
+	if err := RoutingMode("invalid").Validate(); err == nil {
+		t.Fatal("expected unsupported routing mode error")
+	}
+}

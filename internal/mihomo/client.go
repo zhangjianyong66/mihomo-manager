@@ -24,6 +24,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/zhangjianyong66/mihomo-manager/internal/config"
+	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
 )
 
 type Client struct {
@@ -76,7 +77,14 @@ func (c *Client) Reload() error {
 }
 
 func (c *Client) TestConfig() error {
-	return exec.Command(c.paths.MihomoBin, "-t", "-f", c.paths.ConfigFile).Run()
+	if strings.TrimSpace(c.paths.MihomoBin) == "" {
+		return errors.New("MIHOMO_BIN is empty")
+	}
+	configDir := c.paths.ConfigDir
+	if configDir == "" {
+		configDir = filepath.Dir(c.paths.ConfigFile)
+	}
+	return exec.Command(c.paths.MihomoBin, "-t", "-d", configDir, "-f", c.paths.ConfigFile).Run()
 }
 
 func (c *Client) Proxies() (map[string]any, error) {
@@ -275,6 +283,12 @@ func (c *Client) DiagnoseRoute(input string) (RouteDiagnosisResult, error) {
 				res.MatchedRule, res.Target = rule, strings.TrimSpace(parts[2])
 				res.Confidence = "low"
 				res.Note = "GEOIP,CN diagnosis is approximate without DNS resolution"
+			}
+		case "RULE-SET":
+			if len(parts) >= 3 {
+				res.MatchedRule, res.Target = rule, strings.TrimSpace(parts[2])
+				res.Confidence = "low"
+				res.Note = "RULE-SET membership cannot be proven statically; use live connections as the source of truth"
 			}
 		case "MATCH":
 			if len(parts) >= 2 {
@@ -677,72 +691,167 @@ func (c *Client) ReadSubscriptionURL() (string, error) {
 	return strings.TrimSpace(string(b)), nil
 }
 
+type SubscriptionUpdateResult struct {
+	Warnings []string
+}
+
+type groupSelection struct {
+	Group    string
+	Selected string
+}
+
 func (c *Client) UpdateSubscription() error {
+	_, err := c.UpdateSubscriptionWithResult()
+	return err
+}
+
+func (c *Client) UpdateSubscriptionWithResult() (SubscriptionUpdateResult, error) {
 	urlValue, err := c.ReadSubscriptionURL()
 	if err != nil {
-		return err
+		return SubscriptionUpdateResult{}, err
 	}
 	oldCfg, err := c.readConfigMap()
 	if err != nil {
-		return err
+		return SubscriptionUpdateResult{}, err
 	}
 	whitelistDomains, err := c.whitelistDomains(oldCfg)
 	if err != nil {
-		return err
+		return SubscriptionUpdateResult{}, err
 	}
+	policy, err := ParseRoutingPolicy(oldCfg, whitelistDomains)
+	if err != nil {
+		return SubscriptionUpdateResult{}, err
+	}
+	selections := c.captureManagedSelections()
 	body, err := c.downloadSubscriptionWithRetry(urlValue, 3)
 	if err != nil {
-		return err
-	}
-	if err := c.BackupConfig(); err != nil {
-		return err
+		return SubscriptionUpdateResult{}, err
 	}
 
-	cfg, err := parseSubscriptionConfig(body)
+	subscriptionCfg, err := parseSubscriptionConfig(body)
 	if err != nil {
-		return err
+		return SubscriptionUpdateResult{}, err
+	}
+	proxyNames := subscriptionProxyNames(subscriptionCfg)
+	if len(proxyNames) == 0 {
+		return SubscriptionUpdateResult{}, errors.New("subscription contains no usable proxies")
 	}
 
-	localMixedPort := anyOrDefault(oldCfg["mixed-port"], 7890)
-	localSocksPort := anyOrDefault(oldCfg["socks-port"], 7891)
-	localExternalController := anyOrDefault(oldCfg["external-controller"], "127.0.0.1:9090")
-
-	// Remove conflicting port setting, use mixed-port instead.
+	cfg := cloneStringMap(oldCfg)
+	cfg["proxies"] = cloneYAMLValue(subscriptionCfg["proxies"])
+	if providers, ok := subscriptionCfg["proxy-providers"]; ok {
+		cfg["proxy-providers"] = cloneYAMLValue(providers)
+	} else {
+		delete(cfg, "proxy-providers")
+	}
 	delete(cfg, "port")
-	cfg["mixed-port"] = localMixedPort
-	cfg["socks-port"] = localSocksPort
-	cfg["external-controller"] = localExternalController
+	cfg["mixed-port"] = anyOrDefault(oldCfg["mixed-port"], 7890)
+	cfg["socks-port"] = anyOrDefault(oldCfg["socks-port"], 7891)
+	cfg["external-controller"] = anyOrDefault(oldCfg["external-controller"], "127.0.0.1:9090")
+	cfg["proxy-groups"] = []any{
+		map[string]any{"name": ProxyGroupName, "type": "select", "proxies": stringsToAny(proxyNames)},
+		map[string]any{"name": DirectGroupName, "type": "select", "proxies": []any{"DIRECT"}},
+	}
+	if err := ApplyRoutingPolicy(cfg, policy, c.paths); err != nil {
+		return SubscriptionUpdateResult{}, err
+	}
+	if err := c.writeValidatedConfigMap(cfg); err != nil {
+		return SubscriptionUpdateResult{}, err
+	}
 
-	// 订阅更新默认不依赖 Geo 数据，避免热重载时因下载 GeoIP/GeoSite 阻塞。
-	proxyNames := make([]any, 0)
-	if proxies, ok := cfg["proxies"].([]any); ok {
-		for _, p := range proxies {
-			if pm, ok := p.(map[string]any); ok {
-				if name, ok := pm["name"].(string); ok && name != "" && name != "DIRECT" && name != "REJECT" {
-					proxyNames = append(proxyNames, name)
-				}
+	result := SubscriptionUpdateResult{Warnings: append([]string(nil), policy.Warnings...)}
+	if len(selections) == 0 {
+		return result, nil
+	}
+	if err := c.Reload(); err != nil {
+		return SubscriptionUpdateResult{}, c.rollbackSubscriptionUpdate(selections, fmt.Errorf("reload updated subscription: %w", err))
+	}
+	for _, selection := range selections {
+		desired := selection.Selected
+		if !selectionExists(selection.Group, desired, proxyNames) {
+			desired = deterministicFallback(proxyNames)
+			result.Warnings = append(result.Warnings, fmt.Sprintf("组 %s 原节点 %q 已消失，已回退到 %q", selection.Group, selection.Selected, desired))
+		}
+		if err := c.SwitchNodeInGroup(selection.Group, desired); err != nil {
+			return SubscriptionUpdateResult{}, c.rollbackSubscriptionUpdate(selections, fmt.Errorf("restore selection for %s: %w", selection.Group, err))
+		}
+	}
+	return result, nil
+}
+
+func (c *Client) captureManagedSelections() []groupSelection {
+	if strings.TrimSpace(c.paths.APIAddr) == "" {
+		return nil
+	}
+	result := make([]groupSelection, 0, 2)
+	for _, group := range []string{"GLOBAL", ProxyGroupName} {
+		_, selected, err := c.GroupNodes(group)
+		if err == nil && selected != "" {
+			result = append(result, groupSelection{Group: group, Selected: selected})
+		}
+	}
+	return result
+}
+
+func (c *Client) rollbackSubscriptionUpdate(selections []groupSelection, cause error) error {
+	restoreErr := c.RestoreConfig()
+	if restoreErr == nil {
+		restoreErr = c.Reload()
+	}
+	if restoreErr == nil {
+		for _, selection := range selections {
+			if err := c.SwitchNodeInGroup(selection.Group, selection.Selected); err != nil {
+				restoreErr = errors.Join(restoreErr, err)
 			}
 		}
 	}
-	cfg["proxy-groups"] = []any{
-		map[string]any{"name": "🌐 代理", "type": "select", "proxies": proxyNames},
-		map[string]any{"name": "🎯 直连", "type": "select", "proxies": []string{"DIRECT"}},
+	if restoreErr != nil {
+		return errors.Join(cause, fmt.Errorf("restore previous subscription state: %w", restoreErr))
 	}
-	cfg["rules"] = []any{
-		"MATCH,🌐 代理",
-	}
-	injectWhitelistRules(cfg, whitelistDomains)
+	return cause
+}
 
-	out, err := yaml.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("marshal config failed: %w", err)
+func subscriptionProxyNames(cfg map[string]any) []string {
+	proxies, _ := cfg["proxies"].([]any)
+	names := make([]string, 0, len(proxies))
+	for _, value := range proxies {
+		proxy, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := proxy["name"].(string)
+		name = strings.TrimSpace(name)
+		if name != "" && !strings.EqualFold(name, "DIRECT") && !strings.EqualFold(name, "REJECT") {
+			names = append(names, name)
+		}
 	}
+	return dedupNonEmpty(names)
+}
 
-	if err := os.WriteFile(c.paths.ConfigFile, out, 0644); err != nil {
-		_ = c.RestoreConfig()
-		return err
+func stringsToAny(values []string) []any {
+	result := make([]any, len(values))
+	for index, value := range values {
+		result[index] = value
 	}
-	return nil
+	return result
+}
+
+func selectionExists(group, selected string, proxies []string) bool {
+	for _, candidate := range proxies {
+		if candidate == selected {
+			return true
+		}
+	}
+	return group == "GLOBAL" && (selected == ProxyGroupName || selected == DirectGroupName)
+}
+
+func deterministicFallback(proxies []string) string {
+	candidates := append([]string(nil), proxies...)
+	sort.Strings(candidates)
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0]
 }
 
 func parseSubscriptionConfig(body []byte) (map[string]any, error) {
@@ -1125,7 +1234,11 @@ func (c *Client) BackupConfig() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(c.paths.BackupFile, b, 0644)
+	mode := os.FileMode(0o600)
+	if info, statErr := os.Stat(c.paths.ConfigFile); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	return writeFileAtomic(c.paths.BackupFile, b, mode)
 }
 
 func (c *Client) RestoreConfig() error {
@@ -1133,7 +1246,11 @@ func (c *Client) RestoreConfig() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(c.paths.ConfigFile, b, 0644)
+	mode := os.FileMode(0o600)
+	if info, statErr := os.Stat(c.paths.ConfigFile); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	return writeFileAtomic(c.paths.ConfigFile, b, mode)
 }
 
 func (c *Client) TailLogs(lines int) (string, error) {
@@ -1275,17 +1392,14 @@ func (c *Client) AddWhitelist(domain string) error {
 	if err != nil {
 		return err
 	}
+	oldDomains := append([]string(nil), domains...)
 	n := normalizeDomain(domain)
 	if n == "" {
 		return errors.New("empty whitelist domain")
 	}
 	domains = append(domains, n)
 	domains = normalizeDomainList(domains)
-	if err := c.saveWhitelistDomains(domains); err != nil {
-		return err
-	}
-	injectWhitelistRules(cfg, domains)
-	return c.writeConfigMap(cfg)
+	return c.applyWhitelistPolicy(cfg, oldDomains, domains)
 }
 
 func (c *Client) RemoveWhitelist(domain string) error {
@@ -1305,11 +1419,7 @@ func (c *Client) RemoveWhitelist(domain string) error {
 		}
 	}
 	out = normalizeDomainList(out)
-	if err := c.saveWhitelistDomains(out); err != nil {
-		return err
-	}
-	injectWhitelistRules(cfg, out)
-	return c.writeConfigMap(cfg)
+	return c.applyWhitelistPolicy(cfg, domains, out)
 }
 
 func (c *Client) ListWhitelist() ([]string, error) {
@@ -1329,35 +1439,35 @@ func (c *Client) ApplyRouteCN() error {
 	if err != nil {
 		return err
 	}
-	cfg["geodata-mode"] = true
-	cfg["geo-auto-update"] = true
-	cfg["geo-update-interval"] = 24
-	cfg["geox-url"] = map[string]any{
-		"geoip":   "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat",
-		"geosite": "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat",
-		"mmdb":    "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb",
-	}
-	rules := anyToStrings(cfg["rules"])
-	cleaned := make([]string, 0, len(rules)+3)
-	for _, r := range rules {
-		ru := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(r), " ", ""))
-		if strings.HasPrefix(ru, "GEOSITE,CN,DIRECT") || strings.HasPrefix(ru, "GEOIP,CN,DIRECT") {
-			continue
-		}
-		if strings.HasPrefix(ru, "MATCH,") {
-			continue
-		}
-		cleaned = append(cleaned, r)
-	}
-	managed := []string{"GEOSITE,CN,DIRECT", "GEOIP,CN,DIRECT,no-resolve", "MATCH,GLOBAL"}
-	cfg["rules"] = append(managed, cleaned...)
-	injectWhitelistRules(cfg, whitelistDomains)
-	if err := c.writeConfigMap(cfg); err != nil {
+	policy, err := ParseRoutingPolicy(cfg, whitelistDomains)
+	if err != nil {
 		return err
 	}
-	if err := c.TestConfig(); err != nil {
-		_ = c.RestoreConfig()
+	policy.Mode = domain.RoutingModeRule
+	if err := ApplyRoutingPolicy(cfg, policy, c.paths); err != nil {
+		return err
+	}
+	if err := c.writeValidatedConfigMap(cfg); err != nil {
 		return fmt.Errorf("config test failed after applying route rules: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) applyWhitelistPolicy(cfg map[string]any, oldDomains, domains []string) error {
+	stripWhitelistRules(cfg, oldDomains)
+	policy, err := ParseRoutingPolicy(cfg, domains)
+	if err != nil {
+		return err
+	}
+	if err := ApplyRoutingPolicy(cfg, policy, c.paths); err != nil {
+		return err
+	}
+	if err := c.writeValidatedConfigMap(cfg); err != nil {
+		return err
+	}
+	if err := c.saveWhitelistDomains(domains); err != nil {
+		_ = c.RestoreConfig()
+		return err
 	}
 	return nil
 }
@@ -1405,7 +1515,22 @@ func (c *Client) writeConfigMap(m map[string]any) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(c.paths.ConfigFile, b, 0644); err != nil {
+	mode := os.FileMode(0o600)
+	if info, statErr := os.Stat(c.paths.ConfigFile); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	if err := writeFileAtomic(c.paths.ConfigFile, b, mode); err != nil {
+		_ = c.RestoreConfig()
+		return err
+	}
+	return nil
+}
+
+func (c *Client) writeValidatedConfigMap(m map[string]any) error {
+	if err := c.writeConfigMap(m); err != nil {
+		return err
+	}
+	if err := c.TestConfig(); err != nil {
 		_ = c.RestoreConfig()
 		return err
 	}
@@ -1465,10 +1590,39 @@ func (c *Client) saveWhitelistDomains(domains []string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(c.whitelistPath()), 0755); err != nil {
+	mode := os.FileMode(0o600)
+	if info, statErr := os.Stat(c.whitelistPath()); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	return writeFileAtomic(c.whitelistPath(), b, mode)
+}
+
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(c.whitelistPath(), b, 0644)
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".mihomo-manager-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(mode.Perm()); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryName, path)
 }
 
 func extractWhitelistDomains(rules []string) []string {
@@ -1489,33 +1643,6 @@ func extractWhitelistDomains(rules []string) []string {
 		out = append(out, strings.TrimSpace(parts[1]))
 	}
 	return normalizeDomainList(out)
-}
-
-func injectWhitelistRules(cfg map[string]any, domains []string) {
-	rules := anyToStrings(cfg["rules"])
-	cleaned := make([]string, 0, len(rules))
-	for _, r := range rules {
-		if isWhitelistRule(r) {
-			continue
-		}
-		cleaned = append(cleaned, r)
-	}
-	domains = normalizeDomainList(domains)
-	out := make([]string, 0, len(domains)+len(cleaned))
-	for _, d := range domains {
-		out = append(out, "DOMAIN-SUFFIX,"+d+",DIRECT")
-	}
-	out = append(out, cleaned...)
-	cfg["rules"] = out
-}
-
-func isWhitelistRule(rule string) bool {
-	parts := strings.Split(strings.TrimSpace(strings.Trim(rule, "\"")), ",")
-	if len(parts) < 3 {
-		return false
-	}
-	tp := strings.ToUpper(strings.TrimSpace(parts[0]))
-	return (tp == "DOMAIN" || tp == "DOMAIN-SUFFIX" || tp == "DOMAIN-WILDCARD") && isDirectTarget(strings.TrimSpace(parts[2]))
 }
 
 func isDirectTarget(target string) bool {

@@ -81,3 +81,22 @@ func (s CoreState) Validate() error {
 		return fmt.Errorf("unsupported core state %q", s)
 	}
 }
+
+type RoutingMode string
+
+const (
+	RoutingModeGlobal RoutingMode = "global"
+	RoutingModeRule   RoutingMode = "rule"
+	RoutingModeDirect RoutingMode = "direct"
+)
+
+func (m RoutingMode) String() string { return string(m) }
+
+func (m RoutingMode) Validate() error {
+	switch m {
+	case RoutingModeGlobal, RoutingModeRule, RoutingModeDirect:
+		return nil
+	default:
+		return fmt.Errorf("unsupported routing mode %q", m)
+	}
+}

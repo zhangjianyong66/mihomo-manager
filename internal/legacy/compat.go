@@ -50,7 +50,18 @@ func (c *Compatibility) SaveSubscriptionURL(ctx context.Context, id domain.Resto
 }
 
 func (c *Compatibility) UpdateSubscription(ctx context.Context, id domain.RestorePointID) error {
-	return c.mutate(ctx, id, true, func(client *mihomo.Client) error { return client.UpdateSubscription() })
+	_, err := c.UpdateSubscriptionWithResult(ctx, id)
+	return err
+}
+
+func (c *Compatibility) UpdateSubscriptionWithResult(ctx context.Context, id domain.RestorePointID) (mihomo.SubscriptionUpdateResult, error) {
+	var result mihomo.SubscriptionUpdateResult
+	err := c.mutate(ctx, id, true, func(client *mihomo.Client) error {
+		var err error
+		result, err = client.UpdateSubscriptionWithResult()
+		return err
+	})
+	return result, err
 }
 
 func (c *Compatibility) ListWhitelist(ctx context.Context, id domain.RestorePointID) ([]string, error) {

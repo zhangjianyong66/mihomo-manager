@@ -3,7 +3,7 @@
   "name": "m2-rule-policy",
   "title": "M2 构建 Rule 分流与订阅保留",
   "description": "生成可复现的局域网、自定义、白名单、CN 与兜底规则及 DNS 策略，并让订阅更新保留路由状态。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

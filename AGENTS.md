@@ -13,7 +13,7 @@
 - 当前本机已安装 MetaCubeX/mihomo `v1.19.28` Linux amd64 v1 构建到 `~/.local/bin/mihomo`。
 - 运行命令：`mm` 或 `mm tui` 打开相同 TUI；A6 已提供 `core`、`config`、`group`、`node`、legacy `subscription`、`route` 业务命令，可用 `mm --help` 和各二级 `--help` 做非交互冒烟验证。
 - CLI 命令工厂、table/json 输出、结构化错误、退出码和秘密值位于 `internal/cli`；`cmd/mm` 只做真实依赖/IO 装配和进程退出。
-- 稳定 ID、mihomo core、档案、订阅、节点、操作和设置领域模型位于 `internal/domain`；按 core/profile/node/group/subscription/route/config/log 拆分的应用 ports 位于 `internal/app`，现有 TUI 尚未迁移到这些 ports。
+- 稳定 ID、`RoutingMode(global|rule|direct)`、mihomo core、档案、订阅、节点、操作和设置领域模型位于 `internal/domain`；按 core/profile/node/group/subscription/route/config/log 拆分的应用 ports 位于 `internal/app`，现有 TUI 尚未迁移到这些 ports。
 - `internal/store` 使用 `database/sql` 与固定的 `modernc.org/sqlite v1.36.1`（无 CGO），提供 profile/subscription/node/operation/settings/legacy migration 仓储和三条嵌入式迁移；store 只接收显式数据库路径，默认用户路径由 daemon/config 装配。
 - `internal/core` 定义类型化 adapter/process/runtime 契约并负责 generation 发布；managed generation 位于 `${XDG_DATA_HOME:-~/.local/share}/mihomo-manager/generations`，core 日志和 runtime metadata 位于 `${XDG_STATE_HOME:-~/.local/state}/mihomo-manager/core`，目录/文件权限为 `0700/0600`。
 - 2.x mihomo adapter 位于 `internal/mihomo/adapter.go`、`render.go`、`validation.go`、`process.go`、`runtime.go`；只接受 loopback external-controller，原生验证参数为 `-t -d <dir> -f <file>`，Linux 进程使用 `Setsid`，停止只作用于 daemon 持有的精确进程句柄。
@@ -36,12 +36,14 @@
 - 安装脚本会创建 `~/.config/mihomo`，仅在 `config.yaml` 缺失时生成最小 `DIRECT` 配置并校验，已有配置不会覆盖。当前本机 `config.yaml` 是包含 256 个代理的订阅配置。
 - 配置测试命令：`~/.local/bin/mihomo -t -d ~/.config/mihomo -f ~/.config/mihomo/config.yaml`。当前配置已修复 10 组重复 VLESS 节点名并通过校验，文件权限为 `600`；修复前备份为 `~/.config/mihomo/config.yaml.20260714_214929.bak`。
 - Go 版订阅更新逻辑支持完整 YAML 配置，也支持纯文本或 base64 编码的节点 URI 列表；当前覆盖 `vless://`、`vmess://`、`trojan://`、`ss://`。
-- 订阅更新默认保留本地端口配置，并生成不依赖 Geo 数据下载的规则：白名单域名直连，其余走 `🌐 代理`；需要大陆直连时再手动执行“配置管理 -> 应用分流规则（大陆直连/其他走GLOBAL）”。
+- Rule 路由与 DNS 的唯一合成器位于 `internal/mihomo/routing_policy.go`：固定顺序为本机/局域网、自定义规则、白名单、CN domain/IP `.mrs` providers、唯一 `MATCH,🌐 代理`；兼容 `ApplyRouteCN()`、白名单和订阅更新均复用该实现。
+- Rule DNS 固定 `respect-rules`、国内 bootstrap/代理服务器直连解析、境外加密解析及 CN provider 的国内 policy；保留 fake-IP、IPv6 和不冲突的用户 nameserver policy，已通过 mihomo v1.19.28 原生验证。
+- 订阅更新只替换节点和两个 manager 组候选，保留 mode、本地端口、custom rules/providers、DNS 与白名单；运行中会分别恢复 `GLOBAL`、`🌐 代理`选择，节点消失时按名称排序回退并产生 typed warning。
 - 当前本机 manager daemon 已由 systemd user socket/service 启用并运行，schema v3，mihomo core 状态为 `stopped`；`~/.config/mihomo/rulesets` 已安装固定版本两份规则集并通过摘要/权限校验。
 - 当前本机 mihomo core 未运行；`10808` 当前由 xray 进程监听，`7891` 与 `9090` 未监听。启动 mihomo 前需先处理 `10808` 端口冲突。
 - 当前 GNOME 系统代理地址已配置为 HTTP/HTTPS/SOCKS 均指向 `127.0.0.1:10808`，且 `org.gnome.system.proxy mode` 为 `manual`。由于当前监听该端口的是 xray，Chrome 等遵循系统代理的应用目前会走 xray；本地忽略地址为 `localhost`、`127.0.0.0/8`、`::1`。
 - `~/.config/mihomo/config.yaml` 已写入 `mode: rule`；当前 mihomo 未运行，因此不存在可查询的 mihomo 运行态。
-- mihomo 的 `global` 模式会绕过 `rules`，因此白名单域名直连规则不会生效；当前采用 `rule` 模式，并在规则末尾保留 `MATCH,GLOBAL`，实现“白名单直连，其余全部走 GLOBAL 分组”。
+- mihomo 的 `global` 模式会绕过 `rules`；当前本机配置仍是迁移前的 `rule + MATCH,GLOBAL` 形态，M2 只交付合成器并未自动改写真实用户配置，后续显式模式事务由 M3 接入。
 - Go 版服务启动逻辑位于 `internal/mihomo/client.go`，启动 mihomo 时会设置新 session，避免父进程退出时清理 mihomo 子进程。
 - 仓库仍包含旧 macOS `launchd` 配置，但首版一键安装不支持 macOS，也不会安装 LaunchAgent；卸载器仅保留旧 plist 的兼容清理。
 - 卸载命令：`make uninstall`，默认删除 `mm`、隔离 Go 和安装器 PATH 块，保留 core 与配置；`scripts/uninstall.sh --purge` 删除可确认归属的 core，`--purge-config` 显式删除配置。

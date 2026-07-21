@@ -20,13 +20,13 @@
 
 ## Acceptance Criteria
 
-- [ ] M2-AC1：Rule golden 配置的规则顺序、provider 行为/路径/URL/interval 与父契约一致。
-- [ ] M2-AC2：已有自定义规则/provider 保持相对顺序，重复 manager 规则和所有旧 `MATCH` 被清理，最终只有一个末尾兜底。
-- [ ] M2-AC3：局域网 IPv4/IPv6、白名单、CN domain/IP 和非 CN 目标分别命中预期目标。
-- [ ] M2-AC4：DNS golden 通过当前 mihomo 原生验证，国内/境外/代理服务器解析链路无递归依赖。
-- [ ] M2-AC5：订阅更新前后 mode、规则、DNS、白名单和仍存在的组选择相同；节点消失产生 warning 与确定性回退。
-- [ ] M2-AC6：任一写入后验证失败恢复原配置、权限和 migration expected 摘要。
-- [ ] M2-AC7：旧 `ApplyRouteCN()` 不再保留独立 `MATCH,GLOBAL` 行为，兼容入口调用同一 Rule policy。
+- [x] M2-AC1：Rule golden 配置的规则顺序、provider 行为/路径/URL/interval 与父契约一致。
+- [x] M2-AC2：已有自定义规则/provider 保持相对顺序，重复 manager 规则和所有旧 `MATCH` 被清理，最终只有一个末尾兜底。
+- [x] M2-AC3：局域网 IPv4/IPv6、白名单、CN domain/IP 和非 CN 目标分别命中预期目标。
+- [x] M2-AC4：DNS golden 通过当前 mihomo 原生验证，国内/境外/代理服务器解析链路无递归依赖。
+- [x] M2-AC5：订阅更新前后 mode、规则、DNS、白名单和仍存在的组选择相同；节点消失产生 warning 与确定性回退。
+- [x] M2-AC6：任一写入后验证失败恢复原配置、权限和 migration expected 摘要。
+- [x] M2-AC7：旧 `ApplyRouteCN()` 不再保留独立 `MATCH,GLOBAL` 行为，兼容入口调用同一 Rule policy。
 
 ## Out of Scope
 

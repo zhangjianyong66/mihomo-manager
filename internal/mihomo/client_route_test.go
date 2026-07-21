@@ -1,11 +1,14 @@
 package mihomo
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -52,16 +55,18 @@ rules:
 		t.Fatalf("unmarshal config: %v", err)
 	}
 
-	if cfg["geodata-mode"] != true {
-		t.Fatalf("expected geodata-mode=true, got %#v", cfg["geodata-mode"])
+	if cfg["mode"] != "rule" {
+		t.Fatalf("expected mode=rule, got %#v", cfg["mode"])
 	}
 
 	rules := anyToStrings(cfg["rules"])
-	if len(rules) < 4 {
-		t.Fatalf("expected at least 4 rules, got %v", rules)
+	if len(rules) < len(managerLocalRules)+4 {
+		t.Fatalf("expected manager rules, got %v", rules)
 	}
-	if rules[0] != "DOMAIN-SUFFIX,example.com,DIRECT" || rules[1] != "GEOSITE,CN,DIRECT" || rules[2] != "GEOIP,CN,DIRECT,no-resolve" || rules[3] != "MATCH,GLOBAL" {
-		t.Fatalf("unexpected rule prefix: %v", rules[:4])
+	for i, want := range managerLocalRules {
+		if rules[i] != want {
+			t.Fatalf("rule %d = %q, want %q; rules: %v", i, rules[i], want, rules)
+		}
 	}
 
 	matchCount := 0
@@ -69,15 +74,12 @@ rules:
 		ru := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(r), " ", ""))
 		if strings.HasPrefix(ru, "MATCH,") {
 			matchCount++
-			if ru != "MATCH,GLOBAL" {
+			if r != "MATCH,"+ProxyGroupName {
 				t.Fatalf("unexpected match rule: %q", r)
 			}
 		}
-		if strings.HasPrefix(ru, "GEOSITE,CN,DIRECT") && r != "GEOSITE,CN,DIRECT" {
-			t.Fatalf("stale geosite cn rule remains: %q", r)
-		}
-		if strings.HasPrefix(ru, "GEOIP,CN,DIRECT") && r != "GEOIP,CN,DIRECT,no-resolve" {
-			t.Fatalf("stale geoip cn rule remains: %q", r)
+		if strings.HasPrefix(ru, "GEOSITE,") || strings.HasPrefix(ru, "GEOIP,") {
+			t.Fatalf("legacy geo rule remains: %q", r)
 		}
 	}
 	if matchCount != 1 {
@@ -135,6 +137,7 @@ rules:
 	}
 
 	c := New(config.Paths{
+		ConfigDir:  tmpDir,
 		ConfigFile: configFile,
 		BackupFile: backupFile,
 	})
@@ -185,6 +188,8 @@ rules:
 	}
 
 	c := New(config.Paths{
+		MihomoBin:       "/usr/bin/true",
+		ConfigDir:       tmpDir,
 		ConfigFile:      configFile,
 		BackupFile:      backupFile,
 		SubscriptionURL: subscriptionURLFile,
@@ -204,18 +209,11 @@ rules:
 		t.Fatalf("unmarshal config: %v", err)
 	}
 	rules := anyToStrings(cfg["rules"])
-	wantPrefix := []string{
-		"DOMAIN-SUFFIX,example.com,DIRECT",
-		"DOMAIN-SUFFIX,github.com,DIRECT",
-		"MATCH,🌐 代理",
+	if len(rules) < len(managerLocalRules)+5 || rules[len(rules)-1] != "MATCH,"+ProxyGroupName {
+		t.Fatalf("unexpected rule order: %v", rules)
 	}
-	if len(rules) < len(wantPrefix) {
-		t.Fatalf("expected at least %d rules, got %v", len(wantPrefix), rules)
-	}
-	for i, want := range wantPrefix {
-		if rules[i] != want {
-			t.Fatalf("rule %d mismatch: got %q want %q; all rules: %v", i, rules[i], want, rules)
-		}
+	if !containsString(rules, "DOMAIN-SUFFIX,example.com,DIRECT") || !containsString(rules, "DOMAIN-SUFFIX,github.com,DIRECT") {
+		t.Fatalf("whitelist rules missing: %v", rules)
 	}
 }
 
@@ -246,6 +244,8 @@ func TestUpdateSubscription_AcceptsVLESSURIList(t *testing.T) {
 	}
 
 	c := New(config.Paths{
+		MihomoBin:       "/usr/bin/true",
+		ConfigDir:       tmpDir,
 		ConfigFile:      configFile,
 		BackupFile:      backupFile,
 		SubscriptionURL: subscriptionURLFile,
@@ -325,6 +325,8 @@ rules:
 	}
 
 	c := New(config.Paths{
+		MihomoBin:       "/usr/bin/true",
+		ConfigDir:       tmpDir,
 		ConfigFile:      configFile,
 		BackupFile:      backupFile,
 		SubscriptionURL: subscriptionURLFile,
@@ -347,10 +349,10 @@ rules:
 	for _, rule := range rules {
 		upper := strings.ToUpper(rule)
 		if strings.HasPrefix(upper, "GEOIP,") || strings.HasPrefix(upper, "GEOSITE,") {
-			t.Fatalf("subscription update should not require geo data, got rules: %v", rules)
+			t.Fatalf("legacy geo rule remains, got rules: %v", rules)
 		}
 	}
-	if len(rules) < 2 || rules[0] != "DOMAIN-SUFFIX,example.com,DIRECT" || rules[len(rules)-1] != "MATCH,🌐 代理" {
+	if len(rules) < len(managerLocalRules)+4 || rules[len(rules)-1] != "MATCH,"+ProxyGroupName || !containsString(rules, "RULE-SET,"+CNDomainProviderName+",DIRECT") {
 		t.Fatalf("unexpected rules: %v", rules)
 	}
 }
@@ -397,6 +399,8 @@ rules:
 	}
 
 	c := New(config.Paths{
+		MihomoBin:       "/usr/bin/true",
+		ConfigDir:       tmpDir,
 		ConfigFile:      configFile,
 		BackupFile:      backupFile,
 		SubscriptionURL: subscriptionURLFile,
@@ -441,6 +445,8 @@ rules:
 	}
 
 	c := New(config.Paths{
+		MihomoBin:     "/usr/bin/true",
+		ConfigDir:     tmpDir,
 		ConfigFile:    configFile,
 		BackupFile:    backupFile,
 		WhitelistFile: whitelistFile,
@@ -489,6 +495,8 @@ rules:
 	}
 
 	c := New(config.Paths{
+		MihomoBin:     "/usr/bin/true",
+		ConfigDir:     tmpDir,
 		ConfigFile:    configFile,
 		BackupFile:    backupFile,
 		WhitelistFile: whitelistFile,
@@ -531,6 +539,8 @@ func TestAddWhitelist_WritesFileAndInjectsConfigRule(t *testing.T) {
 	}
 
 	c := New(config.Paths{
+		MihomoBin:     "/usr/bin/true",
+		ConfigDir:     tmpDir,
 		ConfigFile:    configFile,
 		BackupFile:    backupFile,
 		WhitelistFile: whitelistFile,
@@ -548,7 +558,7 @@ func TestAddWhitelist_WritesFileAndInjectsConfigRule(t *testing.T) {
 		t.Fatalf("unexpected whitelist: %v", got)
 	}
 	rules := readRules(t, configFile)
-	if len(rules) < 2 || rules[0] != "DOMAIN-SUFFIX,example.com,DIRECT" || rules[1] != "MATCH,GLOBAL" {
+	if len(rules) < len(managerLocalRules)+4 || !containsString(rules, "DOMAIN-SUFFIX,example.com,DIRECT") || rules[len(rules)-1] != "MATCH,"+ProxyGroupName {
 		t.Fatalf("unexpected rules after add: %v", rules)
 	}
 }
@@ -567,6 +577,8 @@ func TestAddWhitelist_WildcardDomainUsesSuffixRule(t *testing.T) {
 	}
 
 	c := New(config.Paths{
+		MihomoBin:     "/usr/bin/true",
+		ConfigDir:     tmpDir,
 		ConfigFile:    configFile,
 		BackupFile:    backupFile,
 		WhitelistFile: whitelistFile,
@@ -584,7 +596,7 @@ func TestAddWhitelist_WildcardDomainUsesSuffixRule(t *testing.T) {
 		t.Fatalf("unexpected whitelist: %v", got)
 	}
 	rules := readRules(t, configFile)
-	if len(rules) < 2 || rules[0] != "DOMAIN-SUFFIX,example.com,DIRECT" || rules[1] != "MATCH,GLOBAL" {
+	if len(rules) < len(managerLocalRules)+4 || !containsString(rules, "DOMAIN-SUFFIX,example.com,DIRECT") || rules[len(rules)-1] != "MATCH,"+ProxyGroupName {
 		t.Fatalf("unexpected rules after wildcard add: %v", rules)
 	}
 }
@@ -612,6 +624,8 @@ rules:
 	}
 
 	c := New(config.Paths{
+		MihomoBin:     "/usr/bin/true",
+		ConfigDir:     tmpDir,
 		ConfigFile:    configFile,
 		BackupFile:    backupFile,
 		WhitelistFile: whitelistFile,
@@ -629,13 +643,306 @@ rules:
 		t.Fatalf("unexpected whitelist: %v", got)
 	}
 	rules := readRules(t, configFile)
-	if len(rules) < 2 || rules[0] != "DOMAIN-SUFFIX,github.com,DIRECT" || rules[1] != "MATCH,GLOBAL" {
+	if len(rules) < len(managerLocalRules)+4 || !containsString(rules, "DOMAIN-SUFFIX,github.com,DIRECT") || rules[len(rules)-1] != "MATCH,"+ProxyGroupName {
 		t.Fatalf("unexpected rules after remove: %v", rules)
 	}
 	for _, rule := range rules {
 		if strings.Contains(rule, "example.com") {
 			t.Fatalf("removed domain still present in rules: %v", rules)
 		}
+	}
+}
+
+func TestUpdateSubscription_PreservesRoutingOverlayAndRestoresSelections(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+	backupFile := filepath.Join(tmpDir, "config.yaml.bak")
+	whitelistFile := filepath.Join(tmpDir, "whitelist.yaml")
+	subscriptionURLFile := filepath.Join(tmpDir, "subscription.url")
+
+	subscription := `
+proxies:
+  - name: node-z
+    type: socks5
+    server: 127.0.0.1
+    port: 1080
+  - name: node-a
+    type: socks5
+    server: 127.0.0.1
+    port: 1081
+`
+	subscriptionServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(subscription))
+	}))
+	defer subscriptionServer.Close()
+
+	var mu sync.Mutex
+	reloadCount := 0
+	selected := map[string]string{}
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/proxies/GLOBAL":
+			_, _ = w.Write([]byte(`{"all":["node-a","node-old","🌐 代理"],"now":"node-a"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/proxies/"+ProxyGroupName:
+			_, _ = w.Write([]byte(`{"all":["node-a","node-old"],"now":"node-old"}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/configs":
+			mu.Lock()
+			reloadCount++
+			mu.Unlock()
+		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/proxies/"):
+			var payload map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			selected[strings.TrimPrefix(r.URL.Path, "/proxies/")] = payload["name"]
+			mu.Unlock()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer apiServer.Close()
+
+	original := `
+mode: direct
+mixed-port: 17890
+socks-port: 17891
+external-controller: 127.0.0.1:19090
+proxies:
+  - name: node-old
+    type: socks5
+    server: 127.0.0.1
+    port: 1082
+rule-providers:
+  custom:
+    type: file
+    behavior: classical
+    path: ./custom.yaml
+rules:
+  - DOMAIN,custom.example,REJECT
+  - DOMAIN-SUFFIX,white.example,DIRECT
+  - MATCH,GLOBAL
+dns:
+  enhanced-mode: fake-ip
+  fake-ip-filter:
+    - +.internal.example
+  nameserver-policy:
+    +.corp.example:
+      - 10.0.0.53
+`
+	if err := os.WriteFile(configFile, []byte(original), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(backupFile, nil, 0o600); err != nil {
+		t.Fatalf("write backup: %v", err)
+	}
+	if err := os.WriteFile(whitelistFile, []byte("domains:\n  - white.example\n"), 0o600); err != nil {
+		t.Fatalf("write whitelist: %v", err)
+	}
+	if err := os.WriteFile(subscriptionURLFile, []byte(subscriptionServer.URL+"\n"), 0o600); err != nil {
+		t.Fatalf("write subscription URL: %v", err)
+	}
+
+	client := New(config.Paths{
+		MihomoBin:       "/usr/bin/true",
+		ConfigDir:       tmpDir,
+		ConfigFile:      configFile,
+		BackupFile:      backupFile,
+		CNDomainRuleset: filepath.Join(tmpDir, "rulesets", "cn-domain.mrs"),
+		CNIPRuleset:     filepath.Join(tmpDir, "rulesets", "cn-ip.mrs"),
+		SubscriptionURL: subscriptionURLFile,
+		WhitelistFile:   whitelistFile,
+		APIAddr:         apiServer.URL,
+	})
+	result, err := client.UpdateSubscriptionWithResult()
+	if err != nil {
+		t.Fatalf("UpdateSubscriptionWithResult failed: %v", err)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "node-old") || !strings.Contains(result.Warnings[0], "node-a") {
+		t.Fatalf("warnings = %#v", result.Warnings)
+	}
+
+	updated, err := client.readConfigMap()
+	if err != nil {
+		t.Fatalf("read updated config: %v", err)
+	}
+	if updated["mode"] != "direct" || updated["mixed-port"] != 17890 || updated["socks-port"] != 17891 || updated["external-controller"] != "127.0.0.1:19090" {
+		t.Fatalf("local mode or ports changed: %#v", updated)
+	}
+	rules := anyToStrings(updated["rules"])
+	if !containsString(rules, "DOMAIN,custom.example,REJECT") || !containsString(rules, "DOMAIN-SUFFIX,white.example,DIRECT") || rules[len(rules)-1] != "MATCH,"+ProxyGroupName {
+		t.Fatalf("routing rules changed: %v", rules)
+	}
+	providers := updated["rule-providers"].(map[string]any)
+	if providers["custom"] == nil || providers[CNDomainProviderName] == nil || providers[CNIPProviderName] == nil {
+		t.Fatalf("rule providers = %#v", providers)
+	}
+	dns := updated["dns"].(map[string]any)
+	if dns["enhanced-mode"] != "fake-ip" || !reflect.DeepEqual(dns["fake-ip-filter"], []any{"+.internal.example"}) {
+		t.Fatalf("dns compatibility fields changed: %#v", dns)
+	}
+	policy := dns["nameserver-policy"].(map[string]any)
+	if !reflect.DeepEqual(policy["+.corp.example"], []any{"10.0.0.53"}) {
+		t.Fatalf("custom DNS policy changed: %#v", policy)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if reloadCount != 1 || selected["GLOBAL"] != "node-a" || selected[ProxyGroupName] != "node-a" {
+		t.Fatalf("reload=%d selections=%#v", reloadCount, selected)
+	}
+}
+
+func TestUpdateSubscription_RestoresConfigAndModeWhenValidationFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+	backupFile := filepath.Join(tmpDir, "config.yaml.bak")
+	whitelistFile := filepath.Join(tmpDir, "whitelist.yaml")
+	subscriptionURLFile := filepath.Join(tmpDir, "subscription.url")
+	subscriptionServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("proxies:\n  - {name: node-new, type: socks5, server: 127.0.0.1, port: 1080}\n"))
+	}))
+	defer subscriptionServer.Close()
+
+	original := []byte("mode: global\nrules:\n  - MATCH,GLOBAL\n")
+	if err := os.WriteFile(configFile, original, 0o640); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(backupFile, nil, 0o600); err != nil {
+		t.Fatalf("write backup: %v", err)
+	}
+	if err := os.WriteFile(whitelistFile, []byte("domains: []\n"), 0o600); err != nil {
+		t.Fatalf("write whitelist: %v", err)
+	}
+	if err := os.WriteFile(subscriptionURLFile, []byte(subscriptionServer.URL+"\n"), 0o600); err != nil {
+		t.Fatalf("write subscription URL: %v", err)
+	}
+
+	client := New(config.Paths{
+		MihomoBin:       "/usr/bin/false",
+		ConfigDir:       tmpDir,
+		ConfigFile:      configFile,
+		BackupFile:      backupFile,
+		SubscriptionURL: subscriptionURLFile,
+		WhitelistFile:   whitelistFile,
+	})
+	if _, err := client.UpdateSubscriptionWithResult(); err == nil {
+		t.Fatal("expected validation failure")
+	}
+	after, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatalf("read restored config: %v", err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("config was not restored:\n%s", after)
+	}
+	info, err := os.Stat(configFile)
+	if err != nil {
+		t.Fatalf("stat restored config: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("config mode = %o, want 640", info.Mode().Perm())
+	}
+}
+
+func TestUpdateSubscription_RestoresConfigAndSelectionsWhenSelectionFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+	backupFile := filepath.Join(tmpDir, "config.yaml.bak")
+	whitelistFile := filepath.Join(tmpDir, "whitelist.yaml")
+	subscriptionURLFile := filepath.Join(tmpDir, "subscription.url")
+	subscriptionServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("proxies:\n  - {name: node-new, type: socks5, server: 127.0.0.1, port: 1080}\n"))
+	}))
+	defer subscriptionServer.Close()
+
+	var mu sync.Mutex
+	reloadCount := 0
+	failNewProxySelection := true
+	selected := map[string]string{}
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && (r.URL.Path == "/proxies/GLOBAL" || r.URL.Path == "/proxies/"+ProxyGroupName):
+			_, _ = w.Write([]byte(`{"all":["node-old"],"now":"node-old"}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/configs":
+			mu.Lock()
+			reloadCount++
+			mu.Unlock()
+		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/proxies/"):
+			var payload map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			group := strings.TrimPrefix(r.URL.Path, "/proxies/")
+			mu.Lock()
+			if group == ProxyGroupName && payload["name"] == "node-new" && failNewProxySelection {
+				failNewProxySelection = false
+				mu.Unlock()
+				http.Error(w, "selection failed", http.StatusBadGateway)
+				return
+			}
+			selected[group] = payload["name"]
+			mu.Unlock()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer apiServer.Close()
+
+	original := []byte("mode: rule\nproxies:\n  - {name: node-old, type: socks5, server: 127.0.0.1, port: 1081}\nrules:\n  - MATCH,🌐 代理\n")
+	if err := os.WriteFile(configFile, original, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(backupFile, nil, 0o600); err != nil {
+		t.Fatalf("write backup: %v", err)
+	}
+	if err := os.WriteFile(whitelistFile, []byte("domains: []\n"), 0o600); err != nil {
+		t.Fatalf("write whitelist: %v", err)
+	}
+	if err := os.WriteFile(subscriptionURLFile, []byte(subscriptionServer.URL+"\n"), 0o600); err != nil {
+		t.Fatalf("write subscription URL: %v", err)
+	}
+
+	client := New(config.Paths{
+		MihomoBin:       "/usr/bin/true",
+		ConfigDir:       tmpDir,
+		ConfigFile:      configFile,
+		BackupFile:      backupFile,
+		SubscriptionURL: subscriptionURLFile,
+		WhitelistFile:   whitelistFile,
+		APIAddr:         apiServer.URL,
+	})
+	if _, err := client.UpdateSubscriptionWithResult(); err == nil {
+		t.Fatal("expected selection failure")
+	}
+	after, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatalf("read restored config: %v", err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("config was not restored:\n%s", after)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if reloadCount != 2 || selected["GLOBAL"] != "node-old" || selected[ProxyGroupName] != "node-old" {
+		t.Fatalf("reload=%d selections=%#v", reloadCount, selected)
+	}
+}
+
+func TestDiagnoseRoute_RuleSetIsLowConfidence(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(configFile, []byte("rules:\n  - RULE-SET,mm-cn-domain,DIRECT\n  - MATCH,🌐 代理\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	result, err := New(config.Paths{ConfigFile: configFile}).DiagnoseRoute("example.com")
+	if err != nil {
+		t.Fatalf("DiagnoseRoute failed: %v", err)
+	}
+	if result.MatchedRule != "RULE-SET,mm-cn-domain,DIRECT" || result.Target != "DIRECT" || result.Confidence != "low" || !strings.Contains(result.Note, "live connections") {
+		t.Fatalf("diagnosis = %+v", result)
 	}
 }
 
@@ -650,4 +957,13 @@ func readRules(t *testing.T, configFile string) []string {
 		t.Fatalf("unmarshal config: %v", err)
 	}
 	return anyToStrings(cfg["rules"])
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
