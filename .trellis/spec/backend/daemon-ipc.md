@@ -80,3 +80,62 @@ paths, _ := config.LoadManagerPaths()
 client := ipc.NewClient(paths.Socket)
 err := client.Do(ctx, http.MethodGet, "/v1/status", "", nil, &status)
 ```
+
+## Scenario：三模式查询与事务切换
+
+### 1. Scope / Trigger
+
+修改 `RoutingMode`、legacy 配置模式、mihomo runtime mode API 或 `/v1/mode` 时必须遵守本节。目标是让 daemon 作为单写者可靠切换 `global|rule|direct`，并让配置、运行态和恢复结果可机器判断。
+
+### 2. Signatures
+
+```go
+func (*CapabilityService) ModeStatus(context.Context, string) (ModeStatus, error)
+func (*CapabilityService) SetMode(context.Context, string, domain.RoutingMode, bool) (ModeStatus, error)
+
+type ModeService interface {
+    ModeStatus(context.Context, domain.ProfileID) (RoutingModeStatus, error)
+    SetMode(context.Context, SetRoutingModeRequest) (RoutingModeStatus, error)
+}
+```
+
+IPC 为 `GET /v1/mode?profileId=...` 与 `PUT /v1/mode`；PUT body 固定为 `profileId`、`mode`、`closeConnections`。
+
+### 3. Contracts
+
+- PUT 必须携带非空 `MM-Request-ID`；相同 ID 与相同 method/path/body 在 5 分钟缓存内返回同一响应，不重复切换，不同 body 返回 `REQUEST_ID_CONFLICT`。
+- 只接受活动 legacy profile；external/managed 返回 `PROFILE_MODE_UNSUPPORTED`。core stopped 时只发布已原生验证的配置，`runtimeAvailable=false`、`nextStart=true`，不得探测或启动 controller。
+- 完整状态包含 config/runtime mode、core state、effective group/node、两个 CN ruleset health、连接数、operation ID/phase 和 warnings；错误响应在已有状态时通过 `details.status` 保留它。
+- mode、core、subscription、config 和 route 写操作复用 CoreManager 的同一 `Coordinator`。协调器占用时返回冲突，不得绕过到 legacy `pkill`、配置直写或原始 HTTP。
+- 默认保留连接；只有 `closeConnections=true` 才 DELETE mihomo `/connections`。关闭失败不回滚已成功模式，返回 `CONNECTION_CLOSE_FAILED` 及 `connections_close_failed` 状态。
+
+### 4. Validation & Error Matrix
+
+| 条件 | HTTP / code | app 分类 |
+|---|---|---|
+| mode 非 `global|rule|direct` | 400 `INVALID_ROUTING_MODE` | `invalid_argument` |
+| 缺少 request ID | 400 `REQUEST_ID_REQUIRED` | `invalid_argument` |
+| 非活动或非 legacy profile | 409 `PROFILE_MODE_UNSUPPORTED` | `conflict` |
+| expected SHA 改变 | 409 `CONFIG_CHANGED` | `conflict` |
+| runtime mode/rules 不一致 | 502 `MODE_RUNTIME_MISMATCH` | `upstream_failure` |
+| 文件或 runtime 恢复失败 | 500 `RESTORE_FAILED` | `internal`，core `failed` |
+| 模式成功但关闭连接失败 | 424 `CONNECTION_CLOSE_FAILED` | `upstream_failure`，details 带成功状态 |
+
+### 5. Good / Base / Bad Cases
+
+- Good：running core 切到 Rule 后 `/configs.mode=rule`，两个 manager RULE-SET 和唯一 `MATCH,🌐 代理` 已加载，连接默认保留。
+- Base：stopped core 切换只改配置并报告下次启动生效；GET 不产生 operation。
+- Bad：发布后 runtime 更新失败，恢复旧文件、权限、expected 摘要和旧 mode；任何恢复侧失败都返回 `RESTORE_FAILED`，不得伪报旧 runtime 正常。
+
+### 6. Tests Required
+
+- domain JSON 三枚举 round-trip 与非法值无状态变化。
+- legacy 覆盖原生校验、发布、runtime update/verify、expected refresh、恢复失败和 close partial-success 注入点。
+- daemon 使用真实临时 Unix socket覆盖 GET/PUT、严格单 JSON、1 MiB、必填 request ID、重放/冲突和共享协调器。
+- app client 断言成功状态及 `details.status` 错误状态均完整映射。
+
+### 7. Wrong vs Correct
+
+错误：core stopped 时尝试请求 `127.0.0.1:9090`，或 mode 失败后只恢复 YAML、不恢复 runtime/expected 摘要。
+
+正确：候选临时文件先 `mihomo -t`，原子发布后仅在 CoreManager 明确 running 时使用 typed runtime；失败进入同一补偿流程并核验恢复结果。

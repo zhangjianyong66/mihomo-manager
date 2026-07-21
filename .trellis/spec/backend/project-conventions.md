@@ -46,6 +46,13 @@
 - core API 可用时分别保存/恢复 `GLOBAL` 与 `🌐 代理`选择；节点消失按节点名排序选择首个候选并返回 typed warning，reload/selection 失败恢复旧配置和旧选择。
 - YAML 重写可能改变字段顺序并丢失注释，这是当前实现的已知行为。
 
+## 模式事务
+
+- `internal/legacy/mode.go` 是活动 legacy profile 的模式事务入口；候选始终重放 M2 policy，先在同目录 `0600` 临时文件执行原生校验，再备份、原子发布并重新核对内容和 mode。
+- core stopped 时不得访问 controller，只返回下次启动生效；running 时经 `internal/mihomo/runtime.go` typed client reload/set/verify，Rule 额外核验两个 CN RULE-SET 和唯一代理兜底。
+- 发布后的任一配置/runtime/expected 摘要失败都恢复旧文件、权限、expected 摘要和旧 runtime mode。恢复动作使用独立的有界 context；恢复失败标记 core `failed` 并返回 `RESTORE_FAILED`。
+- mode、core、subscription、config 与 route 写操作共享 daemon `Coordinator`；HTTP PUT `/v1/mode` 必须带 request ID。默认不关闭连接，显式关闭失败是 partial-success，不回滚模式。
+
 ## 白名单
 
 - `whitelist.yaml` 是白名单的持久化来源，结构为 `domains: []`。

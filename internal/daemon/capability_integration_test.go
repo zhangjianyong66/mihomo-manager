@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -78,6 +79,47 @@ func TestCapabilityRoutesLegacyThroughUnixIPC(t *testing.T) {
 	if err := client.Do(context.Background(), http.MethodPost, "/v1/migrations/apply", "apply-integration", nil, &migration); err != nil {
 		cancel()
 		t.Fatal(err)
+	}
+	var modeStatus ModeStatus
+	modeRequest := map[string]any{"mode": "direct", "closeConnections": false}
+	if err := client.Do(context.Background(), http.MethodPut, "/v1/mode", "mode-integration", modeRequest, &modeStatus); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	if modeStatus.ConfigMode != domain.RoutingModeDirect || !modeStatus.NextStart || modeStatus.RuntimeAvailable || modeStatus.OperationID == "" {
+		cancel()
+		t.Fatalf("unexpected stopped mode status: %+v", modeStatus)
+	}
+	backupPattern := filepath.Join(configDir, "config.yaml.mode-*.bak")
+	backups, _ := filepath.Glob(backupPattern)
+	var replay ModeStatus
+	if err := client.Do(context.Background(), http.MethodPut, "/v1/mode", "mode-integration", modeRequest, &replay); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	replayedBackups, _ := filepath.Glob(backupPattern)
+	if replay.OperationID != modeStatus.OperationID || len(replayedBackups) != len(backups) {
+		cancel()
+		t.Fatalf("mode replay executed twice: first=%+v replay=%+v backups=%d/%d", modeStatus, replay, len(backups), len(replayedBackups))
+	}
+	assertIPCCode := func(err error, code string) {
+		t.Helper()
+		var ipcErr *ipc.Error
+		got := ""
+		if errors.As(err, &ipcErr) {
+			got = ipcErr.Body.Code
+		}
+		if got != code {
+			cancel()
+			t.Fatalf("error=%v code=%q, want %q", err, got, code)
+		}
+	}
+	assertIPCCode(client.Do(context.Background(), http.MethodPut, "/v1/mode", "mode-integration", map[string]any{"mode": "rule"}, &modeStatus), "REQUEST_ID_CONFLICT")
+	assertIPCCode(client.Do(context.Background(), http.MethodPut, "/v1/mode", "", modeRequest, &modeStatus), "REQUEST_ID_REQUIRED")
+	assertIPCCode(client.Do(context.Background(), http.MethodPut, "/v1/mode", "mode-invalid", map[string]any{"mode": "invalid"}, &modeStatus), "INVALID_ROUTING_MODE")
+	if err := client.Do(context.Background(), http.MethodGet, "/v1/mode", "", nil, &modeStatus); err != nil || modeStatus.ConfigMode != domain.RoutingModeDirect {
+		cancel()
+		t.Fatalf("mode GET status=%+v err=%v", modeStatus, err)
 	}
 	var subscription SubscriptionInfo
 	if err := client.Do(context.Background(), http.MethodGet, "/v1/subscription", "", nil, &subscription); err != nil {

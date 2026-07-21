@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -88,5 +89,22 @@ func TestRoutingModeValidate(t *testing.T) {
 	}
 	if err := RoutingMode("invalid").Validate(); err == nil {
 		t.Fatal("expected unsupported routing mode error")
+	}
+}
+
+func TestRoutingModeJSONRoundTripAndRejectsUnknownValue(t *testing.T) {
+	for _, want := range []RoutingMode{RoutingModeGlobal, RoutingModeRule, RoutingModeDirect} {
+		encoded, err := json.Marshal(want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got RoutingMode
+		if err := json.Unmarshal(encoded, &got); err != nil || got != want {
+			t.Fatalf("round trip %q => %q err=%v", want, got, err)
+		}
+	}
+	var mode RoutingMode
+	if err := json.Unmarshal([]byte(`"invalid"`), &mode); err == nil {
+		t.Fatal("expected invalid JSON routing mode to fail")
 	}
 }

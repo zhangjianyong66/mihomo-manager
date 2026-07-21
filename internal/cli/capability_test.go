@@ -25,6 +25,13 @@ type fakeCapabilityAPI struct {
 	err          error
 }
 
+func (f *fakeCapabilityAPI) ModeStatus(context.Context, string) (app.RoutingModeStatus, error) {
+	return app.RoutingModeStatus{}, f.err
+}
+func (f *fakeCapabilityAPI) SetMode(context.Context, app.SetRoutingModeRequest) (app.RoutingModeStatus, error) {
+	return app.RoutingModeStatus{}, f.err
+}
+
 func (f *fakeCapabilityAPI) CoreStatus(context.Context, string) (app.CoreStatus, error) {
 	return app.CoreStatus{Type: domain.CoreTypeMihomo, State: domain.CoreStateRunning, ProfileID: "legacy-mihomo", PID: 42}, f.err
 }

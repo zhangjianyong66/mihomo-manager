@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/zhangjianyong66/mihomo-manager/internal/core"
+	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
 	"github.com/zhangjianyong66/mihomo-manager/internal/ipc"
 	"github.com/zhangjianyong66/mihomo-manager/internal/legacy"
 	"github.com/zhangjianyong66/mihomo-manager/internal/store"
@@ -20,6 +21,7 @@ type capabilityHandler struct{ service *CapabilityService }
 func registerCapabilityRoutes(mux *http.ServeMux, service *CapabilityService) {
 	handler := &capabilityHandler{service: service}
 	mux.HandleFunc("/v1/core/status", handler.coreStatus)
+	mux.HandleFunc("/v1/mode", handler.mode)
 	mux.HandleFunc("/v1/core/", handler.coreAction)
 	mux.HandleFunc("/v1/config/", handler.configAction)
 	mux.HandleFunc("/v1/groups", handler.groups)
@@ -32,6 +34,45 @@ func registerCapabilityRoutes(mux *http.ServeMux, service *CapabilityService) {
 	mux.HandleFunc("/v1/routes/diagnose", handler.routeDiagnose)
 	mux.HandleFunc("/v1/logs", handler.logs)
 	mux.HandleFunc("/v1/logs/follow", handler.logFollow)
+}
+
+func (h *capabilityHandler) mode(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		value, err := h.service.ModeStatus(r.Context(), profileQuery(r))
+		writeModeResult(w, value, err)
+		return
+	}
+	if !requireMethod(w, r, http.MethodPut) {
+		return
+	}
+	if strings.TrimSpace(r.Header.Get(ipc.RequestIDHeader)) == "" {
+		_ = ipc.WriteError(w, http.StatusBadRequest, "REQUEST_ID_REQUIRED", "修改模式必须提供 MM-Request-ID", false, nil)
+		return
+	}
+	var request struct {
+		ProfileID        string `json:"profileId,omitempty"`
+		Mode             string `json:"mode"`
+		CloseConnections bool   `json:"closeConnections"`
+	}
+	if err := ipc.DecodeJSON(w, r, &request); err != nil {
+		return
+	}
+	mode := domain.RoutingMode(strings.ToLower(strings.TrimSpace(request.Mode)))
+	value, err := h.service.SetMode(r.Context(), request.ProfileID, mode, request.CloseConnections)
+	writeModeResult(w, value, err)
+}
+
+func writeModeResult(w http.ResponseWriter, value ModeStatus, err error) {
+	if err == nil {
+		_ = ipc.WriteJSONWarnings(w, http.StatusOK, "RoutingModeStatus", value, value.Warnings)
+		return
+	}
+	status, code, message, retryable := classifyCapabilityError(err)
+	details := map[string]any(nil)
+	if value.ProfileID != "" || value.ConfigMode != "" || value.OperationID != "" {
+		details = map[string]any{"status": value}
+	}
+	_ = ipc.WriteError(w, status, code, message, retryable, details)
 }
 
 func profileQuery(r *http.Request) string { return strings.TrimSpace(r.URL.Query().Get("profileId")) }
@@ -393,6 +434,10 @@ func classifyCapabilityError(err error) (int, string, string, bool) {
 	switch {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return http.StatusRequestTimeout, "REQUEST_CANCELLED", "请求已取消", true
+	case errors.Is(err, legacy.ErrRestoreFailed):
+		return http.StatusInternalServerError, "RESTORE_FAILED", "模式切换恢复失败", false
+	case errors.Is(err, legacy.ErrConnectionCloseFailed):
+		return http.StatusFailedDependency, "CONNECTION_CLOSE_FAILED", "模式已生效，但关闭活动连接失败", true
 	case errors.Is(err, ErrCapabilityNotFound), errors.Is(err, store.ErrNotFound):
 		return http.StatusNotFound, "NOT_FOUND", "资源不存在", false
 	case errors.Is(err, store.ErrInvalid):
@@ -400,7 +445,13 @@ func classifyCapabilityError(err error) (int, string, string, bool) {
 	case errors.Is(err, ErrOperationConflict), errors.Is(err, legacy.ErrConflict), errors.Is(err, store.ErrConflict):
 		return http.StatusConflict, "CONFLICT", "操作状态冲突", false
 	case errors.Is(err, ErrCapabilityUnsupported):
-		return http.StatusConflict, "UNSUPPORTED_PROFILE", "当前档案不支持此操作", false
+		return http.StatusConflict, "PROFILE_MODE_UNSUPPORTED", "当前档案不支持此操作", false
+	case errors.Is(err, legacy.ErrInvalidRoutingMode):
+		return http.StatusBadRequest, "INVALID_ROUTING_MODE", "路由模式必须为 global、rule 或 direct", false
+	case errors.Is(err, legacy.ErrConfigChanged):
+		return http.StatusConflict, "CONFIG_CHANGED", "配置已被外部修改", false
+	case errors.Is(err, legacy.ErrModeRuntimeMismatch):
+		return http.StatusBadGateway, "MODE_RUNTIME_MISMATCH", "mihomo 运行模式核验失败", true
 	case errors.Is(err, legacy.ErrValidation), errors.Is(err, core.ErrInvalidConfig), errors.Is(err, core.ErrConfigChanged):
 		return http.StatusUnprocessableEntity, "VALIDATION_FAILED", "配置校验失败", false
 	case errors.Is(err, legacy.ErrUnsafePath), errors.Is(err, store.ErrPermission):

@@ -22,14 +22,14 @@
 
 ## Acceptance Criteria
 
-- [ ] M3-AC1：三种枚举输入 round-trip，非法值映射输入错误且无状态变化。
-- [ ] M3-AC2：core stopped 设置成功只改变已验证配置，status 显示 runtime unavailable/下次生效。
-- [ ] M3-AC3：core running 设置后 `/configs` 与配置 mode 一致；Global/Direct/Rule 有效目标正确。
-- [ ] M3-AC4：默认不调用 close connections；显式选项只调用 mihomo close API 并报告结果。
-- [ ] M3-AC5：文件写入、原生验证、runtime 更新、runtime 核验、expected 刷新各失败点均恢复旧状态。
-- [ ] M3-AC6：恢复失败返回 `RESTORE_FAILED`，不得返回成功或旧 runtime 的伪状态。
-- [ ] M3-AC7：并发 mode/core/subscription 写操作被同一操作协调器串行化；request ID 重放不重复切换。
-- [ ] M3-AC8：IPC 方法、body 限制、协议、错误分类和同 UID 契约测试通过。
+- [x] M3-AC1：三种枚举输入 round-trip，非法值映射输入错误且无状态变化。
+- [x] M3-AC2：core stopped 设置成功只改变已验证配置，status 显示 runtime unavailable/下次生效。
+- [x] M3-AC3：core running 设置后 `/configs` 与配置 mode 一致；Global/Direct/Rule 有效目标正确。
+- [x] M3-AC4：默认不调用 close connections；显式选项只调用 mihomo close API 并报告结果。
+- [x] M3-AC5：文件写入、原生验证、runtime 更新、runtime 核验、expected 刷新各失败点均恢复旧状态。
+- [x] M3-AC6：恢复失败返回 `RESTORE_FAILED`，不得返回成功或旧 runtime 的伪状态。
+- [x] M3-AC7：并发 mode/core/subscription 写操作被同一操作协调器串行化；request ID 重放不重复切换。
+- [x] M3-AC8：IPC 方法、body 限制、协议、错误分类和同 UID 契约测试通过。
 
 ## Out of Scope
 

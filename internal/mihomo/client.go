@@ -1430,6 +1430,49 @@ func (c *Client) ListWhitelist() ([]string, error) {
 	return c.whitelistDomains(cfg)
 }
 
+// ReadRoutingPolicy inspects routing state without creating a derived
+// whitelist file. Read-only daemon status calls must not mutate legacy files.
+func (c *Client) ReadRoutingPolicy() (RoutingPolicy, error) {
+	cfg, err := c.readConfigMap()
+	if err != nil {
+		return RoutingPolicy{}, err
+	}
+	domains, err := c.loadWhitelistDomains()
+	if errors.Is(err, os.ErrNotExist) {
+		domains = extractWhitelistDomains(anyToStrings(cfg["rules"]))
+		err = nil
+	}
+	if err != nil {
+		return RoutingPolicy{}, err
+	}
+	return ParseRoutingPolicy(cfg, domains)
+}
+
+// RoutingModeCandidate returns a complete M2 routing policy with only the
+// requested mode changed. The caller owns validation and publication.
+func (c *Client) RoutingModeCandidate(mode domain.RoutingMode) ([]byte, RoutingPolicy, error) {
+	if err := mode.Validate(); err != nil {
+		return nil, RoutingPolicy{}, err
+	}
+	cfg, err := c.readConfigMap()
+	if err != nil {
+		return nil, RoutingPolicy{}, err
+	}
+	policy, err := c.ReadRoutingPolicy()
+	if err != nil {
+		return nil, RoutingPolicy{}, err
+	}
+	policy.Mode = mode
+	if err := ApplyRoutingPolicy(cfg, policy, c.paths); err != nil {
+		return nil, RoutingPolicy{}, err
+	}
+	content, err := yaml.Marshal(cfg)
+	if err != nil {
+		return nil, RoutingPolicy{}, err
+	}
+	return content, policy, nil
+}
+
 func (c *Client) ApplyRouteCN() error {
 	cfg, err := c.readConfigMap()
 	if err != nil {

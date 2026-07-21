@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -99,4 +100,23 @@ func (m RoutingMode) Validate() error {
 	default:
 		return fmt.Errorf("unsupported routing mode %q", m)
 	}
+}
+
+// UnmarshalJSON keeps configuration/API decoding strict: an unknown mode must
+// not silently become a zero value and continue through a mutation path.
+func (m *RoutingMode) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return errors.New("routing mode receiver must not be nil")
+	}
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return fmt.Errorf("decode routing mode: %w", err)
+	}
+	value = strings.ToLower(strings.TrimSpace(value))
+	mode := RoutingMode(value)
+	if err := mode.Validate(); err != nil {
+		return err
+	}
+	*m = mode
+	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/zhangjianyong66/mihomo-manager/internal/config"
 	"github.com/zhangjianyong66/mihomo-manager/internal/core"
@@ -59,15 +60,48 @@ type ConfigDocument struct {
 	SHA256  string `json:"sha256"`
 }
 
+type RuleSetHealth struct {
+	Name      string `json:"name"`
+	Available bool   `json:"available"`
+	Loaded    bool   `json:"loaded"`
+}
+
+type ModeStatus struct {
+	ProfileID            domain.ProfileID    `json:"profileId"`
+	ConfigMode           domain.RoutingMode  `json:"configMode"`
+	RuntimeMode          *domain.RoutingMode `json:"runtimeMode,omitempty"`
+	RuntimeAvailable     bool                `json:"runtimeAvailable"`
+	CoreState            domain.CoreState    `json:"coreState"`
+	EffectiveGroup       string              `json:"effectiveGroup,omitempty"`
+	EffectiveNode        string              `json:"effectiveNode,omitempty"`
+	RuleSets             []RuleSetHealth     `json:"ruleSets"`
+	ActiveConnections    int                 `json:"activeConnections"`
+	ConnectionsAvailable bool                `json:"connectionsAvailable"`
+	ConnectionsClosed    bool                `json:"connectionsClosed"`
+	NextStart            bool                `json:"nextStart"`
+	OperationID          domain.OperationID  `json:"operationId,omitempty"`
+	OperationPhase       string              `json:"operationPhase,omitempty"`
+	Warnings             []string            `json:"warnings"`
+}
+
 type CapabilityService struct {
-	store  CapabilityStore
-	core   *CoreManager
-	legacy *legacy.Compatibility
-	paths  config.Paths
+	store       CapabilityStore
+	core        *CoreManager
+	legacy      *legacy.Compatibility
+	paths       config.Paths
+	coordinator *Coordinator
+	newID       func(string) string
 }
 
 func NewCapabilityService(store CapabilityStore, manager *CoreManager, compatibility *legacy.Compatibility, paths config.Paths) *CapabilityService {
-	return &CapabilityService{store: store, core: manager, legacy: compatibility, paths: paths}
+	coordinator := NewCoordinator()
+	if manager != nil && manager.coordinator != nil {
+		coordinator = manager.coordinator
+	}
+	return &CapabilityService{
+		store: store, core: manager, legacy: compatibility, paths: paths, coordinator: coordinator,
+		newID: func(prefix string) string { return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano()) },
+	}
 }
 
 func (s *CapabilityService) profile(ctx context.Context, id string) (domain.Profile, domain.RestorePointID, error) {
@@ -112,6 +146,98 @@ var (
 	ErrCapabilityUnsupported = errors.New("capability is unsupported for this profile")
 )
 
+func (s *CapabilityService) ModeStatus(ctx context.Context, profileID string) (ModeStatus, error) {
+	profile, restorePoint, err := s.profile(ctx, profileID)
+	if err != nil {
+		return ModeStatus{}, err
+	}
+	if !profile.Active {
+		return ModeStatus{}, fmt.Errorf("profile %s is not active: %w", profile.ID, ErrCapabilityUnsupported)
+	}
+	coreState, runtime, err := s.routingRuntime(profile.ID)
+	if err != nil {
+		return ModeStatus{}, err
+	}
+	status, err := s.legacy.RoutingModeStatus(ctx, restorePoint, coreState, runtime)
+	return convertModeStatus(profile.ID, status), err
+}
+
+func (s *CapabilityService) SetMode(ctx context.Context, profileID string, mode domain.RoutingMode, closeConnections bool) (ModeStatus, error) {
+	if err := mode.Validate(); err != nil {
+		return ModeStatus{}, fmt.Errorf("%w: %v", legacy.ErrInvalidRoutingMode, err)
+	}
+	profile, restorePoint, err := s.profile(ctx, profileID)
+	if err != nil {
+		return ModeStatus{}, err
+	}
+	if !profile.Active {
+		return ModeStatus{}, fmt.Errorf("profile %s is not active: %w", profile.ID, ErrCapabilityUnsupported)
+	}
+	coordinator, newID := s.mutationDependencies()
+	release, err := coordinator.TryAcquire(ctx, newID("routing-mode"), "routing.mode.set")
+	if err != nil {
+		return ModeStatus{}, err
+	}
+	defer release()
+	coreState, runtime, err := s.routingRuntime(profile.ID)
+	if err != nil {
+		return ModeStatus{}, err
+	}
+	status, err := s.legacy.SetRoutingMode(ctx, restorePoint, legacy.SetModeRequest{
+		Mode: mode, CloseConnections: closeConnections, CoreState: coreState, Runtime: runtime,
+	})
+	if errors.Is(err, legacy.ErrRestoreFailed) && s.core != nil {
+		s.core.markFailed(profile.ID, "RESTORE_FAILED")
+		status.CoreState = domain.CoreStateFailed
+	}
+	return convertModeStatus(profile.ID, status), err
+}
+
+func (s *CapabilityService) routingRuntime(profileID domain.ProfileID) (domain.CoreState, mihomo.RoutingRuntime, error) {
+	if s.core == nil {
+		return domain.CoreStateStopped, nil, nil
+	}
+	status := s.core.Status()
+	if status.State != domain.CoreStateRunning {
+		return status.State, nil, nil
+	}
+	if status.ProfileID != profileID {
+		return status.State, nil, fmt.Errorf("running profile %s does not match %s: %w", status.ProfileID, profileID, ErrOperationConflict)
+	}
+	client, running, err := s.core.Runtime()
+	if err != nil {
+		return status.State, nil, err
+	}
+	if !running {
+		return domain.CoreStateStopped, nil, nil
+	}
+	runtime, ok := client.(mihomo.RoutingRuntime)
+	if !ok {
+		return status.State, nil, errors.New("mihomo runtime does not support routing mode operations")
+	}
+	return status.State, runtime, nil
+}
+
+func convertModeStatus(profileID domain.ProfileID, status legacy.ModeStatus) ModeStatus {
+	rules := make([]RuleSetHealth, 0, len(status.RuleSets))
+	for _, item := range status.RuleSets {
+		rules = append(rules, RuleSetHealth{Name: item.Name, Available: item.Available, Loaded: item.Loaded})
+	}
+	warnings := append([]string(nil), status.Warnings...)
+	if warnings == nil {
+		warnings = []string{}
+	}
+	return ModeStatus{
+		ProfileID: profileID, ConfigMode: status.ConfigMode, RuntimeMode: status.RuntimeMode,
+		RuntimeAvailable: status.RuntimeAvailable, CoreState: status.CoreState,
+		EffectiveGroup: status.EffectiveGroup, EffectiveNode: status.EffectiveNode,
+		RuleSets: rules, ActiveConnections: status.ActiveConnections,
+		ConnectionsAvailable: status.ConnectionsAvailable, ConnectionsClosed: status.ConnectionsClosed,
+		NextStart: status.NextStart, OperationID: status.OperationID, OperationPhase: status.OperationPhase,
+		Warnings: warnings,
+	}
+}
+
 func (s *CapabilityService) CoreStatus(context.Context, string) (CoreStatus, error) {
 	if s == nil || s.core == nil {
 		return CoreStatus{}, errors.New("core service is not configured")
@@ -140,7 +266,7 @@ func (s *CapabilityService) CoreAction(ctx context.Context, profileID, action st
 	case "restart":
 		return s.core.Activate(ctx, snapshot)
 	case "reload":
-		return s.legacy.Reload(ctx, restorePoint)
+		return s.withMutation(ctx, "core.reload", func() error { return s.legacy.Reload(ctx, restorePoint) })
 	default:
 		return fmt.Errorf("unknown core action %q", action)
 	}
@@ -187,7 +313,7 @@ func (s *CapabilityService) SelectGroupNode(ctx context.Context, profileID, grou
 	if err != nil {
 		return err
 	}
-	return s.legacy.SelectNode(ctx, restorePoint, groupID, nodeID)
+	return s.withMutation(ctx, "group.select", func() error { return s.legacy.SelectNode(ctx, restorePoint, groupID, nodeID) })
 }
 
 func (s *CapabilityService) Nodes(ctx context.Context, profileID, groupID string) ([]NodeInfo, error) {
@@ -236,7 +362,7 @@ func (s *CapabilityService) SetSubscription(ctx context.Context, profileID, valu
 	if err != nil {
 		return err
 	}
-	return s.legacy.SaveSubscriptionURL(ctx, restorePoint, value)
+	return s.withMutation(ctx, "subscription.set", func() error { return s.legacy.SaveSubscriptionURL(ctx, restorePoint, value) })
 }
 
 func (s *CapabilityService) UpdateSubscription(ctx context.Context, profileID string) error {
@@ -244,13 +370,37 @@ func (s *CapabilityService) UpdateSubscription(ctx context.Context, profileID st
 	if err != nil {
 		return err
 	}
-	if err := s.legacy.UpdateSubscription(ctx, restorePoint); err != nil {
+	return s.withMutation(ctx, "subscription.update", func() error {
+		if err := s.legacy.UpdateSubscription(ctx, restorePoint); err != nil {
+			return err
+		}
+		if s.core != nil && s.core.Status().State == domain.CoreStateRunning {
+			return s.legacy.Reload(ctx, restorePoint)
+		}
+		return nil
+	})
+}
+
+func (s *CapabilityService) withMutation(ctx context.Context, kind string, action func() error) error {
+	coordinator, newID := s.mutationDependencies()
+	release, err := coordinator.TryAcquire(ctx, newID(kind), kind)
+	if err != nil {
 		return err
 	}
-	if s.core != nil && s.core.Status().State == domain.CoreStateRunning {
-		return s.legacy.Reload(ctx, restorePoint)
+	defer release()
+	return action()
+}
+
+func (s *CapabilityService) mutationDependencies() (*Coordinator, func(string) string) {
+	coordinator := s.coordinator
+	if coordinator == nil {
+		coordinator = NewCoordinator()
 	}
-	return nil
+	newID := s.newID
+	if newID == nil {
+		newID = func(prefix string) string { return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano()) }
+	}
+	return coordinator, newID
 }
 
 func (s *CapabilityService) Whitelist(ctx context.Context, profileID string) ([]string, error) {
@@ -266,7 +416,7 @@ func (s *CapabilityService) AddWhitelist(ctx context.Context, profileID, value s
 	if err != nil {
 		return err
 	}
-	return s.legacy.AddWhitelist(ctx, restorePoint, value)
+	return s.withMutation(ctx, "routing.whitelist.add", func() error { return s.legacy.AddWhitelist(ctx, restorePoint, value) })
 }
 
 func (s *CapabilityService) RemoveWhitelist(ctx context.Context, profileID, value string) error {
@@ -274,7 +424,7 @@ func (s *CapabilityService) RemoveWhitelist(ctx context.Context, profileID, valu
 	if err != nil {
 		return err
 	}
-	return s.legacy.RemoveWhitelist(ctx, restorePoint, value)
+	return s.withMutation(ctx, "routing.whitelist.remove", func() error { return s.legacy.RemoveWhitelist(ctx, restorePoint, value) })
 }
 
 func (s *CapabilityService) EditWhitelist(ctx context.Context, profileID, oldValue, newValue string) error {
@@ -282,7 +432,7 @@ func (s *CapabilityService) EditWhitelist(ctx context.Context, profileID, oldVal
 	if err != nil {
 		return err
 	}
-	return s.legacy.EditWhitelist(ctx, restorePoint, oldValue, newValue)
+	return s.withMutation(ctx, "routing.whitelist.edit", func() error { return s.legacy.EditWhitelist(ctx, restorePoint, oldValue, newValue) })
 }
 
 func (s *CapabilityService) ApplyRoutePreset(ctx context.Context, profileID, preset string) error {
@@ -293,7 +443,7 @@ func (s *CapabilityService) ApplyRoutePreset(ctx context.Context, profileID, pre
 	if preset != "cn" && preset != "CN" {
 		return fmt.Errorf("unknown route preset %q", preset)
 	}
-	return s.legacy.ApplyRouteCN(ctx, restorePoint)
+	return s.withMutation(ctx, "routing.preset.apply", func() error { return s.legacy.ApplyRouteCN(ctx, restorePoint) })
 }
 
 func (s *CapabilityService) DiagnoseRoute(ctx context.Context, profileID, input string) (RouteInfo, error) {
@@ -332,7 +482,7 @@ func (s *CapabilityService) ReplaceConfig(ctx context.Context, profileID, expect
 	if err != nil {
 		return err
 	}
-	return s.legacy.ReplaceConfig(ctx, restorePoint, expectedSHA256, content)
+	return s.withMutation(ctx, "config.replace", func() error { return s.legacy.ReplaceConfig(ctx, restorePoint, expectedSHA256, content) })
 }
 
 func (s *CapabilityService) configMutation(ctx context.Context, profileID string, action func(context.Context, domain.RestorePointID) error) error {
@@ -340,7 +490,7 @@ func (s *CapabilityService) configMutation(ctx context.Context, profileID string
 	if err != nil {
 		return err
 	}
-	return action(ctx, restorePoint)
+	return s.withMutation(ctx, "config.mutate", func() error { return action(ctx, restorePoint) })
 }
 
 func (s *CapabilityService) TailLogs(ctx context.Context, profileID string, lines int) (string, error) {

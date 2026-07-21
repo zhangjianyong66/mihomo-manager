@@ -28,9 +28,17 @@ var (
 	_ CoreService    = fakeServices{}
 	_ ProfileService = fakeServices{}
 	_ RouteService   = fakeServices{}
+	_ ModeService    = fakeServices{}
 	_ ConfigService  = fakeServices{}
 	_ LogService     = fakeServices{}
 )
+
+func (fakeServices) ModeStatus(context.Context, domain.ProfileID) (RoutingModeStatus, error) {
+	return RoutingModeStatus{}, nil
+}
+func (fakeServices) SetMode(context.Context, SetRoutingModeRequest) (RoutingModeStatus, error) {
+	return RoutingModeStatus{}, nil
+}
 
 func (fakeServices) Status(context.Context, domain.ProfileID) (CoreStatus, error) {
 	return CoreStatus{}, nil

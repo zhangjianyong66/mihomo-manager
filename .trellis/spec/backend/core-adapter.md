@@ -26,6 +26,16 @@ type Process interface {
     Done() <-chan error
     Stop(context.Context) error
 }
+
+type RoutingRuntime interface {
+    Mode(context.Context) (domain.RoutingMode, error)
+    SetMode(context.Context, domain.RoutingMode) error
+    Reload(context.Context, string) error
+    LoadedRules(context.Context) ([]mihomo.RuntimeRule, error)
+    ConnectionCount(context.Context) (int, error)
+    CloseConnections(context.Context) error
+    SelectedProxy(context.Context, string) (string, error)
+}
 ```
 文件与状态入口：
 
@@ -57,6 +67,8 @@ func (*store.Store) RestoreActiveProfile(context.Context, *domain.ProfileID, tim
 - managed core 参数固定为 `-d <configDir> -f <configPath>`；Linux 使用 `Setsid`。停止只向所持 `Process` 发 SIGTERM，超时后 SIGKILL。
 - controller endpoint 只接受显式 `http://127.0.0.1:<port>` 或 `http://[::1]:<port>`；不接受 `0.0.0.0`、hostname、HTTPS、userinfo 或额外 path。
 - Runtime API 单响应上限 1 MiB；配置文件读取上限 16 MiB。
+- routing runtime 使用 `GET/PATCH /configs`、`PUT /configs?force=true`、`GET /rules`、`GET/DELETE /connections` 与 `GET /proxies/<group>`；请求/响应必须类型化、context-aware、限制为单个完整 JSON，不透传任意 map 到 daemon DTO。
+- Rule runtime 核验必须同时看到 `mm-cn-domain`、`mm-cn-ip` 指向 DIRECT，且所有规则中恰好一个 MATCH、目标为 `🌐 代理`。Global 使用 `GLOBAL` 选择，Direct 的有效节点为 `DIRECT`。
 - daemon 启动只装配 CoreManager，状态默认为 `stopped`，绝不自动启动 core。
 
 ### 4. 校验与错误矩阵
@@ -73,6 +85,8 @@ func (*store.Store) RestoreActiveProfile(context.Context, *domain.ProfileID, tim
 | runtime 非 2xx、超大或 JSON 不完整 | 就绪失败，不提交活动档案 |
 | runtime metadata 写入失败 | SQLite 活动档案补偿到切换前状态 |
 | 旧实例恢复失败 | operation 为 `failed/RESTORE_FAILED`，core 状态为 `failed` |
+| runtime mode 或 Rule rules 不一致 | `MODE_RUNTIME_MISMATCH`，模式事务恢复文件与旧 runtime |
+| 连接关闭失败 | 模式保持成功，返回 `CONNECTION_CLOSE_FAILED` 和 partial status |
 
 ### 5. Good / Base / Bad
 
@@ -84,6 +98,7 @@ func (*store.Store) RestoreActiveProfile(context.Context, *domain.ProfileID, tim
 
 - `internal/core`：generation ID 确定性、`0700/0600`、验证失败无发布、external 只读和摘要变化。
 - `internal/mihomo`：golden YAML、静态错误矩阵、`-t -d -f` 参数/超时/退出码、loopback、响应上限、Setsid、SIGTERM/SIGKILL、无关进程存活。
+- `internal/mihomo` routing runtime：HTTP method/path/body、三模式解析、rules/count/selection/close、非 2xx、超大和多 JSON 响应。
 - `internal/daemon`：成功切换、验证前旧实例不变、就绪失败恢复、恢复失败、metadata 提交补偿、Close 只停止所持进程。
 - 全量：`go test ./...`、`go test -race ./...`、`go vet ./...`、Linux amd64/arm64 `CGO_ENABLED=0` build。
 

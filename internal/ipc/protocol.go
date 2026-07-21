@@ -131,13 +131,28 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, destination any) error {
 		}
 		return err
 	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		_ = WriteError(w, http.StatusBadRequest, "INVALID_REQUEST", "JSON 请求体必须只包含一个值", false, nil)
+		if err == nil {
+			return errors.New("JSON request contains multiple values")
+		}
+		return err
+	}
 	return nil
 }
 
 func WriteJSON(w http.ResponseWriter, status int, kind string, data any) error {
+	return WriteJSONWarnings(w, status, kind, data, nil)
+}
+
+func WriteJSONWarnings(w http.ResponseWriter, status int, kind string, data any, warnings []string) error {
+	if warnings == nil {
+		warnings = []string{}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	return json.NewEncoder(w).Encode(Response{APIVersion: "mm/v1", Kind: kind, Data: data, Warnings: []string{}})
+	return json.NewEncoder(w).Encode(Response{APIVersion: "mm/v1", Kind: kind, Data: data, Warnings: warnings})
 }
 
 func WriteError(w http.ResponseWriter, status int, code, message string, retryable bool, details map[string]any) error {

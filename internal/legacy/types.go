@@ -61,6 +61,7 @@ type Service struct {
 	clock      func() time.Time
 	newID      func(string) string
 	opMu       sync.Mutex
+	modeWriter func(string, []byte, os.FileMode) error
 }
 
 type Repository interface {
@@ -80,7 +81,12 @@ func (s *Service) pathsOrDefault() config.Paths {
 }
 
 func NewService(paths config.Paths, manager config.ManagerPaths, repository Repository) *Service {
-	return &Service{paths: paths, manager: manager, repository: repository, clock: func() time.Time { return time.Now().UTC() }, newID: func(prefix string) string { return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano()) }}
+	return &Service{
+		paths: paths, manager: manager, repository: repository,
+		clock:      func() time.Time { return time.Now().UTC() },
+		newID:      func(prefix string) string { return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano()) },
+		modeWriter: writeAtomic,
+	}
 }
 
 func (s *Service) Discover() (Plan, []domain.LegacyFileSnapshot, error) {

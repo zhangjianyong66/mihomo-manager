@@ -3,7 +3,7 @@
   "name": "m3-mode-transaction",
   "title": "M3 实现模式事务与 daemon API",
   "description": "实现 global/rule/direct 的持久化事务切换、运行态核验、失败回滚和连接关闭选项。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

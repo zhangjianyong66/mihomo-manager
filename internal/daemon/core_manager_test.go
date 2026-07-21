@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zhangjianyong66/mihomo-manager/internal/config"
 	"github.com/zhangjianyong66/mihomo-manager/internal/core"
 	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
 )
@@ -121,6 +122,28 @@ func TestCoreManager_CloseStopsOnlyManagedProcess(t *testing.T) {
 	}
 	if adapter.processes[0].stopCalls != 1 || manager.Status().State != domain.CoreStateStopped {
 		t.Fatalf("managed process was not stopped: %+v", manager.Status())
+	}
+}
+
+func TestCapabilityMutationsShareCoreOperationCoordinator(t *testing.T) {
+	coordinator := NewCoordinator()
+	manager := NewCoreManager(CoreManagerOptions{Coordinator: coordinator})
+	service := NewCapabilityService(nil, manager, nil, config.Paths{})
+	if service.coordinator != coordinator || manager.coordinator != coordinator {
+		t.Fatal("mode/capability and core operations do not share one coordinator")
+	}
+	release, err := coordinator.TryAcquire(context.Background(), "core-operation", "core.activate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	called := false
+	err = service.withMutation(context.Background(), "subscription.update", func() error {
+		called = true
+		return nil
+	})
+	if !errors.Is(err, ErrOperationConflict) || called {
+		t.Fatalf("err=%v called=%v", err, called)
 	}
 }
 

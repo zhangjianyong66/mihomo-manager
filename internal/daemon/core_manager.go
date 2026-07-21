@@ -219,6 +219,32 @@ func NewCoreManager(options CoreManagerOptions) *CoreManager {
 
 func (m *CoreManager) Status() CoreStatus { return m.supervisor.Status() }
 
+func (m *CoreManager) Runtime() (core.RuntimeClient, bool, error) {
+	if m == nil || m.adapter == nil || m.supervisor == nil {
+		return nil, false, errors.New("core manager is not fully configured")
+	}
+	spec, running := m.supervisor.Current()
+	if !running {
+		return nil, false, nil
+	}
+	client, err := m.adapter.Runtime(spec.ControllerEndpoint)
+	if err != nil {
+		return nil, true, err
+	}
+	return client, true, nil
+}
+
+func (m *CoreManager) markFailed(profileID domain.ProfileID, code string) {
+	if m == nil || m.supervisor == nil {
+		return
+	}
+	status := m.supervisor.Status()
+	status.State = domain.CoreStateFailed
+	status.ProfileID = profileID
+	status.ErrorCode = code
+	m.supervisor.setStatus(status)
+}
+
 func (m *CoreManager) Stop(ctx context.Context) error {
 	if m == nil || m.supervisor == nil {
 		return errors.New("core manager is not fully configured")

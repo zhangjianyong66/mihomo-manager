@@ -104,6 +104,18 @@ func TestServer_RejectsOversizedBodyBeforeHandler(t *testing.T) {
 	}
 }
 
+func TestDecodeJSONRejectsTrailingValue(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPut, "/v1/mode", strings.NewReader(`{"mode":"rule"} {"mode":"direct"}`))
+	recorder := httptest.NewRecorder()
+	var destination map[string]any
+	if err := DecodeJSON(recorder, request, &destination); err == nil {
+		t.Fatal("expected trailing JSON value to fail")
+	}
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "INVALID_REQUEST") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestStreamDecoder_RejectsOversizedLine(t *testing.T) {
 	decoder := NewStreamDecoder(strings.NewReader(strings.Repeat("x", MaxBodySize+1) + "\n"))
 	if _, err := decoder.Next(context.Background()); !errors.Is(err, ErrStreamInvalid) {

@@ -29,6 +29,8 @@ func Execute(
 
 领域 ID 和枚举放在 `internal/domain`：`ProfileID`、`SubscriptionID`、`NodeID`、`GroupID`、`CoreType`、`CoreState`。
 
+模式能力通过 `internal/app.ModeService` / `CapabilityAPI.ModeStatus|SetMode` 暴露；请求使用 `SetRoutingModeRequest{ProfileID, Mode, CloseConnections, RequestID}`，返回 `RoutingModeStatus`，CLI/TUI 不直接解析 daemon map 或调用 mihomo `/configs`。
+
 ### 3. Contracts
 
 命令行为：
@@ -75,6 +77,8 @@ A6 业务命令默认使用活动 legacy profile，可选 `--profile` 只用于�
 | 配置、迁移或校验失败 | `validation_failed` | 6 |
 | 权限不足或安全策略拒绝 | `permission_denied` | 7 |
 | core、订阅、更新源等上游失败 | `upstream_failure` | 8 |
+
+模式细化码分类固定为：`INVALID_ROUTING_MODE`/`REQUEST_ID_REQUIRED` -> 输入错误，`CONFIG_CHANGED`/`PROFILE_MODE_UNSUPPORTED` -> 冲突，`MODE_RUNTIME_MISMATCH`/`CONNECTION_CLOSE_FAILED` -> 上游失败，`RESTORE_FAILED` -> 内部错误。连接关闭 partial failure 必须同时保留返回的 `RoutingModeStatus`。
 
 `errors.As` 必须能穿透包装后的 `*app.Error`。未知底层错误只输出“内部错误”，不得直接把 `err.Error()` 写到 stdout/stderr 或 JSON。
 

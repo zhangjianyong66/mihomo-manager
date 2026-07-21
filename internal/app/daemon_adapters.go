@@ -164,9 +164,9 @@ func mapIPCError(err error) error {
 
 func protocolCategory(code string) ErrorCategory {
 	switch code {
-	case "REQUEST_ID_CONFLICT", "OPERATION_CONFLICT", "CONFLICT":
+	case "REQUEST_ID_CONFLICT", "OPERATION_CONFLICT", "CONFLICT", "CONFIG_CHANGED", "PROFILE_MODE_UNSUPPORTED", "UNSUPPORTED_PROFILE":
 		return ErrorCategoryConflict
-	case "INVALID_REQUEST":
+	case "INVALID_REQUEST", "INVALID_ROUTING_MODE", "REQUEST_ID_REQUIRED":
 		return ErrorCategoryInvalidArgument
 	case "NOT_FOUND":
 		return ErrorCategoryNotFound
@@ -174,10 +174,10 @@ func protocolCategory(code string) ErrorCategory {
 		return ErrorCategoryValidationFailed
 	case "PERMISSION_DENIED":
 		return ErrorCategoryPermissionDenied
-	case "UPSTREAM_FAILURE":
+	case "UPSTREAM_FAILURE", "MODE_RUNTIME_MISMATCH", "CONNECTION_CLOSE_FAILED":
 		return ErrorCategoryUpstreamFailure
-	case "UNSUPPORTED_PROFILE":
-		return ErrorCategoryConflict
+	case "RESTORE_FAILED":
+		return ErrorCategoryInternal
 	default:
 		return ErrorCategoryDaemonUnavailable
 	}

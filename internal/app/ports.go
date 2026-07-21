@@ -75,6 +75,37 @@ type RouteDiagnosis struct {
 	Note        string
 }
 
+type RuleSetHealth struct {
+	Name      string
+	Available bool
+	Loaded    bool
+}
+
+type RoutingModeStatus struct {
+	ProfileID            domain.ProfileID
+	ConfigMode           domain.RoutingMode
+	RuntimeMode          *domain.RoutingMode
+	RuntimeAvailable     bool
+	CoreState            domain.CoreState
+	EffectiveGroup       string
+	EffectiveNode        string
+	RuleSets             []RuleSetHealth
+	ActiveConnections    int
+	ConnectionsAvailable bool
+	ConnectionsClosed    bool
+	NextStart            bool
+	OperationID          domain.OperationID
+	OperationPhase       string
+	Warnings             []string
+}
+
+type SetRoutingModeRequest struct {
+	ProfileID        domain.ProfileID
+	Mode             domain.RoutingMode
+	CloseConnections bool
+	RequestID        string
+}
+
 type RenderedConfig struct {
 	Content []byte
 }
@@ -138,6 +169,11 @@ type RouteService interface {
 	AddWhitelist(context.Context, domain.ProfileID, string) error
 	RemoveWhitelist(context.Context, domain.ProfileID, string) error
 	ApplyPreset(context.Context, domain.ProfileID, string) error
+}
+
+type ModeService interface {
+	ModeStatus(context.Context, domain.ProfileID) (RoutingModeStatus, error)
+	SetMode(context.Context, SetRoutingModeRequest) (RoutingModeStatus, error)
 }
 
 type ConfigService interface {

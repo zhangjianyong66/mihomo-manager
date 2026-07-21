@@ -17,6 +17,8 @@ import (
 )
 
 type CapabilityAPI interface {
+	ModeStatus(context.Context, string) (RoutingModeStatus, error)
+	SetMode(context.Context, SetRoutingModeRequest) (RoutingModeStatus, error)
 	CoreStatus(context.Context, string) (CoreStatus, error)
 	CoreAction(context.Context, string, string) error
 	ValidateConfig(context.Context, string) error
@@ -51,6 +53,54 @@ type DaemonCapabilities struct{ client *ipc.Client }
 
 func NewCapabilityService(paths config.ManagerPaths) *DaemonCapabilities {
 	return &DaemonCapabilities{client: ipc.NewClient(paths.Socket)}
+}
+
+func (c *DaemonCapabilities) ModeStatus(ctx context.Context, profileID string) (RoutingModeStatus, error) {
+	if c == nil || c.client == nil {
+		return RoutingModeStatus{}, &Error{Category: ErrorCategoryDaemonUnavailable, Code: ErrorCodeDaemonUnavailable, Message: "daemon 客户端未配置"}
+	}
+	var value daemon.ModeStatus
+	if err := c.client.Do(ctx, http.MethodGet, capabilityPath("/v1/mode", profileID), "", nil, &value); err != nil {
+		decodeModeStatusError(err, &value)
+		return convertModeStatus(value), c.mapError(err)
+	}
+	return convertModeStatus(value), nil
+}
+
+func (c *DaemonCapabilities) SetMode(ctx context.Context, request SetRoutingModeRequest) (RoutingModeStatus, error) {
+	if err := request.Mode.Validate(); err != nil {
+		return RoutingModeStatus{}, &Error{Category: ErrorCategoryInvalidArgument, Code: ErrorCode("INVALID_ROUTING_MODE"), Message: "路由模式必须为 global、rule 或 direct", Err: err}
+	}
+	if c == nil || c.client == nil {
+		return RoutingModeStatus{}, &Error{Category: ErrorCategoryDaemonUnavailable, Code: ErrorCodeDaemonUnavailable, Message: "daemon 客户端未配置"}
+	}
+	requestID := strings.TrimSpace(request.RequestID)
+	if requestID == "" {
+		requestID = newRequestID("routing-mode")
+	}
+	var value daemon.ModeStatus
+	err := c.client.Do(ctx, http.MethodPut, "/v1/mode", requestID, map[string]any{
+		"profileId": request.ProfileID, "mode": request.Mode, "closeConnections": request.CloseConnections,
+	}, &value)
+	if err == nil {
+		return convertModeStatus(value), nil
+	}
+	decodeModeStatusError(err, &value)
+	return convertModeStatus(value), c.mapError(err)
+}
+
+func decodeModeStatusError(err error, value *daemon.ModeStatus) {
+	var ipcErr *ipc.Error
+	if value == nil || !errors.As(err, &ipcErr) {
+		return
+	}
+	raw, ok := ipcErr.Body.Details["status"]
+	if !ok {
+		return
+	}
+	if encoded, marshalErr := json.Marshal(raw); marshalErr == nil {
+		_ = json.Unmarshal(encoded, value)
+	}
 }
 
 func (c *DaemonCapabilities) CoreStatus(ctx context.Context, profileID string) (CoreStatus, error) {
@@ -349,6 +399,22 @@ func convertGroup(value daemon.GroupInfo) Group {
 		nodes = append(nodes, domain.NodeID(node))
 	}
 	return Group{ID: value.ID, Name: value.Name, Type: value.Type, SelectedNodeID: domain.NodeID(value.SelectedNode), NodeIDs: nodes}
+}
+
+func convertModeStatus(value daemon.ModeStatus) RoutingModeStatus {
+	rules := make([]RuleSetHealth, 0, len(value.RuleSets))
+	for _, item := range value.RuleSets {
+		rules = append(rules, RuleSetHealth{Name: item.Name, Available: item.Available, Loaded: item.Loaded})
+	}
+	return RoutingModeStatus{
+		ProfileID: value.ProfileID, ConfigMode: value.ConfigMode, RuntimeMode: value.RuntimeMode,
+		RuntimeAvailable: value.RuntimeAvailable, CoreState: value.CoreState,
+		EffectiveGroup: value.EffectiveGroup, EffectiveNode: value.EffectiveNode,
+		RuleSets: rules, ActiveConnections: value.ActiveConnections,
+		ConnectionsAvailable: value.ConnectionsAvailable, ConnectionsClosed: value.ConnectionsClosed,
+		NextStart: value.NextStart, OperationID: value.OperationID, OperationPhase: value.OperationPhase,
+		Warnings: append([]string(nil), value.Warnings...),
+	}
 }
 
 func splitLogLines(content string) []LogLine {
