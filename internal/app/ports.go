@@ -8,10 +8,11 @@ import (
 )
 
 type CoreStatus struct {
-	Type      domain.CoreType
-	State     domain.CoreState
-	ProfileID domain.ProfileID
-	PID       int
+	Type          domain.CoreType
+	State         domain.CoreState
+	ProfileID     domain.ProfileID
+	PID           int
+	PortConflicts []PortConflict
 }
 
 type Profile struct {

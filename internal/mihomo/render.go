@@ -121,6 +121,8 @@ func deterministicProxyName(name, id string) string {
 }
 
 type staticConfig struct {
+	BindAddress        string `yaml:"bind-address"`
+	AllowLAN           bool   `yaml:"allow-lan"`
 	MixedPort          int    `yaml:"mixed-port"`
 	SocksPort          int    `yaml:"socks-port"`
 	Port               int    `yaml:"port"`

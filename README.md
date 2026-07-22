@@ -101,6 +101,8 @@ mm migrate plan --output json
 mm migrate status
 mm core status --output json
 mm config validate
+mm config ports
+mm config port set mixed-port 7890
 mm group list
 mm node test --group GLOBAL --output ndjson
 mm subscription show
@@ -126,7 +128,7 @@ mm daemon --help
 当前脚本化命令包括：
 
 - `core status|start|stop|restart|reload|logs`
-- `config validate|backup|restore|edit`
+- `config validate|backup|restore|edit|ports`、`config port set <field> <port>`
 - `group list|show|select`、`node list|select|test`
 - legacy `subscription show|set|update`
 - legacy `route whitelist list|add|edit|remove`、`route preset cn`、`route diagnose`、`route connections [--follow]`
@@ -145,11 +147,13 @@ mm daemon --help
 - 节点管理：当前节点、切换、测速、切换最快节点。
 - 订阅管理：保存、查看和更新订阅。
 - 白名单：添加、删除和查看直连域名。
-- 配置管理：备份、恢复、编辑及应用分流规则。
+- 配置管理：查看和逐项修改监听端口、备份、恢复、编辑及应用分流规则。
 
 ## 注意事项
 
 - `migrate plan|apply|status|rollback` 负责注册活动 legacy 档案；所有迁移和 A6 业务写入均经 daemon，`rollback` 必须显式指定恢复点，旧 YAML 不会自动转换。
+- 新建配置默认使用 `mixed-port: 7890`。daemon 每次启动或重启 core 前检查 `mixed-port`、`port`、`socks-port`、`redir-port`、`tproxy-port` 和 `external-controller` 的 TCP/UDP 监听冲突；冲突会一次列出并以 `PORT_CONFLICT`/退出码 `4` 阻止启动，不会自动换端口或停止其他代理进程。
+- 五类代理端口可通过 `mm config port set <field> 0` 禁用，`external-controller` 必须为 `1-65535` 且只修改端口、保留 loopback 主机。core running 时修改会受控重启，失败时恢复旧配置和旧 core；core stopped 时只保存到下次启动。
 - `mode status` 同时展示 mihomo listener、GNOME 系统代理和当前 CLI 环境代理的只读匹配结果；诊断不会执行 `gsettings set`、占用端口或控制其他代理进程，代理 URL 的凭据、path 和 query 不进入输出。
 - 活动连接只保留在 daemon/TUI 有界内存中，不写 SQLite 或持久日志；快照和 follow 均要求 mihomo core 已运行。
 - 2.0 的领域模型、SQLite schema/迁移和事务仓储底座已接入 daemon；legacy profile 仅由迁移创建，无法确认归属的文件不会猜测为 managed。

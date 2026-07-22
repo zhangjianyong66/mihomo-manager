@@ -145,6 +145,7 @@ test_default_config_preserves_existing_file() {
         configure_mihomo
         assert_file_exists "$CONFIG_DIR/config.yaml"
         [[ "$CONFIG_CREATED" == "1" ]]
+        grep -Fxq 'mixed-port: 7890' "$CONFIG_DIR/config.yaml"
         printf '%s\n' '# 用户保留内容' >>"$CONFIG_DIR/config.yaml"
         local before after
         before="$(sha256sum "$CONFIG_DIR/config.yaml" | awk '{print $1}')"

@@ -2,8 +2,12 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +17,7 @@ import (
 	"github.com/zhangjianyong66/mihomo-manager/internal/legacy"
 	"github.com/zhangjianyong66/mihomo-manager/internal/mihomo"
 	"github.com/zhangjianyong66/mihomo-manager/internal/platform"
+	"github.com/zhangjianyong66/mihomo-manager/internal/store"
 )
 
 const legacySubscriptionID domain.SubscriptionID = "legacy-subscription"
@@ -59,6 +64,24 @@ type RouteInfo struct {
 type ConfigDocument struct {
 	Content []byte `json:"content"`
 	SHA256  string `json:"sha256"`
+}
+
+type ListenerPortInfo struct {
+	Field    string   `json:"field"`
+	Host     string   `json:"host"`
+	Port     int      `json:"port"`
+	Required bool     `json:"required"`
+	Enabled  bool     `json:"enabled"`
+	Networks []string `json:"networks"`
+}
+
+type ListenerPortStatus struct {
+	ProfileID     domain.ProfileID    `json:"profileId"`
+	CoreState     domain.CoreState    `json:"coreState"`
+	Restarted     bool                `json:"restarted"`
+	NextStart     bool                `json:"nextStart"`
+	Ports         []ListenerPortInfo  `json:"ports"`
+	PortConflicts []core.PortConflict `json:"portConflicts"`
 }
 
 type RuleSetHealth struct {
@@ -292,7 +315,18 @@ func (s *CapabilityService) CoreAction(ctx context.Context, profileID, action st
 	if s.core == nil {
 		return errors.New("core service is not configured")
 	}
-	snapshot := core.ProfileSnapshot{ProfileID: profile.ID, Revision: profile.Revision, Mode: profile.Mode, ExternalConfigPath: profile.ConfigPath, ControllerEndpoint: s.paths.APIAddr}
+	ports, err := s.legacy.ListenerPorts(ctx, restorePoint)
+	if err != nil {
+		return err
+	}
+	controllerEndpoint, err := listenerControllerEndpoint(ports, "", 0)
+	if err != nil {
+		return err
+	}
+	snapshot := core.ProfileSnapshot{
+		ProfileID: profile.ID, Revision: profile.Revision, Mode: profile.Mode,
+		ExternalConfigPath: profile.ConfigPath, ControllerEndpoint: controllerEndpoint,
+	}
 	switch action {
 	case "start":
 		status := s.core.Status()
@@ -514,6 +548,103 @@ func (s *CapabilityService) ReadConfig(ctx context.Context, profileID string) (C
 		return ConfigDocument{}, err
 	}
 	return ConfigDocument{Content: content, SHA256: digest}, nil
+}
+
+func (s *CapabilityService) ListenerPorts(ctx context.Context, profileID string) (ListenerPortStatus, error) {
+	profile, restorePoint, err := s.profile(ctx, profileID)
+	if err != nil {
+		return ListenerPortStatus{}, err
+	}
+	ports, err := s.legacy.ListenerPorts(ctx, restorePoint)
+	if err != nil {
+		return ListenerPortStatus{}, err
+	}
+	status := CoreStatus{State: domain.CoreStateStopped}
+	if s.core != nil {
+		status = s.core.Status()
+	}
+	result := ListenerPortStatus{
+		ProfileID: profile.ID, CoreState: status.State, NextStart: status.State != domain.CoreStateRunning,
+		Ports: convertListenerPorts(ports), PortConflicts: []core.PortConflict{},
+	}
+	if status.ProfileID == profile.ID {
+		result.PortConflicts = append(result.PortConflicts, status.PortConflicts...)
+	}
+	return result, nil
+}
+
+func (s *CapabilityService) SetListenerPort(ctx context.Context, profileID, field string, port int) (ListenerPortStatus, error) {
+	if err := mihomo.ValidateListenerPort(field, port); err != nil {
+		return ListenerPortStatus{}, fmt.Errorf("%w: %v", store.ErrInvalid, err)
+	}
+	profile, restorePoint, err := s.profile(ctx, profileID)
+	if err != nil {
+		return ListenerPortStatus{}, err
+	}
+	if s.core == nil {
+		return ListenerPortStatus{}, errors.New("core service is not configured")
+	}
+	currentPorts, err := s.legacy.ListenerPorts(ctx, restorePoint)
+	if err != nil {
+		return ListenerPortStatus{}, err
+	}
+	controllerEndpoint, err := listenerControllerEndpoint(currentPorts, field, port)
+	if err != nil {
+		return ListenerPortStatus{}, err
+	}
+	snapshot := core.ProfileSnapshot{
+		ProfileID: profile.ID, Revision: profile.Revision, Mode: profile.Mode,
+		ExternalConfigPath: profile.ConfigPath, ControllerEndpoint: controllerEndpoint,
+	}
+	restarted, err := s.core.Reconfigure(ctx, snapshot, func(ctx context.Context) (func(context.Context) error, error) {
+		document, readErr := s.ReadConfig(ctx, profile.ID.String())
+		if readErr != nil {
+			return nil, readErr
+		}
+		candidate, updateErr := mihomo.UpdateListenerPort(document.Content, field, port)
+		if updateErr != nil {
+			return nil, updateErr
+		}
+		if replaceErr := s.legacy.ReplaceConfig(ctx, restorePoint, document.SHA256, candidate); replaceErr != nil {
+			return nil, replaceErr
+		}
+		candidateDigest := sha256.Sum256(candidate)
+		expected := hex.EncodeToString(candidateDigest[:])
+		before := append([]byte(nil), document.Content...)
+		return func(restoreCtx context.Context) error {
+			return s.legacy.ReplaceConfig(restoreCtx, restorePoint, expected, before)
+		}, nil
+	})
+	result, statusErr := s.ListenerPorts(ctx, profile.ID.String())
+	if statusErr != nil {
+		return result, errors.Join(err, statusErr)
+	}
+	result.Restarted = restarted
+	return result, err
+}
+
+func convertListenerPorts(values []mihomo.ListenerPort) []ListenerPortInfo {
+	result := make([]ListenerPortInfo, 0, len(values))
+	for _, value := range values {
+		result = append(result, ListenerPortInfo{
+			Field: value.Field, Host: value.Host, Port: value.Port, Required: value.Required,
+			Enabled: value.Port != 0, Networks: append([]string(nil), value.Networks...),
+		})
+	}
+	return result
+}
+
+func listenerControllerEndpoint(values []mihomo.ListenerPort, field string, port int) (string, error) {
+	for _, value := range values {
+		if value.Field != mihomo.PortFieldExternalController {
+			continue
+		}
+		if field == mihomo.PortFieldExternalController {
+			value.Port = port
+		}
+		return "http://" + net.JoinHostPort(value.Host, strconv.Itoa(value.Port)), nil
+	}
+	return "", fmt.Errorf("external-controller is required: %w", core.ErrInvalidConfig)
 }
 
 func (s *CapabilityService) ReplaceConfig(ctx context.Context, profileID, expectedSHA256 string, content []byte) error {

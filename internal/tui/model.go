@@ -41,6 +41,8 @@ type Capabilities interface {
 	FollowConnections(context.Context, app.ConnectionRequest) <-chan app.ConnectionEvent
 	ConfigBackup(context.Context, string) error
 	ConfigRestore(context.Context, string) error
+	ListenerPorts(context.Context, string) (app.ListenerPortStatus, error)
+	SetListenerPort(context.Context, app.SetListenerPortRequest) (app.ListenerPortStatus, error)
 	FollowLogs(context.Context, app.LogRequest) <-chan app.LogEvent
 	EditConfig(context.Context, string) error
 }
@@ -107,6 +109,9 @@ type Model struct {
 	connectionScroll       int
 	connectionErr          error
 	connectionFinished     bool
+	listenerPortStatus     app.ListenerPortStatus
+	listenerPortField      string
+	listenerPortResult     string
 }
 
 type actionDoneMsg struct {
@@ -116,6 +121,12 @@ type actionDoneMsg struct {
 
 type modeStatusMsg struct {
 	status app.RoutingModeStatus
+	err    error
+	set    bool
+}
+
+type listenerPortsMsg struct {
+	status app.ListenerPortStatus
 	err    error
 	set    bool
 }
@@ -227,6 +238,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case listenerPortsMsg:
+		m.busy = false
+		if msg.status.ProfileID != "" {
+			m.listenerPortStatus = msg.status
+			m.actionItems = listenerPortActionItems(msg.status.Ports)
+		}
+		m.actionCtx = "listener_ports"
+		if msg.err != nil {
+			m.result = "监听端口操作失败"
+			m.err = msg.err
+			m.returnPage = actionMenu
+			m.page = resultView
+			return m, nil
+		}
+		m.page = actionMenu
+		if msg.set {
+			if msg.status.Restarted {
+				m.listenerPortResult = "端口已修改，mihomo 已重启并生效"
+			} else if msg.status.NextStart {
+				m.listenerPortResult = "端口已保存，将在下次启动 mihomo 时生效"
+			} else {
+				m.listenerPortResult = "端口已修改"
+			}
+		}
+		return m, nil
 	case groupsLoadedMsg:
 		m.busy = false
 		if msg.err != nil {
@@ -328,6 +364,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = false
 		m.result = msg.result
 		m.err = msg.err
+		if isPortConflict(msg.err) {
+			m.result += "\n请进入 配置管理 > 监听端口 修改冲突端口"
+		}
 		m.returnPage = actionMenu
 		m.page = resultView
 		return m, nil
@@ -526,8 +565,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.page = mainMenu
 				return m, nil
 			}
+			if m.page == actionMenu && m.actionCtx == "listener_ports" {
+				m.actionCtx = ""
+				m.actionItems = menuActions("配置管理")
+				m.actionIndex = 0
+				m.listenerPortResult = ""
+				return m, nil
+			}
 			if m.page == actionMenu || m.page == resultView || m.page == inputView {
 				if m.page == inputView {
+					if m.actionCtx == "listener_port_input" {
+						m.input.Blur()
+						m.actionCtx = "listener_ports"
+						m.page = actionMenu
+						return m, nil
+					}
 					if m.actionCtx == "log_filter_input" {
 						m.input.Blur()
 						m.actionCtx = "log_live"
@@ -675,6 +727,9 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	s := msg.String()
 	if m.actionCtx == "mode" {
 		return m.updateMode(msg)
+	}
+	if m.actionCtx == "listener_ports" {
+		return m.updateListenerPorts(msg)
 	}
 	switch s {
 	case "a":
@@ -824,6 +879,25 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	if msg.String() == "enter" && m.actionCtx == "listener_port_input" {
+		value := strings.TrimSpace(m.input.Value())
+		port, err := strconv.Atoi(value)
+		request := app.SetListenerPortRequest{Field: m.listenerPortField, Port: port}
+		if err != nil || request.Validate() != nil {
+			m.input.Blur()
+			m.actionCtx = "listener_ports"
+			m.result = "端口必须是允许范围内的整数"
+			m.err = nil
+			m.returnPage = actionMenu
+			m.page = resultView
+			return m, nil
+		}
+		m.input.SetValue("")
+		m.input.Blur()
+		m.actionCtx = "listener_ports"
+		m.busy = true
+		return m, setListenerPortCmd(m.ctx, m.client, request)
+	}
 	if msg.String() == "enter" && m.actionCtx == "log_filter_input" {
 		pattern := strings.TrimSpace(m.input.Value())
 		if pattern == "" {
@@ -880,6 +954,44 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, run(value)
 	}
 	return m, cmd
+}
+
+func (m Model) updateListenerPorts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if len(m.actionItems) == 0 {
+		return m, nil
+	}
+	switch msg.String() {
+	case "up":
+		if m.actionIndex > 0 {
+			m.actionIndex--
+		}
+	case "down":
+		if m.actionIndex < len(m.actionItems)-1 {
+			m.actionIndex++
+		}
+	case "enter":
+		field := m.actionItems[m.actionIndex]
+		if field == "返回" {
+			m.actionCtx = ""
+			m.actionItems = menuActions("配置管理")
+			m.actionIndex = 0
+			m.listenerPortResult = ""
+			return m, nil
+		}
+		for _, item := range m.listenerPortStatus.Ports {
+			if item.Field != field {
+				continue
+			}
+			m.listenerPortField = field
+			m.inputTitle = fmt.Sprintf("设置 %s 端口（0 表示禁用可选端口）", field)
+			m.input.SetValue(strconv.Itoa(item.Port))
+			m.input.Focus()
+			m.actionCtx = "listener_port_input"
+			m.page = inputView
+			return m, textinput.Blink
+		}
+	}
+	return m, nil
 }
 
 func (m Model) executeAction(cat, act string) (tea.Model, tea.Cmd) {
@@ -952,6 +1064,13 @@ func (m Model) executeAction(cat, act string) (tea.Model, tea.Cmd) {
 		case "编辑配置":
 			m.busy = true
 			return m, actionCmd("编辑结束", func() error { return m.client.EditConfig(m.ctx, "") })
+		case "监听端口":
+			m.busy = true
+			m.actionCtx = "listener_ports"
+			m.actionItems = nil
+			m.actionIndex = 0
+			m.listenerPortResult = ""
+			return m, loadListenerPortsCmd(m.ctx, m.client)
 		case "应用分流规则（大陆直连/其他走GLOBAL）":
 			m.busy = true
 			return m, actionCmd("分流规则已应用", func() error { return m.client.ApplyRoutePreset(m.ctx, "", "cn") })
@@ -974,7 +1093,7 @@ func menuActions(main string) []string {
 	case "白名单管理":
 		return []string{"返回"}
 	case "配置管理":
-		return []string{"备份配置", "恢复配置", "编辑配置", "应用分流规则（大陆直连/其他走GLOBAL）", "返回"}
+		return []string{"监听端口", "备份配置", "恢复配置", "编辑配置", "应用分流规则（大陆直连/其他走GLOBAL）", "返回"}
 	default:
 		return []string{"返回"}
 	}
@@ -1148,6 +1267,20 @@ func coreStatusCmd(ctx context.Context, service Capabilities) tea.Cmd {
 	}
 }
 
+func loadListenerPortsCmd(ctx context.Context, service Capabilities) tea.Cmd {
+	return func() tea.Msg {
+		value, err := service.ListenerPorts(ctx, "")
+		return listenerPortsMsg{status: value, err: err}
+	}
+}
+
+func setListenerPortCmd(ctx context.Context, service Capabilities, request app.SetListenerPortRequest) tea.Cmd {
+	return func() tea.Msg {
+		value, err := service.SetListenerPort(ctx, request)
+		return listenerPortsMsg{status: value, err: err, set: true}
+	}
+}
+
 func actionCmd(result string, run func() error) tea.Cmd {
 	return func() tea.Msg { return actionDoneMsg{result: result, err: run()} }
 }
@@ -1218,6 +1351,11 @@ func modeErrorMessage(err error) string {
 	}
 }
 
+func isPortConflict(err error) bool {
+	var appErr *app.Error
+	return errors.As(err, &appErr) && appErr.Code == app.ErrorCode("PORT_CONFLICT")
+}
+
 func (m Model) View() string {
 	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39")).Render("Mihomo Manager (Interactive)")
 	if m.page == inputView {
@@ -1281,6 +1419,9 @@ func (m Model) View() string {
 	}
 	if m.page == actionMenu && m.actionCtx == "mode" {
 		return m.renderModeView(title)
+	}
+	if m.page == actionMenu && m.actionCtx == "listener_ports" {
+		return m.renderListenerPortsView(title)
 	}
 	var b strings.Builder
 	for i := start; i < end; i++ {
@@ -1833,6 +1974,55 @@ func listenerSummary(values []app.ProxyListener) string {
 		parts = append(parts, value.Protocol+" "+net.JoinHostPort(value.Host, strconv.Itoa(value.Port)))
 	}
 	return strings.Join(parts, "，")
+}
+
+func listenerPortActionItems(values []app.ListenerPort) []string {
+	result := make([]string, 0, len(values)+1)
+	for _, value := range values {
+		result = append(result, value.Field)
+	}
+	return append(result, "返回")
+}
+
+func (m Model) renderListenerPortsView(title string) string {
+	var body strings.Builder
+	body.WriteString("配置管理 / 监听端口\n")
+	if m.busy && m.listenerPortStatus.ProfileID == "" {
+		body.WriteString("正在读取 daemon 配置...\n")
+	} else {
+		body.WriteString(fmt.Sprintf("档案：%s  Core：%s\n\n", m.listenerPortStatus.ProfileID, coreStateLabel(m.listenerPortStatus.CoreState)))
+		for index, item := range m.listenerPortStatus.Ports {
+			cursor := "  "
+			if m.actionIndex == index {
+				cursor = "> "
+			}
+			value := strconv.Itoa(item.Port)
+			if !item.Enabled {
+				value = "禁用"
+			}
+			conflict := ""
+			for _, current := range m.listenerPortStatus.PortConflicts {
+				if current.Field == item.Field {
+					conflict = " [冲突]"
+					break
+				}
+			}
+			body.WriteString(fmt.Sprintf("%s%s  %s  %s %s%s\n", cursor, item.Field, value, strings.Join(item.Networks, "/"), item.Host, conflict))
+		}
+		cursor := "  "
+		if m.actionIndex == len(m.listenerPortStatus.Ports) {
+			cursor = "> "
+		}
+		body.WriteString(cursor + "返回\n")
+	}
+	if m.busy {
+		body.WriteString("\n正在处理...\n")
+	}
+	if m.listenerPortResult != "" {
+		body.WriteString("\n" + m.listenerPortResult + "\n")
+	}
+	footer := fitFooter("↑/↓ 选择  Enter 修改  Esc 返回  q 退出", m.width)
+	return fmt.Sprintf("%s\n\n%s\n%s", title, body.String(), footer)
 }
 
 func proxySourceSummary(values []app.ProxySourceStatus) string {

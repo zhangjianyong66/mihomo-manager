@@ -22,6 +22,10 @@ type fakeTUIService struct {
 	editNew          string
 	connectionEvents []app.ConnectionEvent
 	connectionCalls  int
+	portStatus       app.ListenerPortStatus
+	portCalls        int
+	setPortCalls     int
+	setPortRequest   app.SetListenerPortRequest
 }
 
 func (f *fakeTUIService) ModeStatus(context.Context, string) (app.RoutingModeStatus, error) {
@@ -56,6 +60,17 @@ func (f *fakeTUIService) EditWhitelist(_ context.Context, _, oldValue, newValue 
 
 func (f *fakeTUIService) Whitelist(context.Context, string) ([]string, error) {
 	return []string{f.editNew}, nil
+}
+
+func (f *fakeTUIService) ListenerPorts(context.Context, string) (app.ListenerPortStatus, error) {
+	f.portCalls++
+	return f.portStatus, nil
+}
+
+func (f *fakeTUIService) SetListenerPort(_ context.Context, request app.SetListenerPortRequest) (app.ListenerPortStatus, error) {
+	f.setPortCalls++
+	f.setPortRequest = request
+	return f.portStatus, nil
 }
 
 var _ Capabilities = (*fakeTUIService)(nil)
@@ -154,6 +169,101 @@ func TestModePageNarrowViewKeepsControlsOnSeparateLines(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("control layout missing %q: %s", want, view)
 		}
+	}
+}
+
+func TestListenerPortsPageLoadsAsynchronouslyAndShowsAllFields(t *testing.T) {
+	fake := &fakeTUIService{portStatus: app.ListenerPortStatus{
+		ProfileID: "legacy-mihomo",
+		CoreState: domain.CoreStateStopped,
+		Ports: []app.ListenerPort{
+			{Field: app.ListenerPortFieldMixed, Host: "127.0.0.1", Port: 7890, Enabled: true, Networks: []string{"tcp", "udp"}},
+			{Field: app.ListenerPortFieldHTTP, Host: "127.0.0.1", Port: 0, Networks: []string{"tcp"}},
+			{Field: app.ListenerPortFieldSocks, Host: "127.0.0.1", Port: 7891, Enabled: true, Networks: []string{"tcp", "udp"}},
+			{Field: app.ListenerPortFieldRedir, Host: "127.0.0.1", Port: 7892, Enabled: true, Networks: []string{"tcp"}},
+			{Field: app.ListenerPortFieldTProxy, Host: "127.0.0.1", Port: 7893, Enabled: true, Networks: []string{"tcp", "udp"}},
+			{Field: app.ListenerPortFieldExternalController, Host: "127.0.0.1", Port: 9090, Required: true, Enabled: true, Networks: []string{"tcp"}},
+		},
+		PortConflicts: []app.PortConflict{{Field: app.ListenerPortFieldMixed, Network: "tcp", Host: "127.0.0.1", Port: 10808}},
+	}}
+	model := New(fake)
+	model.mainIndex = 7
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = next.(Model)
+	next, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = next.(Model)
+	if fake.portCalls != 0 || command == nil || !model.busy || model.actionCtx != "listener_ports" {
+		t.Fatalf("port load should be deferred: calls=%d command=%v model=%+v", fake.portCalls, command != nil, model)
+	}
+	next, _ = model.Update(command())
+	model = next.(Model)
+	view := model.View()
+	for _, want := range []string{"mixed-port", "port  禁用", "socks-port", "redir-port", "tproxy-port", "external-controller", "[冲突]"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("listener port view does not contain %q: %s", want, view)
+		}
+	}
+}
+
+func TestListenerPortsPageEditsFieldAndShowsActivationResult(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     app.ListenerPortStatus
+		wantResult string
+	}{
+		{
+			name:       "running",
+			status:     app.ListenerPortStatus{ProfileID: "legacy-mihomo", CoreState: domain.CoreStateRunning, Restarted: true},
+			wantResult: "mihomo 已重启并生效",
+		},
+		{
+			name:       "stopped",
+			status:     app.ListenerPortStatus{ProfileID: "legacy-mihomo", CoreState: domain.CoreStateStopped, NextStart: true},
+			wantResult: "下次启动 mihomo 时生效",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.status.Ports = []app.ListenerPort{{Field: app.ListenerPortFieldSocks, Host: "127.0.0.1", Port: 7891, Enabled: true, Networks: []string{"tcp", "udp"}}}
+			fake := &fakeTUIService{portStatus: tt.status}
+			model := New(fake)
+			model.page = actionMenu
+			model.actionCtx = "listener_ports"
+			model.listenerPortStatus = tt.status
+			model.actionItems = listenerPortActionItems(tt.status.Ports)
+
+			next, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			model = next.(Model)
+			if model.page != inputView || model.actionCtx != "listener_port_input" {
+				t.Fatalf("listener port input was not opened: %+v", model)
+			}
+			model.input.SetValue("17891")
+			next, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			model = next.(Model)
+			if fake.setPortCalls != 0 || command == nil {
+				t.Fatalf("port set should be deferred: calls=%d command=%v", fake.setPortCalls, command != nil)
+			}
+			next, _ = model.Update(command())
+			model = next.(Model)
+			if fake.setPortRequest.Field != app.ListenerPortFieldSocks || fake.setPortRequest.Port != 17891 {
+				t.Fatalf("unexpected port request: %+v", fake.setPortRequest)
+			}
+			if !strings.Contains(model.View(), tt.wantResult) {
+				t.Fatalf("missing activation result %q: %s", tt.wantResult, model.View())
+			}
+		})
+	}
+}
+
+func TestCorePortConflictPointsToListenerPortsPage(t *testing.T) {
+	model := New(&fakeTUIService{})
+	next, _ := model.Update(actionDoneMsg{
+		result: "启动失败",
+		err:    &app.Error{Category: app.ErrorCategoryConflict, Code: app.ErrorCode("PORT_CONFLICT"), Message: "监听端口冲突"},
+	})
+	model = next.(Model)
+	if !strings.Contains(model.View(), "配置管理 > 监听端口") {
+		t.Fatalf("missing listener port hint: %s", model.View())
 	}
 }
 

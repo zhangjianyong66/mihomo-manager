@@ -28,6 +28,8 @@
 
 安装器固定 `MetaCubeX/meta-rules-dat` commit `32ae0e8658ca541374b721efcee84955e8a59755`，两份 `.mrs` 经 SHA-256 和 mihomo 原生 provider 配置校验后以 `0700/0600` 权限发布。覆盖 `MM_RULESET_BASE_URL` 或 `MM_RULESET_REF` 时必须同时提供 `MM_RULESET_DOMAIN_SHA256` 与 `MM_RULESET_IP_SHA256`，不得绕过完整性校验。
 
+新建最小配置和缺失端口时的兼容补全统一使用 `mixed-port: 7890`、`socks-port: 7891`；旧 Shell 兼容层仍可通过 `MIHOMO_MIXED_PORT`、`MIHOMO_SOCKS_PORT` 覆盖。已有配置由安装器原样保留，不因默认值变化自动改写。
+
 ## 路由规则语义
 
 - `domain.RoutingMode` 仅允许 `global|rule|direct`，不得与 `ProfileMode(managed|external|legacy)` 混用；缺少配置 `mode` 时 policy 按 `rule` 解析。
@@ -67,6 +69,8 @@
 - `internal/mihomo/client.go` 仍保留 1.x 的 `pgrep/pkill` 兼容逻辑，但不接入当前 CLI/TUI 产品入口；2.x daemon 严禁复用该逻辑，只停止 adapter 返回并由 supervisor 持有的 `Process`。
 - managed 配置写到 XDG generation 目录；external/legacy 配置只读并在 validate/start 间核对 SHA-256，不得覆盖 `~/.config/mihomo/config.yaml`。
 - external-controller 默认只监听 `127.0.0.1`；不要在没有明确需求和安全评估时扩大到公网地址。
+- legacy capability 每次从活动 `config.yaml` 动态读取 `external-controller`；`MIHOMO_API_PORT` 是安装/systemd 初始环境，不得在用户通过端口 API 修改后继续作为 controller 运行态事实来源。
+- 端口冲突诊断只允许临时 bind 配置的有效地址，不执行 `ss`/`lsof`、不读取 `/proc`、不输出 PID/进程名，也不得自动换端口或停止 xray/v2rayN 等其他代理。
 - 运行日志写入 `<CONFIG_DIR>/mihomo.log`；TUI 日志页只保留最近 500 行内存缓冲，并支持正则过滤。
 - 配置管理、订阅更新和路由功能涉及用户真实网络环境；自动化测试必须隔离到临时目录，不能改写用户的 `~/.config/mihomo`。
 

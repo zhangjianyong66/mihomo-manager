@@ -34,6 +34,7 @@ CLI 签名：`mm daemon run|status|start|stop|enable|disable`；除 `run` 外均
 - 幂等：完成且非 5xx/非流式的 JSON 响应按 request ID 缓存 5 分钟、最多 1024 条；同 ID 不同 method/path/body 返回 `REQUEST_ID_CONFLICT`。
 - systemd：`mm.socket` 使用 `%t/mihomo-manager/mm.sock`、`0600/0700`、`Accept=no`、`RemoveOnStop=yes`；service 只执行 `%h/.local/bin/mm daemon run`，设置 `Restart=on-failure`、退避、`NoNewPrivileges=yes`、`UMask=0077`。unit 模板版本为 2，带 owner/version/content checksum marker，以临时文件 fsync+rename 安装。
 - 显式执行 `CONFIG_DIR=... MIHOMO_BIN=... MIHOMO_API_PORT=... mm daemon enable` 时，controller 将三个白名单变量校验、转义并写入受管 `Environment=` 块；后续未显式传环境的重复 enable 保留该块，确保 systemd 重启后 legacy 迁移与兼容操作仍使用同一路径。环境值不得包含凭据或控制字符，两个路径必须绝对，端口必须为 1-65535。
+- 监听端口 IPC 为 `GET /v1/config/ports?profileId=...` 与 `PUT /v1/config/ports`；PUT body 固定为 `profileId`、`field`、`port` 且必须带 `MM-Request-ID`。响应包含六项 typed ports、core state、`restarted`、`nextStart` 和最近 `portConflicts`，错误 details 保留 `conflicts` 及可用的 partial `status`。
 
 ## 4. Validation & Error Matrix
 
@@ -46,6 +47,9 @@ CLI 签名：`mm daemon run|status|start|stop|enable|disable`；除 `run` 外均
 | systemd user 不可用的 `enable` | 成功安装但 `enabled=false`，附前台提示 | 0 |
 | systemd user 不可用的 `start/stop` | `daemon_unavailable` | 5 |
 | daemon-reload/enable 失败 | 恢复原 unit，`internal` | 1 |
+| 监听字段/范围非法或 PUT 缺 request ID | `INVALID_REQUEST` / `REQUEST_ID_REQUIRED` | 2 |
+| listener bind 冲突 | HTTP 409 `PORT_CONFLICT`，details 含全部 conflicts | 4 |
+| 端口重配置恢复失败 | HTTP 500 `RESTORE_FAILED`，core failed | 1 |
 
 服务端 peer UID 拒绝发生在 HTTP 前，客户端只能分类为 daemon unavailable，不能根据 EOF 猜测权限原因。
 
@@ -61,6 +65,7 @@ CLI 签名：`mm daemon run|status|start|stop|enable|disable`；除 `run` 外均
 - `internal/platform`：目录/lock/socket mode、符号链接、普通文件目标、flock 竞争、同 UID 成功和错误 UID 断连。
 - `internal/ipc`：协议交集/无交集、request ID、超大 body/line、JSON envelope、NDJSON 序号/终止/取消。
 - `internal/daemon`：真实临时 Unix socket、两个 client、schema status、operation conflict、幂等重放/冲突/过期、graceful cleanup；不得启动真实 core。
+- `internal/daemon` 端口路由：GET 六字段、PUT request ID/非法字段、stopped `nextStart`、running `restarted`、配置内容/权限和多冲突 details。
 - `internal/platform/systemd`：模板结构/checksum、受管环境 round-trip/转义/保留、无 systemd 降级、fake systemctl 调用范围、失败恢复和未知 unit 备份。
 - 完成门：`go test ./...`、`go test -race ./...`、`go vet ./...`、Linux amd64/arm64 `CGO_ENABLED=0` 构建、隔离 XDG 前台 daemon/status/SIGTERM 冒烟。
 

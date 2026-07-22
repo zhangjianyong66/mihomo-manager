@@ -164,7 +164,7 @@ func mapIPCError(err error) error {
 
 func protocolCategory(code string) ErrorCategory {
 	switch code {
-	case "REQUEST_ID_CONFLICT", "OPERATION_CONFLICT", "CONFLICT", "CONFIG_CHANGED", "PROFILE_MODE_UNSUPPORTED", "UNSUPPORTED_PROFILE":
+	case "REQUEST_ID_CONFLICT", "OPERATION_CONFLICT", "CONFLICT", "CONFIG_CHANGED", "PORT_CONFLICT", "PROFILE_MODE_UNSUPPORTED", "UNSUPPORTED_PROFILE":
 		return ErrorCategoryConflict
 	case "INVALID_REQUEST", "INVALID_ROUTING_MODE", "REQUEST_ID_REQUIRED":
 		return ErrorCategoryInvalidArgument

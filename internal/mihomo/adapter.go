@@ -82,6 +82,9 @@ func (a *Adapter) Start(ctx context.Context, spec core.RuntimeSpec) (core.Proces
 	if strings.TrimSpace(a.options.Binary) == "" {
 		return nil, errors.New("mihomo binary path is empty")
 	}
+	if err := preflightListenerPorts(spec.ConfigPath); err != nil {
+		return nil, err
+	}
 	return startProcess(a.options.Binary, spec, a.options.StopTimeout)
 }
 

@@ -32,7 +32,7 @@ readonly NODE_SPEED_FILE="$CONFIG_DIR/node_speed.txt"
 readonly FASTEST_NODE_FILE="$CONFIG_DIR/fastest_node.txt"
 
 # 端口配置（可通过环境变量覆盖）
-readonly MIXED_PORT="${MIHOMO_MIXED_PORT:-10808}"
+readonly MIXED_PORT="${MIHOMO_MIXED_PORT:-7890}"
 readonly SOCKS_PORT="${MIHOMO_SOCKS_PORT:-7891}"
 readonly API_PORT="${MIHOMO_API_PORT:-9090}"
 

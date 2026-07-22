@@ -73,10 +73,10 @@ if [ -f "$CONFIG_FILE" ]; then
     test_case "配置文件存在" "pass"
 
     # 检查端口配置
-    if grep -q "mixed-port: 10808" "$CONFIG_FILE"; then
-        test_case "mixed-port: 10808 配置正确" "pass"
+    if grep -q "mixed-port: 7890" "$CONFIG_FILE"; then
+        test_case "mixed-port: 7890 配置正确" "pass"
     else
-        test_case "mixed-port: 10808 配置正确" "fail"
+        test_case "mixed-port: 7890 配置正确" "fail"
     fi
 
     if grep -q "external-controller: 127.0.0.1:9090" "$CONFIG_FILE"; then
@@ -99,10 +99,10 @@ else
     test_case "服务运行中" "fail"
 fi
 
-if lsof -i:10808 >/dev/null 2>&1; then
-    test_case "端口 10808 监听中" "pass"
+if lsof -i:7890 >/dev/null 2>&1; then
+    test_case "端口 7890 监听中" "pass"
 else
-    test_case "端口 10808 监听中" "fail"
+    test_case "端口 7890 监听中" "fail"
 fi
 
 if lsof -i:9090 >/dev/null 2>&1; then

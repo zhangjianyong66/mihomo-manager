@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/zhangjianyong66/mihomo-manager/internal/config"
+	"github.com/zhangjianyong66/mihomo-manager/internal/core"
 	"github.com/zhangjianyong66/mihomo-manager/internal/daemon"
 	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
 	"github.com/zhangjianyong66/mihomo-manager/internal/ipc"
@@ -44,8 +46,66 @@ type CapabilityAPI interface {
 	ConfigRestore(context.Context, string) error
 	ReadConfig(context.Context, string) (ConfigDocument, error)
 	ReplaceConfig(context.Context, string, string, []byte) error
+	ListenerPorts(context.Context, string) (ListenerPortStatus, error)
+	SetListenerPort(context.Context, SetListenerPortRequest) (ListenerPortStatus, error)
 	TailLogs(context.Context, LogRequest) ([]LogLine, error)
 	FollowLogs(context.Context, LogRequest) <-chan LogEvent
+}
+
+type PortConflict struct {
+	Field   string
+	Network string
+	Host    string
+	Port    int
+}
+
+type ListenerPort struct {
+	Field    string
+	Host     string
+	Port     int
+	Required bool
+	Enabled  bool
+	Networks []string
+}
+
+const (
+	ListenerPortFieldMixed              = "mixed-port"
+	ListenerPortFieldHTTP               = "port"
+	ListenerPortFieldSocks              = "socks-port"
+	ListenerPortFieldRedir              = "redir-port"
+	ListenerPortFieldTProxy             = "tproxy-port"
+	ListenerPortFieldExternalController = "external-controller"
+)
+
+type ListenerPortStatus struct {
+	ProfileID     domain.ProfileID
+	CoreState     domain.CoreState
+	Restarted     bool
+	NextStart     bool
+	Ports         []ListenerPort
+	PortConflicts []PortConflict
+}
+
+type SetListenerPortRequest struct {
+	ProfileID string
+	Field     string
+	Port      int
+	RequestID string
+}
+
+func (r SetListenerPortRequest) Validate() error {
+	required := false
+	switch strings.TrimSpace(r.Field) {
+	case ListenerPortFieldMixed, ListenerPortFieldHTTP, ListenerPortFieldSocks, ListenerPortFieldRedir, ListenerPortFieldTProxy:
+	case ListenerPortFieldExternalController:
+		required = true
+	default:
+		return fmt.Errorf("不支持的监听端口字段 %q", r.Field)
+	}
+	if r.Port < 0 || r.Port > 65535 || (required && r.Port == 0) {
+		return fmt.Errorf("%s 端口必须在 %d 到 65535 之间", r.Field, map[bool]int{false: 0, true: 1}[required])
+	}
+	return nil
 }
 
 type ConfigDocument struct {
@@ -115,7 +175,18 @@ func (c *DaemonCapabilities) CoreStatus(ctx context.Context, profileID string) (
 	if err := c.do(ctx, http.MethodGet, capabilityPath("/v1/core/status", profileID), "", nil, &value); err != nil {
 		return CoreStatus{}, err
 	}
-	return CoreStatus{Type: domain.CoreTypeMihomo, State: value.State, ProfileID: value.ProfileID, PID: value.PID}, nil
+	return CoreStatus{
+		Type: domain.CoreTypeMihomo, State: value.State, ProfileID: value.ProfileID, PID: value.PID,
+		PortConflicts: convertPortConflicts(value.PortConflicts),
+	}, nil
+}
+
+func convertPortConflicts(values []core.PortConflict) []PortConflict {
+	result := make([]PortConflict, 0, len(values))
+	for _, value := range values {
+		result = append(result, PortConflict{Field: value.Field, Network: value.Network, Host: value.Host, Port: value.Port})
+	}
+	return result
 }
 
 func (c *DaemonCapabilities) CoreAction(ctx context.Context, profileID, action string) error {
@@ -380,6 +451,64 @@ func (c *DaemonCapabilities) ReplaceConfig(ctx context.Context, profileID, expec
 	var result map[string]any
 	request := map[string]any{"profileId": profileID, "expectedSha256": expectedSHA256, "content": content}
 	return c.do(ctx, http.MethodPut, "/v1/config/edit", newRequestID("config-edit"), request, &result)
+}
+
+func (c *DaemonCapabilities) ListenerPorts(ctx context.Context, profileID string) (ListenerPortStatus, error) {
+	var value daemon.ListenerPortStatus
+	if err := c.do(ctx, http.MethodGet, capabilityPath("/v1/config/ports", profileID), "", nil, &value); err != nil {
+		return ListenerPortStatus{}, err
+	}
+	return convertListenerPortStatus(value), nil
+}
+
+func (c *DaemonCapabilities) SetListenerPort(ctx context.Context, request SetListenerPortRequest) (ListenerPortStatus, error) {
+	if err := request.Validate(); err != nil {
+		return ListenerPortStatus{}, &Error{Category: ErrorCategoryInvalidArgument, Code: ErrorCodeInvalidArgument, Message: "监听端口参数无效", Err: err}
+	}
+	if c == nil || c.client == nil {
+		return ListenerPortStatus{}, &Error{Category: ErrorCategoryDaemonUnavailable, Code: ErrorCodeDaemonUnavailable, Message: "daemon 客户端未配置"}
+	}
+	requestID := strings.TrimSpace(request.RequestID)
+	if requestID == "" {
+		requestID = newRequestID("config-port")
+	}
+	var value daemon.ListenerPortStatus
+	err := c.client.Do(ctx, http.MethodPut, "/v1/config/ports", requestID, map[string]any{
+		"profileId": request.ProfileID, "field": request.Field, "port": request.Port,
+	}, &value)
+	if err == nil {
+		return convertListenerPortStatus(value), nil
+	}
+	decodeListenerPortStatusError(err, &value)
+	return convertListenerPortStatus(value), c.mapError(err)
+}
+
+func decodeListenerPortStatusError(err error, value *daemon.ListenerPortStatus) {
+	var ipcErr *ipc.Error
+	if value == nil || !errors.As(err, &ipcErr) {
+		return
+	}
+	raw, ok := ipcErr.Body.Details["status"]
+	if !ok {
+		return
+	}
+	if encoded, marshalErr := json.Marshal(raw); marshalErr == nil {
+		_ = json.Unmarshal(encoded, value)
+	}
+}
+
+func convertListenerPortStatus(value daemon.ListenerPortStatus) ListenerPortStatus {
+	ports := make([]ListenerPort, 0, len(value.Ports))
+	for _, item := range value.Ports {
+		ports = append(ports, ListenerPort{
+			Field: item.Field, Host: item.Host, Port: item.Port, Required: item.Required,
+			Enabled: item.Enabled, Networks: append([]string(nil), item.Networks...),
+		})
+	}
+	return ListenerPortStatus{
+		ProfileID: value.ProfileID, CoreState: value.CoreState, Restarted: value.Restarted, NextStart: value.NextStart,
+		Ports: ports, PortConflicts: convertPortConflicts(value.PortConflicts),
+	}
 }
 
 func (c *DaemonCapabilities) TailLogs(ctx context.Context, request LogRequest) ([]LogLine, error) {

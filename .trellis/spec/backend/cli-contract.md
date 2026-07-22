@@ -33,6 +33,8 @@ func Execute(
 
 模式 CLI 固定为 `mm mode status [--profile ID] [--output table|json]` 与 `mm mode set <global|rule|direct> [--profile ID] [--close-connections] [--output table|json]`；成功 kind 分别为 `RoutingModeStatus`、`RoutingModeChange`。daemon 不可用和未迁移错误必须分别给出 `mm daemon status/start`、`mm migrate plan/apply` 的可执行提示。
 
+监听端口 CLI 固定为 `mm config ports [--profile ID] [--output table|json]` 与 `mm config port set <field> <port> [--profile ID] [--output table|json]`；成功 kind 为 `ListenerPortStatus`。TUI 常驻入口为“配置管理 > 监听端口”，只能通过 `app.CapabilityAPI.ListenerPorts|SetListenerPort` 异步调用 daemon。
+
 ### 3. Contracts
 
 命令行为：
@@ -67,6 +69,8 @@ A6 业务命令默认使用活动 legacy profile，可选 `--profile` 只用于�
 
 `config edit` 不得让 systemd daemon 启动交互编辑器。CLI 通过 GET 取得配置内容与 SHA-256，在本地私有临时文件中调用 `EDITOR`，再通过 PUT 回传内容和 expected SHA-256；daemon 负责摘要冲突、原子写入、原生校验和失败恢复。
 
+端口表格必须展示 field/port 或禁用/host/networks/conflict；修改成功明确区分“已重启并生效”和“已保存，下次启动生效”。`PORT_CONFLICT` 固定分类为 `conflict`、退出码 4，TUI core action 提示进入监听端口页，不得从错误文本反向解析 conflicts。
+
 ### 4. Validation & Error Matrix
 
 | 条件 | `ErrorCategory` | 退出码 |
@@ -98,6 +102,7 @@ A6 业务命令默认使用活动 legacy profile，可选 `--profile` 只用于�
 - 错误：0-8 全部映射、wrapped `app.Error`、细化机器码与分类解耦、未知错误隐藏。
 - 秘密：table、JSON、错误详情、URL 默认脱敏及显式展示。
 - 领域/应用：空 ID、非法枚举以及每个 port 的 fake 编译期断言。
+- 端口管理：六字段 table/json、禁用/冲突、未知字段/范围、请求 field/port、running/stopped 提示、`PORT_CONFLICT` 退出码 4，以及 TUI capability 延迟到 `tea.Cmd` 执行。
 - 提交前执行：`go test ./...`、`go vet ./...`、`CGO_ENABLED=0 go build -trimpath -o /tmp/mm ./cmd/mm`、两个 help 冒烟。
 
 ### 7. Wrong vs Correct

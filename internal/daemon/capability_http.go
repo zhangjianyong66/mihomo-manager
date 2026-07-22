@@ -113,6 +113,10 @@ func (h *capabilityHandler) configAction(w http.ResponseWriter, r *http.Request)
 		h.configEdit(w, r)
 		return
 	}
+	if action == "ports" {
+		h.configPorts(w, r)
+		return
+	}
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
@@ -135,6 +139,47 @@ func (h *capabilityHandler) configAction(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeCapabilityResult(w, "ConfigAction", map[string]string{"action": action, "profileId": request.ProfileID}, err)
+}
+
+func (h *capabilityHandler) configPorts(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		value, err := h.service.ListenerPorts(r.Context(), profileQuery(r))
+		writeListenerPortResult(w, value, err)
+		return
+	}
+	if !requireMethod(w, r, http.MethodPut) {
+		return
+	}
+	if strings.TrimSpace(r.Header.Get(ipc.RequestIDHeader)) == "" {
+		_ = ipc.WriteError(w, http.StatusBadRequest, "REQUEST_ID_REQUIRED", "修改监听端口必须提供 MM-Request-ID", false, nil)
+		return
+	}
+	var request struct {
+		ProfileID string `json:"profileId,omitempty"`
+		Field     string `json:"field"`
+		Port      int    `json:"port"`
+	}
+	if err := ipc.DecodeJSON(w, r, &request); err != nil {
+		return
+	}
+	value, err := h.service.SetListenerPort(r.Context(), request.ProfileID, request.Field, request.Port)
+	writeListenerPortResult(w, value, err)
+}
+
+func writeListenerPortResult(w http.ResponseWriter, value ListenerPortStatus, err error) {
+	if err == nil {
+		_ = ipc.WriteJSON(w, http.StatusOK, "ListenerPortStatus", value)
+		return
+	}
+	status, code, message, retryable := classifyCapabilityError(err)
+	details := capabilityErrorDetails(err)
+	if value.ProfileID != "" {
+		if details == nil {
+			details = map[string]any{}
+		}
+		details["status"] = value
+	}
+	_ = ipc.WriteError(w, status, code, message, retryable, details)
 }
 
 func (h *capabilityHandler) configEdit(w http.ResponseWriter, r *http.Request) {
@@ -479,12 +524,20 @@ func writeCapabilityResult(w http.ResponseWriter, kind string, value any, err er
 func capabilityErrorBody(err error) *ipc.ErrorBody {
 	status, code, message, retryable := classifyCapabilityError(err)
 	_ = status
-	return &ipc.ErrorBody{Code: code, Message: message, Retryable: retryable}
+	return &ipc.ErrorBody{Code: code, Message: message, Retryable: retryable, Details: capabilityErrorDetails(err)}
 }
 
 func writeCapabilityError(w http.ResponseWriter, err error) {
 	status, code, message, retryable := classifyCapabilityError(err)
-	_ = ipc.WriteError(w, status, code, message, retryable, nil)
+	_ = ipc.WriteError(w, status, code, message, retryable, capabilityErrorDetails(err))
+}
+
+func capabilityErrorDetails(err error) map[string]any {
+	var conflictErr *core.PortConflictError
+	if errors.As(err, &conflictErr) {
+		return map[string]any{"conflicts": conflictErr.Conflicts}
+	}
+	return nil
 }
 
 func classifyCapabilityError(err error) (int, string, string, bool) {
@@ -493,8 +546,12 @@ func classifyCapabilityError(err error) (int, string, string, bool) {
 		return http.StatusRequestTimeout, "REQUEST_CANCELLED", "请求已取消", true
 	case errors.Is(err, legacy.ErrRestoreFailed):
 		return http.StatusInternalServerError, "RESTORE_FAILED", "模式切换恢复失败", false
+	case errors.Is(err, ErrReconfigureRestoreFailed):
+		return http.StatusInternalServerError, "RESTORE_FAILED", "端口配置或旧 core 恢复失败", false
 	case errors.Is(err, legacy.ErrConnectionCloseFailed):
 		return http.StatusFailedDependency, "CONNECTION_CLOSE_FAILED", "模式已生效，但关闭活动连接失败", true
+	case errors.Is(err, core.ErrPortConflict):
+		return http.StatusConflict, "PORT_CONFLICT", err.Error(), false
 	case errors.Is(err, ErrCapabilityNotFound), errors.Is(err, store.ErrNotFound):
 		return http.StatusNotFound, "NOT_FOUND", "资源不存在", false
 	case errors.Is(err, store.ErrInvalid):

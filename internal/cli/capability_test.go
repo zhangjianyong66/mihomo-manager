@@ -26,6 +26,8 @@ type fakeCapabilityAPI struct {
 	connections      []app.Connection
 	connectionEvents []app.ConnectionEvent
 	setMode          app.SetRoutingModeRequest
+	portStatus       app.ListenerPortStatus
+	setPort          app.SetListenerPortRequest
 	err              error
 }
 
@@ -104,6 +106,13 @@ func (f *fakeCapabilityAPI) ReadConfig(context.Context, string) (app.ConfigDocum
 func (f *fakeCapabilityAPI) ReplaceConfig(_ context.Context, _, _ string, content []byte) error {
 	f.replaced = append([]byte(nil), content...)
 	return f.err
+}
+func (f *fakeCapabilityAPI) ListenerPorts(context.Context, string) (app.ListenerPortStatus, error) {
+	return f.portStatus, f.err
+}
+func (f *fakeCapabilityAPI) SetListenerPort(_ context.Context, request app.SetListenerPortRequest) (app.ListenerPortStatus, error) {
+	f.setPort = request
+	return f.portStatus, f.err
 }
 func (f *fakeCapabilityAPI) TailLogs(context.Context, app.LogRequest) ([]app.LogLine, error) {
 	return f.logs, f.err
@@ -204,5 +213,53 @@ func TestCapabilityCLIConfigEditUsesLocalEditorAndDigest(t *testing.T) {
 	code := Execute(context.Background(), Dependencies{Capabilities: fake}, []string{"config", "edit"}, nil, &stdout, &stderr)
 	if code != 0 || !strings.Contains(string(fake.replaced), "# edited") {
 		t.Fatalf("config edit failed: code=%d replacement=%q stderr=%q", code, fake.replaced, stderr.String())
+	}
+}
+
+func TestCapabilityCLIListenerPortsTableJSONAndSet(t *testing.T) {
+	status := app.ListenerPortStatus{
+		ProfileID: "legacy-mihomo", CoreState: domain.CoreStateStopped, NextStart: true,
+		Ports: []app.ListenerPort{
+			{Field: app.ListenerPortFieldMixed, Host: "127.0.0.1", Port: 7890, Enabled: true, Networks: []string{"tcp", "udp"}},
+			{Field: app.ListenerPortFieldSocks, Host: "127.0.0.1", Port: 0, Networks: []string{"tcp", "udp"}},
+		},
+		PortConflicts: []app.PortConflict{{Field: app.ListenerPortFieldMixed, Network: "tcp", Host: "127.0.0.1", Port: 7890}},
+	}
+	fake := &fakeCapabilityAPI{portStatus: status}
+	var stdout, stderr strings.Builder
+	code := Execute(context.Background(), Dependencies{Capabilities: fake}, []string{"config", "ports", "--output", "json"}, nil, &stdout, &stderr)
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("ports failed: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{`"kind":"ListenerPortStatus"`, `"field":"mixed-port"`, `"portConflicts"`, `"enabled":false`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("ports JSON missing %q: %s", want, stdout.String())
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	status.Restarted, status.NextStart = true, false
+	fake.portStatus = status
+	code = Execute(context.Background(), Dependencies{Capabilities: fake}, []string{"config", "port", "set", "mixed-port", "17890"}, nil, &stdout, &stderr)
+	if code != 0 || fake.setPort.Field != "mixed-port" || fake.setPort.Port != 17890 || !strings.Contains(stdout.String(), "已重启并生效") {
+		t.Fatalf("set failed: code=%d request=%+v stdout=%q stderr=%q", code, fake.setPort, stdout.String(), stderr.String())
+	}
+}
+
+func TestCapabilityCLIListenerPortRejectsInvalidInputAndMapsConflict(t *testing.T) {
+	fake := &fakeCapabilityAPI{}
+	var stdout, stderr strings.Builder
+	code := Execute(context.Background(), Dependencies{Capabilities: fake}, []string{"config", "port", "set", "unknown", "7890"}, nil, &stdout, &stderr)
+	if code != ExitInvalidArgument || fake.setPort.Field != "" {
+		t.Fatalf("invalid field: code=%d request=%+v stderr=%q", code, fake.setPort, stderr.String())
+	}
+
+	fake.err = &app.Error{Category: app.ErrorCategoryConflict, Code: app.ErrorCode("PORT_CONFLICT"), Message: "端口已被占用"}
+	stdout.Reset()
+	stderr.Reset()
+	code = Execute(context.Background(), Dependencies{Capabilities: fake}, []string{"config", "port", "set", "mixed-port", "7890"}, nil, &stdout, &stderr)
+	if code != ExitConflict || !strings.Contains(stderr.String(), "端口已被占用") {
+		t.Fatalf("conflict: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }

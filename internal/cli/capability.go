@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -360,8 +361,106 @@ func newConfigCommand(deps Dependencies) *cobra.Command {
 		})
 	}
 	command.AddCommand(edit)
+	command.AddCommand(newConfigPortsCommand(deps), newConfigPortCommand(deps))
 	command.AddCommand(validate)
 	return command
+}
+
+func newConfigPortsCommand(deps Dependencies) *cobra.Command {
+	command := &cobra.Command{Use: "ports", Short: "查看监听端口", Args: noArgs}
+	var profile string
+	var options OutputOptions
+	bindCapabilityOptions(command, &profile, &options)
+	command.RunE = func(command *cobra.Command, _ []string) error {
+		value, err := deps.Capabilities.ListenerPorts(command.Context(), profile)
+		if err != nil {
+			return err
+		}
+		return writeListenerPortResult(command, options, "ListenerPortStatus", value)
+	}
+	return command
+}
+
+func newConfigPortCommand(deps Dependencies) *cobra.Command {
+	command := &cobra.Command{Use: "port", Short: "修改监听端口", Args: noArgs}
+	set := &cobra.Command{Use: "set <field> <port>", Short: "设置一个监听端口", Args: exactArgs(2)}
+	var profile string
+	var options OutputOptions
+	bindCapabilityOptions(set, &profile, &options)
+	set.RunE = func(command *cobra.Command, args []string) error {
+		port, err := strconv.Atoi(args[1])
+		if err != nil {
+			return &app.Error{Category: app.ErrorCategoryInvalidArgument, Code: app.ErrorCodeInvalidArgument, Message: "端口必须是整数", Err: err}
+		}
+		request := app.SetListenerPortRequest{ProfileID: profile, Field: args[0], Port: port}
+		if err := request.Validate(); err != nil {
+			return &app.Error{Category: app.ErrorCategoryInvalidArgument, Code: app.ErrorCodeInvalidArgument, Message: err.Error(), Err: err}
+		}
+		value, err := deps.Capabilities.SetListenerPort(command.Context(), request)
+		if err != nil {
+			return err
+		}
+		return writeListenerPortResult(command, options, "ListenerPortChange", value)
+	}
+	command.AddCommand(set)
+	return command
+}
+
+func writeListenerPortResult(command *cobra.Command, options OutputOptions, kind string, value app.ListenerPortStatus) error {
+	return capabilityResult(command, options, Result{
+		Kind: kind,
+		Data: func(bool) any {
+			ports := make([]map[string]any, 0, len(value.Ports))
+			for _, item := range value.Ports {
+				ports = append(ports, map[string]any{
+					"field": item.Field, "host": item.Host, "port": item.Port, "required": item.Required,
+					"enabled": item.Enabled, "networks": append([]string(nil), item.Networks...),
+				})
+			}
+			conflicts := make([]map[string]any, 0, len(value.PortConflicts))
+			for _, item := range value.PortConflicts {
+				conflicts = append(conflicts, map[string]any{
+					"field": item.Field, "network": item.Network, "host": item.Host, "port": item.Port,
+				})
+			}
+			return map[string]any{
+				"profileId": value.ProfileID, "coreState": value.CoreState, "restarted": value.Restarted,
+				"nextStart": value.NextStart, "ports": ports, "portConflicts": conflicts,
+			}
+		},
+		Table: func(w io.Writer, _ bool) error { return writeListenerPortTable(w, value) },
+	})
+}
+
+func writeListenerPortTable(w io.Writer, value app.ListenerPortStatus) error {
+	if _, err := fmt.Fprintf(w, "档案: %s\nCore: %s\n", value.ProfileID, value.CoreState); err != nil {
+		return err
+	}
+	for _, item := range value.Ports {
+		state := strconv.Itoa(item.Port)
+		if !item.Enabled {
+			state = "禁用"
+		}
+		conflict := ""
+		for _, current := range value.PortConflicts {
+			if current.Field == item.Field && current.Port == item.Port {
+				conflict = " [冲突]"
+				break
+			}
+		}
+		if _, err := fmt.Fprintf(w, "%s: %s (%s %s)%s\n", item.Field, state, strings.Join(item.Networks, "/"), item.Host, conflict); err != nil {
+			return err
+		}
+	}
+	if value.Restarted {
+		_, err := fmt.Fprintln(w, "生效状态: 已重启并生效")
+		return err
+	}
+	if value.NextStart {
+		_, err := fmt.Fprintln(w, "生效状态: 已保存，下次启动生效")
+		return err
+	}
+	return nil
 }
 
 func editConfig(command *cobra.Command, service app.CapabilityAPI, profileID string) error {

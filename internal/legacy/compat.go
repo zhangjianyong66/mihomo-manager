@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/zhangjianyong66/mihomo-manager/internal/config"
 	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
 	"github.com/zhangjianyong66/mihomo-manager/internal/mihomo"
 )
@@ -29,6 +30,17 @@ func (c *Compatibility) Validate(ctx context.Context, id domain.RestorePointID) 
 	}
 	paths := c.service.pathsOrDefault()
 	return validateConfig(ctx, paths.ConfigDir, paths.ConfigFile, paths.MihomoBin)
+}
+
+func (c *Compatibility) ListenerPorts(ctx context.Context, id domain.RestorePointID) ([]mihomo.ListenerPort, error) {
+	var result []mihomo.ListenerPort
+	paths := c.service.pathsOrDefault()
+	err := c.inspect(ctx, id, func(*mihomo.Client) error {
+		var err error
+		result, err = mihomo.ReadListenerPorts(paths.ConfigFile)
+		return err
+	})
+	return result, err
 }
 
 func (c *Compatibility) ReadSubscriptionURL(ctx context.Context, id domain.RestorePointID) (string, error) {
@@ -232,7 +244,7 @@ func (c *Compatibility) inspect(ctx context.Context, id domain.RestorePointID, a
 	if err := checkExpected(migration); err != nil {
 		return err
 	}
-	return action(mihomo.New(c.service.pathsOrDefault()))
+	return action(compatibilityClient(c.service.pathsOrDefault()))
 }
 
 func (c *Compatibility) load(ctx context.Context, id domain.RestorePointID) (domain.LegacyMigration, error) {
@@ -278,7 +290,7 @@ func (c *Compatibility) mutate(ctx context.Context, id domain.RestorePointID, va
 			return err
 		}
 	}
-	client := mihomo.New(paths)
+	client := compatibilityClient(paths)
 	if err := action(client); err != nil {
 		_ = restoreSource(paths.ConfigDir, before)
 		return err
@@ -302,6 +314,13 @@ func (c *Compatibility) mutate(ctx context.Context, id domain.RestorePointID, va
 		return err
 	}
 	return nil
+}
+
+func compatibilityClient(paths config.Paths) *mihomo.Client {
+	if endpoint, err := mihomo.ReadControllerEndpoint(paths.ConfigFile); err == nil {
+		paths.APIAddr = endpoint
+	}
+	return mihomo.New(paths)
 }
 
 func checkExpected(migration domain.LegacyMigration) error {

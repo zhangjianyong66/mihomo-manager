@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -43,7 +44,7 @@ func TestCapabilityRoutesLegacyThroughUnixIPC(t *testing.T) {
 		t.Fatal(err)
 	}
 	configFile := filepath.Join(configDir, "config.yaml")
-	content := fmt.Sprintf("mixed-port: 7890\nexternal-controller: 127.0.0.1:%s\nproxies: []\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n", port)
+	content := fmt.Sprintf("mixed-port: 7890\nexternal-controller: 127.0.0.1:%s\nproxies:\n  - {name: demo, type: socks5, server: 127.0.0.1, port: 1080}\nproxy-groups:\n  - {name: \"🌐 代理\", type: select, proxies: [demo]}\nrules:\n  - MATCH,DIRECT\n", port)
 	if err := os.WriteFile(configFile, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -121,6 +122,27 @@ func TestCapabilityRoutesLegacyThroughUnixIPC(t *testing.T) {
 		cancel()
 		t.Fatalf("mode GET status=%+v err=%v", modeStatus, err)
 	}
+	var portStatus ListenerPortStatus
+	if err := client.Do(context.Background(), http.MethodGet, "/v1/config/ports", "", nil, &portStatus); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	if portStatus.ProfileID != "legacy-mihomo" || portStatus.CoreState != domain.CoreStateStopped || len(portStatus.Ports) != 6 {
+		cancel()
+		t.Fatalf("unexpected listener ports: %+v", portStatus)
+	}
+	stoppedPort := availableTCPPort(t)
+	portRequest := map[string]any{"field": "mixed-port", "port": stoppedPort}
+	assertIPCCode(client.Do(context.Background(), http.MethodPut, "/v1/config/ports", "", portRequest, &portStatus), "REQUEST_ID_REQUIRED")
+	assertIPCCode(client.Do(context.Background(), http.MethodPut, "/v1/config/ports", "port-invalid", map[string]any{"field": "unknown", "port": stoppedPort}, &portStatus), "INVALID_REQUEST")
+	if err := client.Do(context.Background(), http.MethodPut, "/v1/config/ports", "port-stopped", portRequest, &portStatus); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	if !portStatus.NextStart || portStatus.Restarted || portStatus.CoreState != domain.CoreStateStopped {
+		cancel()
+		t.Fatalf("unexpected stopped listener port result: %+v", portStatus)
+	}
 	var subscription SubscriptionInfo
 	if err := client.Do(context.Background(), http.MethodGet, "/v1/subscription", "", nil, &subscription); err != nil {
 		cancel()
@@ -160,6 +182,29 @@ func TestCapabilityRoutesLegacyThroughUnixIPC(t *testing.T) {
 		cancel()
 		t.Fatal(err)
 	}
+	runningPort := availableTCPPort(t)
+	if err := client.Do(context.Background(), http.MethodPut, "/v1/config/ports", "port-running", map[string]any{"field": "mixed-port", "port": runningPort}, &portStatus); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	if !portStatus.Restarted || portStatus.NextStart || portStatus.CoreState != domain.CoreStateRunning {
+		cancel()
+		t.Fatalf("unexpected running listener port result: %+v", portStatus)
+	}
+	updatedContent, err := os.ReadFile(configFile)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(updatedContent), fmt.Sprintf("mixed-port: %d", runningPort)) {
+		cancel()
+		t.Fatalf("listener port was not persisted: %s", updatedContent)
+	}
+	info, err := os.Stat(configFile)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		cancel()
+		t.Fatalf("unexpected config permission: info=%v err=%v", info, err)
+	}
 	var coreStatus CoreStatus
 	if err := client.Do(context.Background(), http.MethodGet, "/v1/core/status", "", nil, &coreStatus); err != nil || coreStatus.State != domain.CoreStateRunning || coreStatus.ProfileID != "legacy-mihomo" {
 		cancel()
@@ -197,4 +242,17 @@ func TestCapabilityRoutesLegacyThroughUnixIPC(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+
+func availableTCPPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
 }

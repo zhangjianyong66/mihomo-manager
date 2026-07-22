@@ -757,7 +757,7 @@ configure_mihomo() {
     temp_config="$(mktemp "$CONFIG_DIR/.config.yaml.new.XXXXXX")"
     TEMP_PATHS+=("$temp_config")
     cat >"$temp_config" <<'EOF'
-mixed-port: 10808
+mixed-port: 7890
 socks-port: 7891
 allow-lan: false
 mode: rule

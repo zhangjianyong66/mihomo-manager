@@ -121,3 +121,70 @@ err = process.Stop(ctx)
 spec, err := generations.Prepare(ctx, snapshot, adapter)
 err = generations.CheckSource(spec)
 ```
+
+## 场景：监听端口预检与安全重配置
+
+### 1. 范围 / 触发条件
+
+修改 mihomo listener 解析、`Adapter.Start`、结构化端口 API 或 CoreManager 配置重启事务时适用。目标是在创建进程前报告全部可诊断冲突，并保证运行中修改失败不会留下新配置、重复 core 或伪造 running 状态。
+
+### 2. 签名
+
+```go
+func mihomo.ParseListenerPorts([]byte) ([]mihomo.ListenerPort, error)
+func mihomo.UpdateListenerPort([]byte, string, int) ([]byte, error)
+func mihomo.ReadControllerEndpoint(string) (string, error)
+func (*mihomo.Adapter) Start(context.Context, core.RuntimeSpec) (core.Process, error)
+
+type ConfigMutation func(context.Context) (restore func(context.Context) error, err error)
+func (*daemon.CoreManager) Reconfigure(context.Context, core.ProfileSnapshot, ConfigMutation) (restarted bool, err error)
+```
+
+### 3. 契约
+
+- 字段固定为 `mixed-port`、`port`、`socks-port`、`redir-port`、`tproxy-port`、`external-controller`；前五项 `0` 表示禁用，controller 必须为 loopback 且端口非零。
+- mixed/socks/tproxy 临时 bind TCP+UDP，HTTP/redir/controller bind TCP；一次收集所有 `EADDRINUSE` 为 `core.PortConflictError`，每项包含 field/network/host/port，不读取 PID 或进程名。
+- `Adapter.Start` 必须在 `startProcess` 前执行 preflight；探测只提供启动前诊断，不能消除检查与真实 bind 间的竞争窗口。
+- running 修改在同一 Coordinator 内写入候选、prepare、停止旧实例、启动新实例；失败使用独立 15 秒 context 恢复配置和旧 spec。
+- 任一 Stop 返回错误时保留精确进程句柄，视运行态为不确定，禁止再启动旧 spec；恢复配置后返回 `RESTORE_FAILED` 并标记 core failed。
+- 候选冲突后旧 core 恢复成功时，running 状态仍保留最近 `PortConflicts`，供 `/v1/config/ports` 与 TUI 展示。
+
+### 4. 校验与错误矩阵
+
+| 条件 | 必须行为 |
+|---|---|
+| 可选端口 `<0` 或 `>65535`；controller 为 `0` | `core.ErrInvalidConfig`，不写配置 |
+| 配置内端口重复或 controller 与代理端口重复 | `core.ErrInvalidConfig`，不停止旧 core |
+| 一个或多个 socket 已占用 | `PORT_CONFLICT`，不创建候选进程，保留全部 conflicts |
+| stopped 修改成功 | 只保存配置，`restarted=false`、`nextStart=true` |
+| running 候选启动失败且旧 spec 恢复成功 | 返回原始错误，core 恢复 running，配置恢复 |
+| 停止旧/候选 core 失败，或配置/旧 spec 恢复失败 | `RESTORE_FAILED`，core failed，不再启动第二个进程 |
+
+### 5. Good / Base / Bad
+
+- Good：running core 的 mixed 端口修改后只存在一个新受管进程，配置摘要、active generation 和 controller endpoint 全部指向新配置。
+- Base：可选端口设为 `0` 后列表显示禁用；stopped core 不探测 controller、不创建进程。
+- Bad：旧进程 Stop 返回错误后仍清空句柄并启动旧 spec，可能产生两个 core；此路径必须被测试禁止。
+
+### 6. 必需测试
+
+- `internal/mihomo`：六字段解析/替换、0/范围/重复、TCP+UDP 多冲突、冲突时 `startProcess` 未调用。
+- `internal/daemon`：stopped 保存、running 重启、候选冲突恢复、普通 Activate 冲突保留、两类 Stop 失败均不新增进程、恢复失败状态/operation code。
+- 集成：真实临时 Unix IPC 的 GET/PUT、request ID、未知字段、配置内容与 `0600`，不得连接真实用户 core。
+
+### 7. 错误与正确示例
+
+错误：Stop 已报错、进程是否退出未知时继续恢复启动。
+
+```go
+_ = supervisor.Stop(ctx)
+_ = supervisor.Start(ctx, oldSpec)
+```
+
+正确：恢复配置但把运行态标记为不确定，保留句柄并阻止重复进程。
+
+```go
+if err := supervisor.Stop(ctx); err != nil {
+    return failReconfigurationAfterStopError(restore, err)
+}
+```

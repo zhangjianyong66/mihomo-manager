@@ -139,7 +139,7 @@ content = re.sub(r'^port:.*\n?', '', content, flags=re.MULTILINE)
 
 # 确保 mixed-port 存在
 if not re.search(r'^mixed-port:', content, re.MULTILINE):
-    content = 'mixed-port: 10808\n' + content
+    content = 'mixed-port: 7890\n' + content
 
 # 确保 socks-port 存在
 if not re.search(r'^socks-port:', content, re.MULTILINE):

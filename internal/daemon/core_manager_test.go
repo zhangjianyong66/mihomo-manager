@@ -87,6 +87,25 @@ func TestCoreManager_ReadinessFailureRestoresOldRuntime(t *testing.T) {
 	}
 }
 
+func TestCoreManager_ActivatePortConflictRestoresOldRuntimeAndPreservesConflicts(t *testing.T) {
+	conflict := &core.PortConflictError{Conflicts: []core.PortConflict{{Field: "mixed-port", Network: "tcp", Host: "127.0.0.1", Port: 17890}}}
+	adapter := &managerFakeAdapter{startErrors: []error{nil, conflict, nil}}
+	configs := &managerFakeConfigs{spec: newRuntimeSpec("new")}
+	repository := &managerFakeRepository{active: "old", hasActive: true}
+	supervisor := NewSupervisor(adapter, time.Second)
+	if err := supervisor.Start(context.Background(), newRuntimeSpec("old")); err != nil {
+		t.Fatal(err)
+	}
+	manager := newTestCoreManager(adapter, configs, repository, supervisor)
+	if err := manager.Activate(context.Background(), newSnapshot("new")); !errors.Is(err, core.ErrPortConflict) {
+		t.Fatalf("expected port conflict, got %v", err)
+	}
+	status := manager.Status()
+	if status.State != domain.CoreStateRunning || status.ProfileID != "old" || len(status.PortConflicts) != 1 {
+		t.Fatalf("old runtime/conflicts not preserved: %+v", status)
+	}
+}
+
 func TestCoreManager_RestoreFailureEntersFailedState(t *testing.T) {
 	adapter := &managerFakeAdapter{
 		readyErrors: []error{nil, errors.New("not ready")},
@@ -107,6 +126,155 @@ func TestCoreManager_RestoreFailureEntersFailedState(t *testing.T) {
 	}
 	if operation := repository.lastOperation(t); operation.State != domain.OperationStateFailed || operation.ErrorCode != "RESTORE_FAILED" {
 		t.Fatalf("unexpected operation: %+v", operation)
+	}
+}
+
+func TestCoreManager_ReconfigureRestartsRunningCore(t *testing.T) {
+	adapter := &managerFakeAdapter{}
+	configs := &managerFakeConfigs{spec: newRuntimeSpec("profile")}
+	repository := &managerFakeRepository{active: "profile", hasActive: true}
+	supervisor := NewSupervisor(adapter, time.Second)
+	oldSpec := newRuntimeSpec("profile")
+	oldSpec.SourceSHA256 = "old"
+	if err := supervisor.Start(context.Background(), oldSpec); err != nil {
+		t.Fatal(err)
+	}
+	manager := newTestCoreManager(adapter, configs, repository, supervisor)
+	applyCalls := 0
+	restoreCalls := 0
+	restarted, err := manager.Reconfigure(context.Background(), newSnapshot("profile"), func(context.Context) (func(context.Context) error, error) {
+		applyCalls++
+		return func(context.Context) error { restoreCalls++; return nil }, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restarted || applyCalls != 1 || restoreCalls != 0 || len(adapter.processes) != 2 {
+		t.Fatalf("restarted=%v apply=%d restore=%d processes=%d", restarted, applyCalls, restoreCalls, len(adapter.processes))
+	}
+	if status := manager.Status(); status.State != domain.CoreStateRunning || status.ProfileID != "profile" {
+		t.Fatalf("unexpected status: %+v", status)
+	}
+	if operation := repository.lastOperation(t); operation.State != domain.OperationStateSucceeded || operation.Kind != "core.reconfigure" {
+		t.Fatalf("unexpected operation: %+v", operation)
+	}
+}
+
+func TestCoreManager_ReconfigureStoppedOnlyMutatesConfig(t *testing.T) {
+	adapter := &managerFakeAdapter{}
+	manager := newTestCoreManager(adapter, &managerFakeConfigs{}, &managerFakeRepository{}, NewSupervisor(adapter, time.Second))
+	applyCalls := 0
+	restarted, err := manager.Reconfigure(context.Background(), newSnapshot("profile"), func(context.Context) (func(context.Context) error, error) {
+		applyCalls++
+		return func(context.Context) error { return nil }, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted || applyCalls != 1 || len(adapter.processes) != 0 || manager.Status().State != domain.CoreStateStopped {
+		t.Fatalf("restarted=%v apply=%d processes=%d status=%+v", restarted, applyCalls, len(adapter.processes), manager.Status())
+	}
+}
+
+func TestCoreManager_ReconfigureStartFailureRestoresConfigAndOldRuntime(t *testing.T) {
+	conflict := &core.PortConflictError{Conflicts: []core.PortConflict{{Field: "mixed-port", Network: "tcp", Host: "127.0.0.1", Port: 17890}}}
+	adapter := &managerFakeAdapter{startErrors: []error{nil, conflict, nil}}
+	configs := &managerFakeConfigs{spec: newRuntimeSpec("profile")}
+	repository := &managerFakeRepository{active: "profile", hasActive: true}
+	supervisor := NewSupervisor(adapter, time.Second)
+	oldSpec := newRuntimeSpec("profile")
+	oldSpec.SourceSHA256 = "old"
+	if err := supervisor.Start(context.Background(), oldSpec); err != nil {
+		t.Fatal(err)
+	}
+	manager := newTestCoreManager(adapter, configs, repository, supervisor)
+	restoreCalls := 0
+	restarted, err := manager.Reconfigure(context.Background(), newSnapshot("profile"), func(context.Context) (func(context.Context) error, error) {
+		return func(context.Context) error { restoreCalls++; return nil }, nil
+	})
+	if restarted || !errors.Is(err, core.ErrPortConflict) || restoreCalls != 1 {
+		t.Fatalf("restarted=%v err=%v restore=%d", restarted, err, restoreCalls)
+	}
+	status := manager.Status()
+	if status.State != domain.CoreStateRunning || status.ProfileID != "profile" || len(status.PortConflicts) != 1 {
+		t.Fatalf("old runtime/conflicts not preserved: %+v", status)
+	}
+	if operation := repository.lastOperation(t); operation.State != domain.OperationStateRolledBack || operation.ErrorCode != "RECONFIGURE_FAILED" {
+		t.Fatalf("unexpected operation: %+v", operation)
+	}
+}
+
+func TestCoreManager_ReconfigureRestoreFailureMarksCoreFailed(t *testing.T) {
+	adapter := &managerFakeAdapter{}
+	configs := &managerFakeConfigs{prepareErr: errors.New("candidate invalid")}
+	repository := &managerFakeRepository{active: "profile", hasActive: true}
+	supervisor := NewSupervisor(adapter, time.Second)
+	if err := supervisor.Start(context.Background(), newRuntimeSpec("profile")); err != nil {
+		t.Fatal(err)
+	}
+	manager := newTestCoreManager(adapter, configs, repository, supervisor)
+	_, err := manager.Reconfigure(context.Background(), newSnapshot("profile"), func(context.Context) (func(context.Context) error, error) {
+		return func(context.Context) error { return errors.New("restore config failed") }, nil
+	})
+	if !errors.Is(err, ErrReconfigureRestoreFailed) {
+		t.Fatalf("expected restore failure, got %v", err)
+	}
+	if status := manager.Status(); status.State != domain.CoreStateFailed || status.ErrorCode != "RESTORE_FAILED" {
+		t.Fatalf("unexpected failed status: %+v", status)
+	}
+	if operation := repository.lastOperation(t); operation.State != domain.OperationStateFailed || operation.ErrorCode != "RESTORE_FAILED" {
+		t.Fatalf("unexpected operation: %+v", operation)
+	}
+}
+
+func TestCoreManager_ReconfigureStopFailureDoesNotStartDuplicateProcess(t *testing.T) {
+	stopErr := errors.New("old core stop failed")
+	adapter := &managerFakeAdapter{stopErrors: []error{stopErr}}
+	configs := &managerFakeConfigs{spec: newRuntimeSpec("profile")}
+	repository := &managerFakeRepository{active: "profile", hasActive: true}
+	supervisor := NewSupervisor(adapter, time.Second)
+	if err := supervisor.Start(context.Background(), newRuntimeSpec("profile")); err != nil {
+		t.Fatal(err)
+	}
+	manager := newTestCoreManager(adapter, configs, repository, supervisor)
+	restoreCalls := 0
+	_, err := manager.Reconfigure(context.Background(), newSnapshot("profile"), func(context.Context) (func(context.Context) error, error) {
+		return func(context.Context) error { restoreCalls++; return nil }, nil
+	})
+	if !errors.Is(err, ErrReconfigureRestoreFailed) || !errors.Is(err, stopErr) {
+		t.Fatalf("expected uncertain stop restore failure, got %v", err)
+	}
+	if restoreCalls != 1 || adapter.starts != 1 || len(adapter.processes) != 1 {
+		t.Fatalf("restore=%d starts=%d processes=%d", restoreCalls, adapter.starts, len(adapter.processes))
+	}
+	if status := manager.Status(); status.State != domain.CoreStateFailed || status.ErrorCode != "RESTORE_FAILED" {
+		t.Fatalf("unexpected failed status: %+v", status)
+	}
+}
+
+func TestCoreManager_ReconfigureRollbackStopFailureDoesNotRestoreOldRuntime(t *testing.T) {
+	stopErr := errors.New("candidate core stop failed")
+	adapter := &managerFakeAdapter{stopErrors: []error{nil, stopErr}}
+	configs := &managerFakeConfigs{spec: newRuntimeSpec("profile"), markErr: errors.New("mark candidate failed")}
+	repository := &managerFakeRepository{active: "profile", hasActive: true}
+	supervisor := NewSupervisor(adapter, time.Second)
+	oldSpec := newRuntimeSpec("profile")
+	oldSpec.SourceSHA256 = "old"
+	if err := supervisor.Start(context.Background(), oldSpec); err != nil {
+		t.Fatal(err)
+	}
+	manager := newTestCoreManager(adapter, configs, repository, supervisor)
+	_, err := manager.Reconfigure(context.Background(), newSnapshot("profile"), func(context.Context) (func(context.Context) error, error) {
+		return func(context.Context) error { return nil }, nil
+	})
+	if !errors.Is(err, ErrReconfigureRestoreFailed) || !errors.Is(err, stopErr) {
+		t.Fatalf("expected rollback stop failure, got %v", err)
+	}
+	if adapter.starts != 2 || len(adapter.processes) != 2 {
+		t.Fatalf("old runtime was started after uncertain stop: starts=%d processes=%d", adapter.starts, len(adapter.processes))
+	}
+	if status := manager.Status(); status.State != domain.CoreStateFailed || status.ErrorCode != "RESTORE_FAILED" {
+		t.Fatalf("unexpected failed status: %+v", status)
 	}
 }
 
@@ -191,6 +359,7 @@ type managerFakeAdapter struct {
 	mu          sync.Mutex
 	readyErrors []error
 	startErrors []error
+	stopErrors  []error
 	exitErrors  []error
 	processes   []*managerFakeProcess
 	starts      int
@@ -211,6 +380,9 @@ func (a *managerFakeAdapter) Start(_ context.Context, _ core.RuntimeSpec) (core.
 		return nil, a.startErrors[index]
 	}
 	process := &managerFakeProcess{pid: 1000 + index, done: make(chan error, 1)}
+	if index < len(a.stopErrors) {
+		process.stopErr = a.stopErrors[index]
+	}
 	if index < len(a.exitErrors) {
 		process.done <- a.exitErrors[index]
 		close(process.done)
@@ -239,12 +411,16 @@ type managerFakeProcess struct {
 	done      chan error
 	stopCalls int
 	stopOnce  sync.Once
+	stopErr   error
 }
 
 func (p *managerFakeProcess) PID() int           { return p.pid }
 func (p *managerFakeProcess) Done() <-chan error { return p.done }
 func (p *managerFakeProcess) Stop(context.Context) error {
 	p.stopCalls++
+	if p.stopErr != nil {
+		return p.stopErr
+	}
 	p.stopOnce.Do(func() { p.done <- nil; close(p.done) })
 	return nil
 }
