@@ -86,6 +86,7 @@
 ### 3. Contracts
 
 - apply 前创建 `${XDG_DATA_HOME:-~/.local/share}/mihomo-manager/backups/<id>/files`，目录/文件权限 `0700/0600`；manifest 保存 before 内容和 SHA-256，expected 摘要随 daemon 兼容写入更新。
+- `discoverFiles` 合并固定允许列表与动态 `config.yaml.*.bak` 候选后，必须按相对路径统一去重并排序；`config.yaml.bak` 只能生成一个 observation/snapshot，时间戳备份不得因去重丢失。
 - `CONFIG_DIR` 只选择旧 mihomo 源目录；`MIHOMO_BIN` 只用于受控验证；`MIHOMO_API_PORT` 只用于 loopback 探测；`EDITOR` 不会被迁移自动调用。
 - CLI 不可用 daemon 时不得直接读取 SQLite、配置、订阅或 core；响应使用 `mm/v1` envelope，URL/token/完整 YAML 不进入日志或展示。
 
@@ -93,19 +94,20 @@
 
 - 空或缺失 `config.yaml` -> 创建可查询恢复点和非活动 legacy profile，operation `failed`，返回 `VALIDATION_FAILED`/退出码 6。
 - mihomo 原生验证失败 -> 同上，旧文件摘要不变。
+- 固定候选与动态候选命中同一路径 -> 发现层保留一个有序条目，不允许把重复路径传入 `LegacyMigration.Validate()`。
 - 重复 source 或恢复点 ID -> `CONFLICT`/退出码 4，不覆盖已有快照。
 - rollback 当前摘要不等于 expected、符号链接、路径越界或不安全权限 -> `CONFLICT`/`PERMISSION_DENIED`，不做部分恢复。
 - daemon 不可用/协议不兼容 -> 退出码 5。
 
 ### 5. Good/Base/Bad Cases
 
-- Good：有效旧配置、订阅 URL、白名单和历史备份被发现；apply 不改写源文件，status 返回 succeeded，且无活动档案时激活 legacy。
+- Good：有效旧配置、订阅 URL、白名单、`config.yaml.bak` 和时间戳备份各发现一次；apply 不改写源文件，status 返回 succeeded，且无活动档案时激活 legacy。
 - Base：空环境、无效配置、重复 apply、daemon 重启和取消请求均可查询，不产生伪造 managed 配置。
 - Bad：恢复点缺失、外部修改、路径逃逸、world-writable 文件或无法判断归属均拒绝写入。
 
 ### 6. Tests Required
 
-- `internal/legacy`：发现脱敏、快照权限、无效/空配置、重复、摘要冲突、显式 rollback；断言源文件内容/权限和不启动真实 core。
+- `internal/legacy`：发现脱敏、候选路径去重与稳定排序、标准/时间戳备份快照权限、无效/空配置、摘要冲突、显式 rollback；断言源文件内容/权限和不启动真实 core。
 - `internal/store`：v3 schema、事务回滚、唯一 source、profile activation 和 manifest round-trip。
 - `internal/daemon`：HTTP 方法、IPC 路由、错误状态/代码和显式 restore point 校验。
 - `internal/cli`：table/json、stdout/stderr、退出码和 `--restore-point` 必填。

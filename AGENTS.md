@@ -33,6 +33,7 @@
 - M5 的 mode 状态还展示配置中的 mixed/http/socks listener、daemon 只读采集的 GNOME system proxy，以及 CLI/TUI 进程本地的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`。只按协议、等价 loopback 和端口匹配；userinfo/path/query 在进入 DTO 前丢弃，检测只调用 `gsettings get`，不会设置系统代理、探测/停止 xray 或占用端口。
 - daemon 只监听 Unix socket，不监听 TCP；socket 父目录为 `0700`、socket/锁为 `0600`，Linux 通过 `SO_PEERCRED` 限制为当前 UID，root daemon 被拒绝。IPC 使用 `/v1/`、`MM-Protocol-Min/Max` 和 `MM-Request-ID`，流式扩展采用 NDJSON。
 - A5 legacy 恢复点位于 `${XDG_DATA_HOME:-~/.local/share}/mihomo-manager/backups/<restore-point-id>/files`，目录/快照文件权限为 `0700/0600`；`migrate rollback` 必须显式指定 `--restore-point`，daemon 会核对 expected SHA-256 后才恢复。
+- legacy 文件发现会合并固定允许列表与动态 `config.yaml.*.bak` 候选，按相对路径统一去重并稳定排序；标准备份和时间戳备份必须分别且仅纳入一次。
 - systemd user unit 模板位于 `internal/platform/systemd/units`；`mm daemon enable` 在无 systemd 用户会话时只安装并报告“已安装未启用”，不会启用 linger、sudo 或启动 mihomo core。
 - systemd user unit 模板版本为 2；安装器把 `CONFIG_DIR`、`MIHOMO_BIN`、`MIHOMO_API_PORT` 作为受校验的 `Environment=` 写入 service，未显式带环境的后续 `mm daemon enable` 会保留已有受管环境块，保证 daemon 重启后继续使用同一 legacy 路径。
 - 测试命令：`go test ./...`；存储/领域变更还需执行 `GOTOOLCHAIN=go1.22.12 go test -race ./...`、`go vet ./...` 和 Linux amd64/arm64 的 `CGO_ENABLED=0` 构建；安装流程测试为 `bash scripts/tests/test_install.sh`；Shell 语法检查为 `bash -n scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh tests/*.sh`。

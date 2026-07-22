@@ -23,7 +23,15 @@ func TestServiceApplyStatusConflictAndRollback(t *testing.T) {
 	}
 	configFile := filepath.Join(configDir, "config.yaml")
 	subscriptionFile := filepath.Join(configDir, "subscription.url")
+	backupFile := filepath.Join(configDir, "config.yaml.bak")
+	timestampedBackupFile := filepath.Join(configDir, "config.yaml.20260714_214929.bak")
 	if err := os.WriteFile(configFile, []byte("mixed-port: 7890\nrules:\n  - MATCH,DIRECT\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backupFile, []byte("standard backup"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(timestampedBackupFile, []byte("timestamped backup"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(subscriptionFile, []byte("https://example.invalid/sub?token=secret-value\n"), 0o600); err != nil {
@@ -60,12 +68,19 @@ func TestServiceApplyStatusConflictAndRollback(t *testing.T) {
 	if got, _ := os.ReadFile(subscriptionFile); string(got) != string(beforeSubscription) {
 		t.Fatal("apply rewrote subscription URL")
 	}
+	backupCounts := make(map[string]int)
 	for _, file := range result.Migration.Files {
+		backupCounts[file.RelativePath]++
 		if file.BeforeExists {
 			assertFileMode(t, file.SnapshotPath, 0o600)
 		}
 		if file.RelativePath == "mihomo.log" {
 			t.Fatal("log file was included in recovery snapshot")
+		}
+	}
+	for _, relative := range []string{"config.yaml.bak", "config.yaml.20260714_214929.bak"} {
+		if backupCounts[relative] != 1 {
+			t.Fatalf("migration file count for %s = %d, want 1", relative, backupCounts[relative])
 		}
 	}
 	if _, err := service.Apply(context.Background()); !errors.Is(err, ErrConflict) && !errors.Is(err, store.ErrConflict) {
@@ -89,6 +104,40 @@ func TestServiceApplyStatusConflictAndRollback(t *testing.T) {
 	}
 	if _, err := service.Rollback(context.Background(), result.Migration.ID); !errors.Is(err, ErrAlreadyDone) {
 		t.Fatalf("second rollback error = %v", err)
+	}
+}
+
+func TestDiscoverFilesDeduplicatesBackupCandidates(t *testing.T) {
+	configDir := t.TempDir()
+	for name, content := range map[string]string{
+		"config.yaml.bak":                 "standard backup",
+		"config.yaml.20260714_214929.bak": "timestamped backup",
+	} {
+		if err := os.WriteFile(filepath.Join(configDir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	observations, err := discoverFiles(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(observations))
+	for _, observation := range observations {
+		got = append(got, observation.RelativePath)
+	}
+	want := []string{
+		"config.yaml",
+		"config.yaml.20260714_214929.bak",
+		"config.yaml.bak",
+		"fastest_node.txt",
+		"mihomo.log",
+		"node_speed.txt",
+		"subscription.url",
+		"whitelist.yaml",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("discovered files = %q, want %q", got, want)
 	}
 }
 

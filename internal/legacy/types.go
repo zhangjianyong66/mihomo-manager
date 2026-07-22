@@ -124,8 +124,15 @@ func discoverFiles(configDir string) ([]FileObservation, error) {
 		return nil, fmt.Errorf("inspect legacy directory: %w", err)
 	}
 	sort.Strings(allowed)
-	observations := make([]FileObservation, 0, len(allowed))
+	unique := allowed[:0]
 	for _, relative := range allowed {
+		if len(unique) > 0 && unique[len(unique)-1] == relative {
+			continue
+		}
+		unique = append(unique, relative)
+	}
+	observations := make([]FileObservation, 0, len(unique))
+	for _, relative := range unique {
 		path, err := safeJoin(configDir, relative)
 		if err != nil {
 			return nil, err
