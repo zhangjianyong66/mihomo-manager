@@ -733,3 +733,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 23: 修复 daemon 测速流缓冲
+
+**Date**: 2026-07-23
+**Task**: 修复 daemon 测速流缓冲
+**Branch**: `master`
+
+### Summary
+
+让 RequestCache 在首次 Flush 时下沉已缓冲响应并切换直通，避免 POST NDJSON 被整流缓冲；新增真实 HTTP 时序与不缓存回归测试，并同步 daemon IPC 契约。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1207761` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
