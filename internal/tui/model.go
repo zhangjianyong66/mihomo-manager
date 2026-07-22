@@ -1881,6 +1881,7 @@ func (m Model) startNodeTest(request app.NodeTestRequest, mode nodeTestMode) (te
 	m.switchTestDone = 0
 	m.switchTestTotal = 0
 	if mode == nodeTestBatch {
+		m.switchTestTotal = m.testableNodeCount()
 		m.switchTestMessage = "批量测速已开始"
 	} else {
 		m.switchTestMessage = "单测已开始"

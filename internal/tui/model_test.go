@@ -328,6 +328,57 @@ func TestNodeListSingleAndBatchTestsUseExplicitRequests(t *testing.T) {
 	}
 }
 
+func TestNodeListBatchShowsKnownTotalBeforeFirstResult(t *testing.T) {
+	streams := []chan app.NodeTestEvent{
+		make(chan app.NodeTestEvent, 1),
+		make(chan app.NodeTestEvent, 1),
+	}
+	fake := &fakeTUIService{testStreams: streams}
+	model := New(fake)
+	next, _ := model.enterLoadedGroup(app.Group{
+		ID: "GLOBAL", Name: "GLOBAL", NodeIDs: []domain.NodeID{"node-a", "node-b", "DIRECT"},
+		NodeStates: []app.GroupNodeState{
+			{NodeID: "node-a", Testable: true},
+			{NodeID: "node-b", Testable: true},
+			{NodeID: "DIRECT", Testable: false},
+		},
+	})
+	model = next.(Model)
+
+	next, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	model = next.(Model)
+	if command == nil || model.nodeTestMode != nodeTestBatch || model.switchTestDone != 0 || model.switchTestTotal != 2 {
+		t.Fatalf("batch total was not initialized before command execution: command=%v model=%+v", command != nil, model)
+	}
+	if view := model.View(); !strings.Contains(view, "批量测速 0/2") || strings.Contains(view, "批量测速 0/0") {
+		t.Fatalf("batch start view does not show the known total: %s", view)
+	}
+	started := command().(nodeTestStartedMsg)
+	next, _ = model.Update(started)
+	model = next.(Model)
+
+	next, command = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	model = next.(Model)
+	if command == nil || model.switchTestDone != 0 || model.switchTestTotal != 2 {
+		t.Fatalf("restarted batch total was not initialized: command=%v done=%d total=%d", command != nil, model.switchTestDone, model.switchTestTotal)
+	}
+	select {
+	case <-fake.testContexts[0].Done():
+	default:
+		t.Fatal("restarting batch did not cancel the previous context")
+	}
+	started = command().(nodeTestStartedMsg)
+	next, wait := model.Update(started)
+	model = next.(Model)
+	result := app.NodeDelay{NodeID: "node-a", Status: app.NodeTestStatusSuccess, Delay: time.Millisecond}
+	streams[1] <- app.NodeTestEvent{Done: 1, Total: 3, Result: &result}
+	next, _ = model.Update(wait())
+	model = next.(Model)
+	if model.switchTestDone != 1 || model.switchTestTotal != 3 {
+		t.Fatalf("stream progress did not replace the initialized total: done=%d total=%d", model.switchTestDone, model.switchTestTotal)
+	}
+}
+
 func TestNodeListQueuesSingleTestsWithoutCancellingActiveStream(t *testing.T) {
 	streams := []chan app.NodeTestEvent{
 		make(chan app.NodeTestEvent, 2),
