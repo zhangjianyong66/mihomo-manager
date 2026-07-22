@@ -667,3 +667,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 21: 修复 TUI 连续与批量测速按键响应
+
+**Date**: 2026-07-22
+**Task**: 修复 TUI 连续与批量测速按键响应
+**Branch**: `master`
+
+### Summary
+
+为节点测速增加 idle/single/batch 状态机和有序去重单测队列；支持 t 入队、a 批测抢占、批测中 t 单测抢占、Esc 清队列取消及 generation 迟到消息隔离；补齐长期未完成 stream、异常关闭、失败继续、系统错误停止和窄终端回归测试，并同步 README、AGENTS 与 CLI/TUI 稳定契约。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8b5f5b5` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
