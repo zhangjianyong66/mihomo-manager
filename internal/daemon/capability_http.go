@@ -13,6 +13,7 @@ import (
 	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
 	"github.com/zhangjianyong66/mihomo-manager/internal/ipc"
 	"github.com/zhangjianyong66/mihomo-manager/internal/legacy"
+	"github.com/zhangjianyong66/mihomo-manager/internal/mihomo"
 	"github.com/zhangjianyong66/mihomo-manager/internal/store"
 )
 
@@ -32,6 +33,8 @@ func registerCapabilityRoutes(mux *http.ServeMux, service *CapabilityService) {
 	mux.HandleFunc("/v1/routes/whitelist", handler.whitelist)
 	mux.HandleFunc("/v1/routes/preset", handler.routePreset)
 	mux.HandleFunc("/v1/routes/diagnose", handler.routeDiagnose)
+	mux.HandleFunc("/v1/connections", handler.connections)
+	mux.HandleFunc("/v1/connections/follow", handler.connectionFollow)
 	mux.HandleFunc("/v1/logs", handler.logs)
 	mux.HandleFunc("/v1/logs/follow", handler.logFollow)
 }
@@ -224,6 +227,10 @@ func (h *capabilityHandler) nodeTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
+	writeNodeTestStream(w, r, stream)
+}
+
+func writeNodeTestStream(w http.ResponseWriter, r *http.Request, stream <-chan mihomo.NodeTestEvent) {
 	writer := ipc.NewStreamWriter(w)
 	for event := range stream {
 		if event.Err != nil {
@@ -341,6 +348,56 @@ func (h *capabilityHandler) routeDiagnose(w http.ResponseWriter, r *http.Request
 	writeCapabilityResult(w, "RouteDiagnosis", value, err)
 }
 
+func (h *capabilityHandler) connections(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	value, err := h.service.Connections(r.Context(), profileQuery(r))
+	writeCapabilityResult(w, "RouteConnections", value, err)
+}
+
+func (h *capabilityHandler) connectionFollow(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	stream, err := h.service.FollowConnections(r.Context(), profileQuery(r))
+	if err != nil {
+		writeCapabilityError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	writeConnectionStream(w, r, stream)
+}
+
+func writeConnectionStream(w http.ResponseWriter, r *http.Request, stream <-chan ConnectionEvent) {
+	writer := ipc.NewStreamWriter(w)
+	for event := range stream {
+		if event.Err != nil {
+			_ = writer.Write(r.Context(), ipc.StreamEvent{Kind: "error", Error: capabilityErrorBody(event.Err)})
+			flushResponse(w)
+			return
+		}
+		if event.Finished {
+			break
+		}
+		data, err := json.Marshal(event)
+		if err != nil {
+			_ = writer.Write(r.Context(), ipc.StreamEvent{Kind: "error", Error: capabilityErrorBody(err)})
+			flushResponse(w)
+			return
+		}
+		if err := writer.Write(r.Context(), ipc.StreamEvent{Kind: "event", Data: data}); err != nil {
+			return
+		}
+		flushResponse(w)
+	}
+	if r.Context().Err() != nil {
+		return
+	}
+	_ = writer.Write(r.Context(), ipc.StreamEvent{Kind: "done"})
+	flushResponse(w)
+}
+
 func (h *capabilityHandler) logs(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodGet) {
 		return
@@ -446,6 +503,8 @@ func classifyCapabilityError(err error) (int, string, string, bool) {
 		return http.StatusConflict, "CONFLICT", "操作状态冲突", false
 	case errors.Is(err, ErrCapabilityUnsupported):
 		return http.StatusConflict, "PROFILE_MODE_UNSUPPORTED", "当前档案不支持此操作", false
+	case errors.Is(err, ErrConnectionRuntimeUnavailable):
+		return http.StatusConflict, "CORE_NOT_RUNNING", "mihomo core 未运行，无法读取活动连接", true
 	case errors.Is(err, legacy.ErrInvalidRoutingMode):
 		return http.StatusBadRequest, "INVALID_ROUTING_MODE", "路由模式必须为 global、rule 或 direct", false
 	case errors.Is(err, legacy.ErrConfigChanged):

@@ -13,15 +13,15 @@
 - 当前本机已安装 MetaCubeX/mihomo `v1.19.28` Linux amd64 v1 构建到 `~/.local/bin/mihomo`。
 - 运行命令：`mm` 或 `mm tui` 打开相同 TUI；已提供 `mode`、`core`、`config`、`group`、`node`、legacy `subscription`、`route` 业务命令，可用 `mm --help` 和各二级 `--help` 做非交互冒烟验证。
 - CLI 命令工厂、table/json 输出、结构化错误、退出码和秘密值位于 `internal/cli`；`cmd/mm` 只做真实依赖/IO 装配和进程退出。
-- 稳定 ID、`RoutingMode(global|rule|direct)`、mihomo core、档案、订阅、节点、操作和设置领域模型位于 `internal/domain`；按 core/profile/node/group/subscription/route/mode/config/log 拆分的应用 ports 位于 `internal/app`，CLI 与 TUI 共用同一个 daemon-backed `CapabilityAPI`。
+- 稳定 ID、`RoutingMode(global|rule|direct)`、mihomo core、档案、订阅、节点、操作和设置领域模型位于 `internal/domain`；按 core/profile/node/group/subscription/route/mode/connection/config/log 拆分的应用 ports 位于 `internal/app`，CLI 与 TUI 共用同一个 daemon-backed `CapabilityAPI`。
 - `internal/store` 使用 `database/sql` 与固定的 `modernc.org/sqlite v1.36.1`（无 CGO），提供 profile/subscription/node/operation/settings/legacy migration 仓储和三条嵌入式迁移；store 只接收显式数据库路径，默认用户路径由 daemon/config 装配。
 - `internal/core` 定义类型化 adapter/process/runtime 契约并负责 generation 发布；managed generation 位于 `${XDG_DATA_HOME:-~/.local/share}/mihomo-manager/generations`，core 日志和 runtime metadata 位于 `${XDG_STATE_HOME:-~/.local/state}/mihomo-manager/core`，目录/文件权限为 `0700/0600`。
 - 2.x mihomo adapter 位于 `internal/mihomo/adapter.go`、`render.go`、`validation.go`、`process.go`、`runtime.go`；只接受 loopback external-controller，原生验证参数为 `-t -d <dir> -f <file>`，Linux 进程使用 `Setsid`，停止只作用于 daemon 持有的精确进程句柄。
 - external/legacy 配置在 2.x adapter 中只读，validate 与 start 前核对 SHA-256；managed 配置写入独立 generation，绝不覆盖 `~/.config/mihomo/config.yaml`。
 - SQLite store 使用单连接、rollback journal、`foreign_keys=ON`、`synchronous=FULL`；状态目录/数据库权限分别收紧为 `0700`/`0600`，迁移历史以 SHA-256 防改写，已有 schema 升级前创建同目录恢复点。
 - CLI 退出码契约为：`1` 内部错误、`2` 输入错误、`3` 不存在、`4` 冲突、`5` daemon/协议不可用、`6` 校验失败、`7` 权限拒绝、`8` 上游失败；JSON API 版本为 `mm/v1`。
-- A6 业务 CLI 默认解析唯一活动 legacy profile，可用 `--profile` 显式指定；查询支持 table/json，`node test` 与 `core logs --follow` 支持 text/NDJSON，订阅 URL、节点 URI、UUID、密码和日志凭据默认脱敏。
-- A6/M3 daemon 路由位于 `/v1/core/*`、`/v1/mode`、`/v1/config/*`、`/v1/groups*`、`/v1/nodes*`、`/v1/subscription`、`/v1/routes/*`、`/v1/logs*`；CLI/TUI 不可用 daemon 时不会回退到旧的 `pgrep/pkill`、配置直写或 mihomo API 直连。
+- A6/M5 业务 CLI 默认解析唯一活动 legacy profile，可用 `--profile` 显式指定；查询支持 table/json，`node test`、`core logs --follow` 与 `route connections --follow` 支持 text/NDJSON，订阅 URL、节点 URI、UUID、密码和日志凭据默认脱敏。
+- A6/M5 daemon 路由位于 `/v1/core/*`、`/v1/mode`、`/v1/config/*`、`/v1/groups*`、`/v1/nodes*`、`/v1/subscription`、`/v1/routes/*`、`/v1/logs*`、`/v1/connections*`；CLI/TUI 不可用 daemon 时不会回退到旧的 `pgrep/pkill`、配置直写或 mihomo API 直连。
 - CLI/TUI 配置编辑都在客户端本地以 `0600` 临时文件启动 `EDITOR`，再携带 expected SHA-256 回传 daemon；daemon 核对摘要、原子写入并验证，systemd daemon 不直接占用终端。
 - daemon 前台入口为 `mm daemon run`，状态/控制入口为 `mm daemon status|start|stop|enable|disable`；默认使用 XDG 下的 `~/.local/share/mihomo-manager/state.db`、`~/.local/state/mihomo-manager/run/mm.sock`，有 `XDG_RUNTIME_DIR` 时运行目录改为 `$XDG_RUNTIME_DIR/mihomo-manager`。
 - 一键安装会通过正式 CLI 安装/启用/启动 manager daemon，但保持 core stopped；仅本次新建配置自动 `migrate apply`，已有配置只提示显式迁移。升级只有在 core 明确为 stopped 且 stop 前复核仍为 stopped 时才重启 daemon，其他状态均保持现有进程。
@@ -29,6 +29,8 @@
 - M3 模式事务仅支持活动 legacy profile；`GET/PUT /v1/mode` 返回配置/runtime 模式、core、有效组/节点、规则集、连接数和 warnings。PUT 必须带 `MM-Request-ID`，core stopped 时只保存已验证配置并报告下次启动生效，不启动或探测 controller。
 - 模式、core、subscription、config 和 route 写操作共享 daemon Coordinator；运行中模式发布失败会恢复旧配置、权限、expected 摘要和 runtime mode，恢复失败返回 `RESTORE_FAILED` 并标记 core failed。默认不关闭连接，显式关闭失败不回滚已生效模式。
 - M4 提供 `mm mode status` 与 `mm mode set global|rule|direct [--close-connections]` 的 table/json 输出；TUI 增加“运行模式”页面，显示配置/runtime 模式、有效路径、规则集、连接数和 warnings。TUI 的 core/group/node/subscription/route/config/log 写操作均经注入的 daemon capability，Bubble Tea `Update`/`View` 不直接执行业务副作用。
+- M5 提供 `mm route connections [--follow]` 和 TUI“实时连接”页；mihomo `/connections` 在 `internal/mihomo` 一次性类型化，`connections:null` 视为空列表，单响应仍限 1 MiB，活动/follow map 最多 4096 条。follow 每秒轮询并输出 `open|update|closed` 与 NDJSON terminal event，连接详情和短关闭提示仅驻留有界内存，不写 SQLite 或持久日志。
+- M5 的 mode 状态还展示配置中的 mixed/http/socks listener、daemon 只读采集的 GNOME system proxy，以及 CLI/TUI 进程本地的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`。只按协议、等价 loopback 和端口匹配；userinfo/path/query 在进入 DTO 前丢弃，检测只调用 `gsettings get`，不会设置系统代理、探测/停止 xray 或占用端口。
 - daemon 只监听 Unix socket，不监听 TCP；socket 父目录为 `0700`、socket/锁为 `0600`，Linux 通过 `SO_PEERCRED` 限制为当前 UID，root daemon 被拒绝。IPC 使用 `/v1/`、`MM-Protocol-Min/Max` 和 `MM-Request-ID`，流式扩展采用 NDJSON。
 - A5 legacy 恢复点位于 `${XDG_DATA_HOME:-~/.local/share}/mihomo-manager/backups/<restore-point-id>/files`，目录/快照文件权限为 `0700/0600`；`migrate rollback` 必须显式指定 `--restore-point`，daemon 会核对 expected SHA-256 后才恢复。
 - systemd user unit 模板位于 `internal/platform/systemd/units`；`mm daemon enable` 在无 systemd 用户会话时只安装并报告“已安装未启用”，不会启用 linger、sudo 或启动 mihomo core。

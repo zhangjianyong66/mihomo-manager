@@ -21,13 +21,13 @@
 
 ## Acceptance Criteria
 
-- [ ] M5-AC1：空/null、多连接、缺失 host、IPv4/IPv6、未知 chains 和超限响应解析测试通过。
-- [ ] M5-AC2：快照 table/json 展示真实 rule/chains/counters；不根据静态配置伪造节点。
-- [ ] M5-AC3：follow 输出 open/update/closed 和 done/error，seq 单调、每行完整 JSON、取消无 goroutine 泄漏。
-- [ ] M5-AC4：TUI 实时页能刷新、滚动、退出并停止 producer，布局不会因计数变化跳动。
-- [ ] M5-AC5：GNOME HTTP/HTTPS/SOCKS 与环境代理按协议和监听端口正确匹配 mixed/http/socks listener。
-- [ ] M5-AC6：指向 xray/其他端口时产生明确 warning，但不修改系统设置或进程。
-- [ ] M5-AC7：userinfo/path/query 默认不进入 DTO、输出、日志或错误；连接历史不落盘。
+- [x] M5-AC1：空/null、多连接、缺失 host、IPv4/IPv6、未知 chains 和超限响应解析测试通过。
+- [x] M5-AC2：快照 table/json 展示真实 rule/chains/counters；不根据静态配置伪造节点。
+- [x] M5-AC3：follow 输出 open/update/closed 和 done/error，seq 单调、每行完整 JSON、取消无 goroutine 泄漏。
+- [x] M5-AC4：TUI 实时页能刷新、滚动、退出并停止 producer，布局不会因计数变化跳动。
+- [x] M5-AC5：GNOME HTTP/HTTPS/SOCKS 与环境代理按协议和监听端口正确匹配 mixed/http/socks listener。
+- [x] M5-AC6：指向 xray/其他端口时产生明确 warning，但不修改系统设置或进程。
+- [x] M5-AC7：userinfo/path/query 默认不进入 DTO、输出、日志或错误；连接历史不落盘。
 
 ## Out of Scope
 

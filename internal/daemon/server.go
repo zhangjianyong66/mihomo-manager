@@ -147,6 +147,7 @@ func (s *Server) Run(ctx context.Context) (finalErr error) {
 	if s.capabilities == nil && compatibility != nil {
 		if repository, ok := stateStore.(CapabilityStore); ok {
 			s.capabilities = NewCapabilityService(repository, s.core, compatibility, config.Load())
+			s.capabilities.proxyInspector = platform.NewGNOMEProxyInspector()
 		}
 	}
 
@@ -183,7 +184,7 @@ func (s *Server) Run(ctx context.Context) (finalErr error) {
 		registerCapabilityRoutes(mux, s.capabilities)
 	}
 	handler := ipc.NewServer(NewRequestCache(5*time.Minute, 1024).Middleware(mux))
-	s.http = &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 64 << 10}
+	s.http = &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 64 << 10}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- s.http.Serve(listener) }()
 

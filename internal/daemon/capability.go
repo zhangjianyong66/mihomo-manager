@@ -12,6 +12,7 @@ import (
 	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
 	"github.com/zhangjianyong66/mihomo-manager/internal/legacy"
 	"github.com/zhangjianyong66/mihomo-manager/internal/mihomo"
+	"github.com/zhangjianyong66/mihomo-manager/internal/platform"
 )
 
 const legacySubscriptionID domain.SubscriptionID = "legacy-subscription"
@@ -67,30 +68,35 @@ type RuleSetHealth struct {
 }
 
 type ModeStatus struct {
-	ProfileID            domain.ProfileID    `json:"profileId"`
-	ConfigMode           domain.RoutingMode  `json:"configMode"`
-	RuntimeMode          *domain.RoutingMode `json:"runtimeMode,omitempty"`
-	RuntimeAvailable     bool                `json:"runtimeAvailable"`
-	CoreState            domain.CoreState    `json:"coreState"`
-	EffectiveGroup       string              `json:"effectiveGroup,omitempty"`
-	EffectiveNode        string              `json:"effectiveNode,omitempty"`
-	RuleSets             []RuleSetHealth     `json:"ruleSets"`
-	ActiveConnections    int                 `json:"activeConnections"`
-	ConnectionsAvailable bool                `json:"connectionsAvailable"`
-	ConnectionsClosed    bool                `json:"connectionsClosed"`
-	NextStart            bool                `json:"nextStart"`
-	OperationID          domain.OperationID  `json:"operationId,omitempty"`
-	OperationPhase       string              `json:"operationPhase,omitempty"`
-	Warnings             []string            `json:"warnings"`
+	ProfileID            domain.ProfileID         `json:"profileId"`
+	ConfigMode           domain.RoutingMode       `json:"configMode"`
+	RuntimeMode          *domain.RoutingMode      `json:"runtimeMode,omitempty"`
+	RuntimeAvailable     bool                     `json:"runtimeAvailable"`
+	CoreState            domain.CoreState         `json:"coreState"`
+	EffectiveGroup       string                   `json:"effectiveGroup,omitempty"`
+	EffectiveNode        string                   `json:"effectiveNode,omitempty"`
+	RuleSets             []RuleSetHealth          `json:"ruleSets"`
+	ActiveConnections    int                      `json:"activeConnections"`
+	ConnectionsAvailable bool                     `json:"connectionsAvailable"`
+	ConnectionsClosed    bool                     `json:"connectionsClosed"`
+	NextStart            bool                     `json:"nextStart"`
+	OperationID          domain.OperationID       `json:"operationId,omitempty"`
+	OperationPhase       string                   `json:"operationPhase,omitempty"`
+	Warnings             []string                 `json:"warnings"`
+	Listeners            []platform.ProxyListener `json:"listeners"`
+	SystemProxy          []platform.ProxySource   `json:"systemProxy"`
 }
 
 type CapabilityService struct {
-	store       CapabilityStore
-	core        *CoreManager
-	legacy      *legacy.Compatibility
-	paths       config.Paths
-	coordinator *Coordinator
-	newID       func(string) string
+	store                  CapabilityStore
+	core                   *CoreManager
+	legacy                 *legacy.Compatibility
+	paths                  config.Paths
+	coordinator            *Coordinator
+	newID                  func(string) string
+	clock                  func() time.Time
+	connectionPollInterval time.Duration
+	proxyInspector         platform.ProxyInspector
 }
 
 func NewCapabilityService(store CapabilityStore, manager *CoreManager, compatibility *legacy.Compatibility, paths config.Paths) *CapabilityService {
@@ -100,7 +106,7 @@ func NewCapabilityService(store CapabilityStore, manager *CoreManager, compatibi
 	}
 	return &CapabilityService{
 		store: store, core: manager, legacy: compatibility, paths: paths, coordinator: coordinator,
-		newID: func(prefix string) string { return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano()) },
+		newID: func(prefix string) string { return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano()) }, clock: time.Now,
 	}
 }
 
@@ -159,7 +165,9 @@ func (s *CapabilityService) ModeStatus(ctx context.Context, profileID string) (M
 		return ModeStatus{}, err
 	}
 	status, err := s.legacy.RoutingModeStatus(ctx, restorePoint, coreState, runtime)
-	return convertModeStatus(profile.ID, status), err
+	result := convertModeStatus(profile.ID, status)
+	s.enrichProxyStatus(ctx, &result)
+	return result, err
 }
 
 func (s *CapabilityService) SetMode(ctx context.Context, profileID string, mode domain.RoutingMode, closeConnections bool) (ModeStatus, error) {
@@ -190,7 +198,9 @@ func (s *CapabilityService) SetMode(ctx context.Context, profileID string, mode 
 		s.core.markFailed(profile.ID, "RESTORE_FAILED")
 		status.CoreState = domain.CoreStateFailed
 	}
-	return convertModeStatus(profile.ID, status), err
+	result := convertModeStatus(profile.ID, status)
+	s.enrichProxyStatus(ctx, &result)
+	return result, err
 }
 
 func (s *CapabilityService) routingRuntime(profileID domain.ProfileID) (domain.CoreState, mihomo.RoutingRuntime, error) {
@@ -234,8 +244,37 @@ func convertModeStatus(profileID domain.ProfileID, status legacy.ModeStatus) Mod
 		RuleSets: rules, ActiveConnections: status.ActiveConnections,
 		ConnectionsAvailable: status.ConnectionsAvailable, ConnectionsClosed: status.ConnectionsClosed,
 		NextStart: status.NextStart, OperationID: status.OperationID, OperationPhase: status.OperationPhase,
-		Warnings: warnings,
+		Warnings: warnings, Listeners: convertProxyListeners(status.Listeners), SystemProxy: []platform.ProxySource{},
 	}
+}
+
+func convertProxyListeners(values []mihomo.ProxyListener) []platform.ProxyListener {
+	result := make([]platform.ProxyListener, 0, len(values))
+	for _, value := range values {
+		result = append(result, platform.ProxyListener{Protocol: value.Protocol, Host: value.Host, Port: value.Port})
+	}
+	return result
+}
+
+func (s *CapabilityService) enrichProxyStatus(ctx context.Context, status *ModeStatus) {
+	if status == nil || s == nil || s.proxyInspector == nil {
+		return
+	}
+	status.SystemProxy = platform.DiagnoseProxySources(status.Listeners, s.proxyInspector.Inspect(ctx))
+	for _, source := range status.SystemProxy {
+		if source.Warning != "" {
+			status.Warnings = appendUniqueString(status.Warnings, source.Warning)
+		}
+	}
+}
+
+func appendUniqueString(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func (s *CapabilityService) CoreStatus(context.Context, string) (CoreStatus, error) {

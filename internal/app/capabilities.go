@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/zhangjianyong66/mihomo-manager/internal/daemon"
 	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
 	"github.com/zhangjianyong66/mihomo-manager/internal/ipc"
+	"github.com/zhangjianyong66/mihomo-manager/internal/platform"
 )
 
 type CapabilityAPI interface {
@@ -36,6 +38,8 @@ type CapabilityAPI interface {
 	EditWhitelist(context.Context, string, string, string) error
 	ApplyRoutePreset(context.Context, string, string) error
 	DiagnoseRoute(context.Context, string, string) (RouteDiagnosis, error)
+	Connections(context.Context, ConnectionRequest) ([]Connection, error)
+	FollowConnections(context.Context, ConnectionRequest) <-chan ConnectionEvent
 	ConfigBackup(context.Context, string) error
 	ConfigRestore(context.Context, string) error
 	ReadConfig(context.Context, string) (ConfigDocument, error)
@@ -49,10 +53,13 @@ type ConfigDocument struct {
 	SHA256  string
 }
 
-type DaemonCapabilities struct{ client *ipc.Client }
+type DaemonCapabilities struct {
+	client    *ipc.Client
+	lookupEnv func(string) (string, bool)
+}
 
 func NewCapabilityService(paths config.ManagerPaths) *DaemonCapabilities {
-	return &DaemonCapabilities{client: ipc.NewClient(paths.Socket)}
+	return &DaemonCapabilities{client: ipc.NewClient(paths.Socket), lookupEnv: os.LookupEnv}
 }
 
 func (c *DaemonCapabilities) ModeStatus(ctx context.Context, profileID string) (RoutingModeStatus, error) {
@@ -62,9 +69,9 @@ func (c *DaemonCapabilities) ModeStatus(ctx context.Context, profileID string) (
 	var value daemon.ModeStatus
 	if err := c.client.Do(ctx, http.MethodGet, capabilityPath("/v1/mode", profileID), "", nil, &value); err != nil {
 		decodeModeStatusError(err, &value)
-		return convertModeStatus(value), c.mapError(err)
+		return c.convertModeStatus(value), c.mapError(err)
 	}
-	return convertModeStatus(value), nil
+	return c.convertModeStatus(value), nil
 }
 
 func (c *DaemonCapabilities) SetMode(ctx context.Context, request SetRoutingModeRequest) (RoutingModeStatus, error) {
@@ -83,10 +90,10 @@ func (c *DaemonCapabilities) SetMode(ctx context.Context, request SetRoutingMode
 		"profileId": request.ProfileID, "mode": request.Mode, "closeConnections": request.CloseConnections,
 	}, &value)
 	if err == nil {
-		return convertModeStatus(value), nil
+		return c.convertModeStatus(value), nil
 	}
 	decodeModeStatusError(err, &value)
-	return convertModeStatus(value), c.mapError(err)
+	return c.convertModeStatus(value), c.mapError(err)
 }
 
 func decodeModeStatusError(err error, value *daemon.ModeStatus) {
@@ -272,6 +279,84 @@ func (c *DaemonCapabilities) DiagnoseRoute(ctx context.Context, profileID, input
 	return RouteDiagnosis{Input: value.Input, Host: value.Host, MatchedRule: value.MatchedRule, Target: value.Target, CurrentNode: value.CurrentNode, Confidence: value.Confidence, Note: value.Note}, nil
 }
 
+func (c *DaemonCapabilities) Connections(ctx context.Context, request ConnectionRequest) ([]Connection, error) {
+	var values []daemon.ConnectionInfo
+	if err := c.do(ctx, http.MethodGet, capabilityPath("/v1/connections", request.ProfileID.String()), "", nil, &values); err != nil {
+		return nil, err
+	}
+	result := make([]Connection, 0, len(values))
+	for _, value := range values {
+		result = append(result, convertConnectionInfo(value))
+	}
+	return result, nil
+}
+
+func (c *DaemonCapabilities) FollowConnections(ctx context.Context, request ConnectionRequest) <-chan ConnectionEvent {
+	result := make(chan ConnectionEvent, 64)
+	go func() {
+		defer close(result)
+		if c == nil || c.client == nil {
+			sendConnectionEvent(ctx, result, ConnectionEvent{Err: &Error{Category: ErrorCategoryDaemonUnavailable, Code: ErrorCodeDaemonUnavailable, Message: "daemon 客户端未配置"}, Finished: true})
+			return
+		}
+		path := capabilityPath("/v1/connections/follow", request.ProfileID.String())
+		body, err := c.client.OpenStream(ctx, http.MethodGet, path, newRequestID("connections-follow"), nil)
+		if err != nil {
+			sendConnectionEvent(ctx, result, ConnectionEvent{Err: c.mapError(err), Finished: true})
+			return
+		}
+		defer body.Close()
+		decoder := ipc.NewStreamDecoder(body)
+		for {
+			event, decodeErr := decoder.Next(ctx)
+			if decodeErr != nil {
+				if ctx.Err() != nil || errors.Is(decodeErr, ipc.ErrRequestCancelled) {
+					sendConnectionEvent(ctx, result, ConnectionEvent{Err: ctx.Err(), Finished: true})
+				} else {
+					sendConnectionEvent(ctx, result, ConnectionEvent{Err: c.mapError(decodeErr), Finished: true})
+				}
+				return
+			}
+			switch event.Kind {
+			case "event":
+				var value daemon.ConnectionEvent
+				if err := json.Unmarshal(event.Data, &value); err != nil {
+					sendConnectionEvent(ctx, result, ConnectionEvent{Seq: event.Seq, Err: err, Finished: true})
+					return
+				}
+				action := ConnectionAction(value.Action)
+				if action != ConnectionActionOpen && action != ConnectionActionUpdate && action != ConnectionActionClosed {
+					sendConnectionEvent(ctx, result, ConnectionEvent{Seq: event.Seq, Err: errors.New("connection stream action is invalid"), Finished: true})
+					return
+				}
+				connection := convertConnectionInfo(value.Connection)
+				sendConnectionEvent(ctx, result, ConnectionEvent{Seq: event.Seq, Action: action, Connection: &connection, Time: value.Time})
+			case "done":
+				sendConnectionEvent(ctx, result, ConnectionEvent{Seq: event.Seq, Finished: true})
+				return
+			case "error":
+				if event.Error == nil {
+					sendConnectionEvent(ctx, result, ConnectionEvent{Seq: event.Seq, Err: errors.New("stream error event is missing details"), Finished: true})
+				} else {
+					sendConnectionEvent(ctx, result, ConnectionEvent{Seq: event.Seq, Err: c.mapError(&ipc.Error{Body: *event.Error}), Finished: true})
+				}
+				return
+			}
+		}
+	}()
+	return result
+}
+
+func convertConnectionInfo(value daemon.ConnectionInfo) Connection {
+	return Connection{
+		ID: value.ID, Host: value.Host, DestinationIP: value.DestinationIP, DestinationPort: value.DestinationPort,
+		Network: value.Network, Rule: value.Rule, RulePayload: value.RulePayload,
+		Chains: append([]string(nil), value.Chains...), FinalNode: value.FinalNode,
+		Upload: value.Upload, Download: value.Download, Start: value.Start,
+		Warnings: append([]string(nil), value.Warnings...),
+	}
+}
+
 func (c *DaemonCapabilities) ConfigBackup(ctx context.Context, profileID string) error {
 	return c.configMutation(ctx, "backup", profileID)
 }
@@ -401,20 +486,63 @@ func convertGroup(value daemon.GroupInfo) Group {
 	return Group{ID: value.ID, Name: value.Name, Type: value.Type, SelectedNodeID: domain.NodeID(value.SelectedNode), NodeIDs: nodes}
 }
 
-func convertModeStatus(value daemon.ModeStatus) RoutingModeStatus {
+func (c *DaemonCapabilities) convertModeStatus(value daemon.ModeStatus) RoutingModeStatus {
 	rules := make([]RuleSetHealth, 0, len(value.RuleSets))
 	for _, item := range value.RuleSets {
 		rules = append(rules, RuleSetHealth{Name: item.Name, Available: item.Available, Loaded: item.Loaded})
 	}
-	return RoutingModeStatus{
+	result := RoutingModeStatus{
 		ProfileID: value.ProfileID, ConfigMode: value.ConfigMode, RuntimeMode: value.RuntimeMode,
 		RuntimeAvailable: value.RuntimeAvailable, CoreState: value.CoreState,
 		EffectiveGroup: value.EffectiveGroup, EffectiveNode: value.EffectiveNode,
 		RuleSets: rules, ActiveConnections: value.ActiveConnections,
 		ConnectionsAvailable: value.ConnectionsAvailable, ConnectionsClosed: value.ConnectionsClosed,
 		NextStart: value.NextStart, OperationID: value.OperationID, OperationPhase: value.OperationPhase,
-		Warnings: append([]string(nil), value.Warnings...),
+		Warnings: append([]string(nil), value.Warnings...), Listeners: convertListeners(value.Listeners),
+		SystemProxy: convertProxySources(value.SystemProxy),
 	}
+	if c != nil && c.lookupEnv != nil {
+		environment := platform.DiagnoseProxySources(value.Listeners, platform.InspectProxyEnvironment(c.lookupEnv))
+		result.EnvironmentProxy = convertProxySources(environment)
+		for _, source := range environment {
+			if source.Warning != "" {
+				result.Warnings = appendUniqueWarning(result.Warnings, source.Warning)
+			}
+		}
+	}
+	if result.EnvironmentProxy == nil {
+		result.EnvironmentProxy = []ProxySourceStatus{}
+	}
+	return result
+}
+
+func appendUniqueWarning(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func convertListeners(values []platform.ProxyListener) []ProxyListener {
+	result := make([]ProxyListener, 0, len(values))
+	for _, value := range values {
+		result = append(result, ProxyListener{Protocol: value.Protocol, Host: value.Host, Port: value.Port})
+	}
+	return result
+}
+
+func convertProxySources(values []platform.ProxySource) []ProxySourceStatus {
+	result := make([]ProxySourceStatus, 0, len(values))
+	for _, value := range values {
+		var endpoint *ProxyEndpoint
+		if value.Endpoint != nil {
+			endpoint = &ProxyEndpoint{Scheme: value.Endpoint.Scheme, Host: value.Endpoint.Host, Port: value.Endpoint.Port}
+		}
+		result = append(result, ProxySourceStatus{Source: value.Source, ExpectedProtocol: value.ExpectedProtocol, State: string(value.State), Endpoint: endpoint, Warning: value.Warning})
+	}
+	return result
 }
 
 func splitLogLines(content string) []LogLine {
@@ -438,6 +566,15 @@ func sendNodeTestEvent(ctx context.Context, output chan<- NodeTestEvent, event N
 }
 
 func sendLogEvent(ctx context.Context, output chan<- LogEvent, event LogEvent) bool {
+	select {
+	case output <- event:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func sendConnectionEvent(ctx context.Context, output chan<- ConnectionEvent, event ConnectionEvent) bool {
 	select {
 	case output <- event:
 		return true

@@ -15,6 +15,7 @@
 | [Core adapter 与 generation](./core-adapter.md) | mihomo 渲染/验证、只读 external、精确进程托管和切换恢复契约 |
 | [安装与部署](./deployment.md) | 一键安装、独立 mm、mihomo core、daemon systemd unit、状态与安全卸载 |
 | [重要项目约定](./project-conventions.md) | 配置路径、路由语义、订阅更新和兼容边界 |
+| [实时链路与入口诊断](./route-observability.md) | `/connections` typed 快照/follow、TUI 取消、GNOME/env 入口匹配与隐私 |
 
 ## 开发前检查（Pre-Development Checklist）
 
@@ -26,6 +27,7 @@
 6. 完成修改后至少执行 `gofmt` 检查和 `go test ./...`，具体命令见 [开发与验证命令](./development-commands.md)。
 7. 修改 daemon、IPC、Unix socket、systemd unit 或 manager XDG 路径时阅读 [daemon、Unix IPC 与 systemd](./daemon-ipc.md)。
 8. 修改 core adapter、generation、mihomo 进程/API 或档案切换时阅读 [Core adapter 与 generation](./core-adapter.md)。
+9. 修改活动连接、NDJSON follow、TUI 实时页或系统/环境代理诊断时阅读 [实时链路与入口诊断](./route-observability.md)。
 
 ## 质量检查（Quality Check）
 

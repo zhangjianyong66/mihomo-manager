@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -156,12 +157,21 @@ func Execute(ctx context.Context, deps Dependencies, args []string, stdin io.Rea
 	root.SetErr(stderr)
 
 	if err := root.ExecuteContext(ctx); err != nil {
+		var written *alreadyWrittenError
+		if errors.As(err, &written) {
+			return ExitCode(written.err)
+		}
 		presenter := NewPresenter(stdout, stderr, OutputOptions{Format: requestedOutputFormat(args)})
 		_ = presenter.WriteError(err)
 		return ExitCode(err)
 	}
 	return 0
 }
+
+type alreadyWrittenError struct{ err error }
+
+func (e *alreadyWrittenError) Error() string { return e.err.Error() }
+func (e *alreadyWrittenError) Unwrap() error { return e.err }
 
 func requestedOutputFormat(args []string) OutputFormat {
 	for index, arg := range args {

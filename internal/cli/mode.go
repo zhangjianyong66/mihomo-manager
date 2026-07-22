@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -141,6 +143,9 @@ func modeData(value app.RoutingModeStatus) map[string]any {
 		"nextStart":            value.NextStart,
 		"operationId":          value.OperationID,
 		"operationPhase":       value.OperationPhase,
+		"listeners":            proxyListenerData(value.Listeners),
+		"systemProxy":          proxySourceData(value.SystemProxy),
+		"environmentProxy":     proxySourceData(value.EnvironmentProxy),
 	}
 }
 
@@ -205,8 +210,70 @@ func writeModeTable(w io.Writer, value app.RoutingModeStatus) error {
 			return err
 		}
 	}
+	if _, err := fmt.Fprintln(w, "mihomo listeners:"); err != nil {
+		return err
+	}
+	if len(value.Listeners) == 0 {
+		if _, err := fmt.Fprintln(w, "  无"); err != nil {
+			return err
+		}
+	}
+	for _, listener := range value.Listeners {
+		if _, err := fmt.Fprintf(w, "  %s: %s\n", listener.Protocol, net.JoinHostPort(listener.Host, strconv.Itoa(listener.Port))); err != nil {
+			return err
+		}
+	}
+	if err := writeProxySources(w, "GNOME 系统代理", value.SystemProxy); err != nil {
+		return err
+	}
+	if err := writeProxySources(w, "当前 CLI 环境代理", value.EnvironmentProxy); err != nil {
+		return err
+	}
 	for _, warning := range value.Warnings {
 		if _, err := fmt.Fprintf(w, "警告: %s\n", warning); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func proxyListenerData(values []app.ProxyListener) []map[string]any {
+	result := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		result = append(result, map[string]any{"protocol": value.Protocol, "host": value.Host, "port": value.Port})
+	}
+	return result
+}
+
+func proxySourceData(values []app.ProxySourceStatus) []map[string]any {
+	result := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		var endpoint any
+		if value.Endpoint != nil {
+			endpoint = map[string]any{"scheme": value.Endpoint.Scheme, "host": value.Endpoint.Host, "port": value.Endpoint.Port}
+		}
+		result = append(result, map[string]any{
+			"source": value.Source, "expectedProtocol": value.ExpectedProtocol, "state": value.State,
+			"endpoint": endpoint, "warning": value.Warning,
+		})
+	}
+	return result
+}
+
+func writeProxySources(w io.Writer, title string, values []app.ProxySourceStatus) error {
+	if _, err := fmt.Fprintln(w, title+":"); err != nil {
+		return err
+	}
+	if len(values) == 0 {
+		_, err := fmt.Fprintln(w, "  未检测")
+		return err
+	}
+	for _, value := range values {
+		endpoint := "-"
+		if value.Endpoint != nil {
+			endpoint = value.Endpoint.Scheme + "://" + net.JoinHostPort(value.Endpoint.Host, strconv.Itoa(value.Endpoint.Port))
+		}
+		if _, err := fmt.Fprintf(w, "  %s: %s (%s)\n", value.Source, value.State, endpoint); err != nil {
 			return err
 		}
 	}

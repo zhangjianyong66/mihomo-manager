@@ -71,6 +71,10 @@ func (r *fakeRoutingRuntime) LoadedRules(context.Context) ([]mihomo.RuntimeRule,
 	}, nil
 }
 
+func (r *fakeRoutingRuntime) Connections(context.Context) ([]mihomo.RuntimeConnection, error) {
+	return nil, nil
+}
+
 func (r *fakeRoutingRuntime) ConnectionCount(context.Context) (int, error) {
 	r.calls = append(r.calls, "connections")
 	return 3, nil

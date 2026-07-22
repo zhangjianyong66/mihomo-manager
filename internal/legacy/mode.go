@@ -45,6 +45,7 @@ type ModeStatus struct {
 	OperationID          domain.OperationID
 	OperationPhase       string
 	Warnings             []string
+	Listeners            []mihomo.ProxyListener
 }
 
 type SetModeRequest struct {
@@ -76,6 +77,9 @@ func (c *Compatibility) RoutingModeStatus(ctx context.Context, id domain.Restore
 	}
 	status, err := inspectModeRuntime(ctx, policy.Mode, coreState, runtime)
 	status.Warnings = append(status.Warnings, policy.Warnings...)
+	if listenerErr := enrichModeListeners(&status, c.service.pathsOrDefault().ConfigFile); err == nil && listenerErr != nil {
+		err = listenerErr
+	}
 	return status, err
 }
 
@@ -201,6 +205,9 @@ func (c *Compatibility) SetRoutingMode(ctx context.Context, id domain.RestorePoi
 		return c.restoreMode(ctx, migration, request, oldPolicy.Mode, before, operation, operationRepo, err)
 	}
 	status.OperationID = operation.ID
+	if err := enrichModeListeners(&status, paths.ConfigFile); err != nil {
+		return c.restoreMode(ctx, migration, request, oldPolicy.Mode, before, operation, operationRepo, err)
+	}
 	status.OperationPhase = "runtime_verified"
 	status.Warnings = append(status.Warnings, policy.Warnings...)
 	if err := updateOperation(domain.OperationStateRunning, "runtime_verified", ""); err != nil {
@@ -228,6 +235,15 @@ func (c *Compatibility) SetRoutingMode(ctx context.Context, id domain.RestorePoi
 		return status, err
 	}
 	return status, nil
+}
+
+func enrichModeListeners(status *ModeStatus, configPath string) error {
+	listeners, err := mihomo.ReadProxyListeners(configPath)
+	if err != nil {
+		return err
+	}
+	status.Listeners = listeners
+	return nil
 }
 
 func (c *Compatibility) beginModeOperation(ctx context.Context, profileID domain.ProfileID, oldMode domain.RoutingMode, request SetModeRequest) (domain.Operation, modeOperationRepository, error) {

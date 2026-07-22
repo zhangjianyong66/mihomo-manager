@@ -12,14 +12,16 @@ import (
 
 type fakeTUIService struct {
 	app.CapabilityAPI
-	status      app.RoutingModeStatus
-	statusErr   error
-	setErr      error
-	statusCalls int
-	setCalls    int
-	request     app.SetRoutingModeRequest
-	editOld     string
-	editNew     string
+	status           app.RoutingModeStatus
+	statusErr        error
+	setErr           error
+	statusCalls      int
+	setCalls         int
+	request          app.SetRoutingModeRequest
+	editOld          string
+	editNew          string
+	connectionEvents []app.ConnectionEvent
+	connectionCalls  int
 }
 
 func (f *fakeTUIService) ModeStatus(context.Context, string) (app.RoutingModeStatus, error) {
@@ -36,6 +38,16 @@ func (f *fakeTUIService) SetMode(_ context.Context, request app.SetRoutingModeRe
 }
 
 func (*fakeTUIService) EditConfig(context.Context, string) error { return nil }
+
+func (f *fakeTUIService) FollowConnections(context.Context, app.ConnectionRequest) <-chan app.ConnectionEvent {
+	f.connectionCalls++
+	result := make(chan app.ConnectionEvent, len(f.connectionEvents))
+	for _, event := range f.connectionEvents {
+		result <- event
+	}
+	close(result)
+	return result
+}
 
 func (f *fakeTUIService) EditWhitelist(_ context.Context, _, oldValue, newValue string) error {
 	f.editOld, f.editNew = oldValue, newValue
@@ -156,6 +168,9 @@ func TestModeAndStreamPagesCancelOnEscape(t *testing.T) {
 		{name: "logs", set: func(model *Model, cancel context.CancelFunc) {
 			model.actionCtx, model.page, model.logFollowCancel = "log_live", actionMenu, cancel
 		}},
+		{name: "connections", set: func(model *Model, cancel context.CancelFunc) {
+			model.actionCtx, model.page, model.connectionFollowCancel = "connections_live", actionMenu, cancel
+		}},
 		{name: "node test", set: func(model *Model, cancel context.CancelFunc) {
 			model.actionCtx, model.page, model.switchTestCancel = "group_nodes", actionMenu, cancel
 		}},
@@ -172,6 +187,84 @@ func TestModeAndStreamPagesCancelOnEscape(t *testing.T) {
 				t.Fatal("escape did not cancel active operation")
 			}
 		})
+	}
+}
+
+func TestConnectionsPageStartsDeferredReducesEventsAndRendersStableRows(t *testing.T) {
+	connection := app.Connection{
+		ID: "conn-a", Host: "example.com", DestinationPort: 443, Network: "tcp",
+		Rule: "RuleSet", RulePayload: "mm-cn-domain", Chains: []string{"node-a", "GLOBAL"}, FinalNode: "node-a", Upload: 1024, Download: 2048,
+	}
+	fake := &fakeTUIService{connectionEvents: []app.ConnectionEvent{
+		{Seq: 1, Action: app.ConnectionActionOpen, Connection: &connection},
+		{Seq: 2, Action: app.ConnectionActionUpdate, Connection: &connection},
+		{Seq: 3, Action: app.ConnectionActionClosed, Connection: &connection},
+		{Seq: 4, Finished: true},
+	}}
+	model := New(fake)
+	model.mainIndex = 1
+	next, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = next.(Model)
+	if fake.connectionCalls != 0 || command == nil || model.actionCtx != "connections_live" {
+		t.Fatalf("follow must be deferred: calls=%d command=%v ctx=%s", fake.connectionCalls, command != nil, model.actionCtx)
+	}
+	next, command = model.Update(command())
+	model = next.(Model)
+	if fake.connectionCalls != 1 || command == nil {
+		t.Fatalf("stream did not start: calls=%d command=%v", fake.connectionCalls, command != nil)
+	}
+	for index := 0; index < 4; index++ {
+		next, command = model.Update(command())
+		model = next.(Model)
+		if index < 3 && command == nil {
+			t.Fatalf("event %d did not schedule next read", index)
+		}
+	}
+	view := model.View()
+	if len(model.connections) != 0 || len(model.connectionClosed) != 1 || !model.connectionFinished {
+		t.Fatalf("model did not reduce stream: %+v", model)
+	}
+	for _, expected := range []string{"实时连接", "最近关闭：example.com:443", "连接流已结束"} {
+		if !strings.Contains(view, expected) {
+			t.Fatalf("view missing %q: %s", expected, view)
+		}
+	}
+}
+
+func TestConnectionsViewUsesFixedWideColumnsAndNarrowRows(t *testing.T) {
+	model := New(&fakeTUIService{})
+	model.actionCtx, model.page = "connections_live", actionMenu
+	model.connections = map[string]app.Connection{"a": {ID: "a", DestinationIP: "2001:db8::1", DestinationPort: 53, Network: "udp", Rule: "Match", Chains: []string{"DIRECT"}, FinalNode: "DIRECT", Upload: 1, Download: 2}}
+	model.connectionLastAction = map[string]app.ConnectionAction{"a": app.ConnectionActionOpen}
+	model.width, model.height = 120, 24
+	wide := model.View()
+	for _, expected := range []string{"事件", "目标", "网络", "规则", "最终节点", "[2001:db8::1]:53"} {
+		if !strings.Contains(wide, expected) {
+			t.Fatalf("wide view missing %q: %s", expected, wide)
+		}
+	}
+	model.width = 48
+	narrow := model.View()
+	if !strings.Contains(narrow, "open  [2001:db8::1]:53  udp\n") || !strings.Contains(narrow, "Match | DIRECT | 1B/2B") {
+		t.Fatalf("narrow view is not stable: %s", narrow)
+	}
+}
+
+func TestModeViewShowsProxyEntrypointSummary(t *testing.T) {
+	model := New(&fakeTUIService{})
+	model.actionCtx, model.page = "mode", actionMenu
+	model.actionItems = modeActionItems()
+	model.modeStatus = app.RoutingModeStatus{
+		ConfigMode: domain.RoutingModeRule, CoreState: domain.CoreStateRunning,
+		Listeners:        []app.ProxyListener{{Protocol: "mixed", Host: "127.0.0.1", Port: 7890}},
+		SystemProxy:      []app.ProxySourceStatus{{Source: "gnome.http", State: "mismatched"}},
+		EnvironmentProxy: []app.ProxySourceStatus{{Source: "env.HTTP_PROXY", State: "matched"}},
+	}
+	view := model.View()
+	for _, expected := range []string{"监听入口：mixed 127.0.0.1:7890", "GNOME 代理：gnome.http=mismatched", "CLI 环境代理：env.HTTP_PROXY=matched"} {
+		if !strings.Contains(view, expected) {
+			t.Fatalf("mode view missing %q: %s", expected, view)
+		}
 	}
 }
 

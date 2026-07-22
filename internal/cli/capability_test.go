@@ -13,18 +13,33 @@ import (
 )
 
 type fakeCapabilityAPI struct {
-	groups       []app.Group
-	nodes        []app.Node
-	subscription app.Subscription
-	route        app.RouteDiagnosis
-	logs         []app.LogLine
-	stream       []app.NodeTestEvent
-	selectGroup  string
-	selectNode   string
-	replaced     []byte
-	modeStatus   app.RoutingModeStatus
-	setMode      app.SetRoutingModeRequest
-	err          error
+	groups           []app.Group
+	nodes            []app.Node
+	subscription     app.Subscription
+	route            app.RouteDiagnosis
+	logs             []app.LogLine
+	stream           []app.NodeTestEvent
+	selectGroup      string
+	selectNode       string
+	replaced         []byte
+	modeStatus       app.RoutingModeStatus
+	connections      []app.Connection
+	connectionEvents []app.ConnectionEvent
+	setMode          app.SetRoutingModeRequest
+	err              error
+}
+
+func (f *fakeCapabilityAPI) Connections(context.Context, app.ConnectionRequest) ([]app.Connection, error) {
+	return append([]app.Connection(nil), f.connections...), f.err
+}
+
+func (f *fakeCapabilityAPI) FollowConnections(context.Context, app.ConnectionRequest) <-chan app.ConnectionEvent {
+	result := make(chan app.ConnectionEvent, len(f.connectionEvents))
+	for _, event := range f.connectionEvents {
+		result <- event
+	}
+	close(result)
+	return result
 }
 
 func (f *fakeCapabilityAPI) ModeStatus(context.Context, string) (app.RoutingModeStatus, error) {

@@ -25,12 +25,13 @@ func TestDaemonUnitEnvironmentUsesExplicitRuntimePaths(t *testing.T) {
 type fakeServices struct{}
 
 var (
-	_ CoreService    = fakeServices{}
-	_ ProfileService = fakeServices{}
-	_ RouteService   = fakeServices{}
-	_ ModeService    = fakeServices{}
-	_ ConfigService  = fakeServices{}
-	_ LogService     = fakeServices{}
+	_ CoreService       = fakeServices{}
+	_ ProfileService    = fakeServices{}
+	_ RouteService      = fakeServices{}
+	_ ConnectionService = fakeServices{}
+	_ ModeService       = fakeServices{}
+	_ ConfigService     = fakeServices{}
+	_ LogService        = fakeServices{}
 )
 
 func (fakeServices) ModeStatus(context.Context, domain.ProfileID) (RoutingModeStatus, error) {
@@ -71,6 +72,12 @@ func (fakeServices) Update(context.Context, domain.ProfileID, domain.Subscriptio
 
 func (fakeServices) Diagnose(context.Context, domain.ProfileID, string) (RouteDiagnosis, error) {
 	return RouteDiagnosis{}, nil
+}
+func (fakeServices) Connections(context.Context, ConnectionRequest) ([]Connection, error) {
+	return nil, nil
+}
+func (fakeServices) FollowConnections(context.Context, ConnectionRequest) <-chan ConnectionEvent {
+	return nil
 }
 func (fakeServices) ListWhitelist(context.Context, domain.ProfileID) ([]string, error) {
 	return nil, nil

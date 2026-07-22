@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -36,6 +38,7 @@ type Capabilities interface {
 	EditWhitelist(context.Context, string, string, string) error
 	ApplyRoutePreset(context.Context, string, string) error
 	DiagnoseRoute(context.Context, string, string) (app.RouteDiagnosis, error)
+	FollowConnections(context.Context, app.ConnectionRequest) <-chan app.ConnectionEvent
 	ConfigBackup(context.Context, string) error
 	ConfigRestore(context.Context, string) error
 	FollowLogs(context.Context, app.LogRequest) <-chan app.LogEvent
@@ -68,35 +71,42 @@ type Model struct {
 	inputTitle string
 	inputDo    func(string) tea.Cmd
 
-	result            string
-	err               error
-	busy              bool
-	returnPage        page
-	progressDone      int
-	progressTotal     int
-	liveResults       []app.NodeDelay
-	switchNodeDelay   map[string]int
-	switchTestDone    int
-	switchTestTotal   int
-	switchTestCancel  context.CancelFunc
-	currentNodeName   string
-	currentGroupID    string
-	currentGroupName  string
-	groups            []app.Group
-	whitelistItems    []string
-	selectedWhitelist string
-	logLines          []string
-	logRawLines       []string
-	logFilter         string
-	logRegex          *regexp.Regexp
-	logFollowCancel   context.CancelFunc
-	logScrollOffset   int
-	modeStatus        app.RoutingModeStatus
-	modeSelected      domain.RoutingMode
-	modeClose         bool
-	modeResult        string
-	modeErr           error
-	modeCancel        context.CancelFunc
+	result                 string
+	err                    error
+	busy                   bool
+	returnPage             page
+	progressDone           int
+	progressTotal          int
+	liveResults            []app.NodeDelay
+	switchNodeDelay        map[string]int
+	switchTestDone         int
+	switchTestTotal        int
+	switchTestCancel       context.CancelFunc
+	currentNodeName        string
+	currentGroupID         string
+	currentGroupName       string
+	groups                 []app.Group
+	whitelistItems         []string
+	selectedWhitelist      string
+	logLines               []string
+	logRawLines            []string
+	logFilter              string
+	logRegex               *regexp.Regexp
+	logFollowCancel        context.CancelFunc
+	logScrollOffset        int
+	modeStatus             app.RoutingModeStatus
+	modeSelected           domain.RoutingMode
+	modeClose              bool
+	modeResult             string
+	modeErr                error
+	modeCancel             context.CancelFunc
+	connectionFollowCancel context.CancelFunc
+	connections            map[string]app.Connection
+	connectionClosed       []app.Connection
+	connectionLastAction   map[string]app.ConnectionAction
+	connectionScroll       int
+	connectionErr          error
+	connectionFinished     bool
 }
 
 type actionDoneMsg struct {
@@ -150,6 +160,8 @@ type nodeTestStartedMsg struct{ ch <-chan app.NodeTestEvent }
 
 type logStreamStartedMsg struct{ ch <-chan app.LogEvent }
 
+type connectionStreamStartedMsg struct{ ch <-chan app.ConnectionEvent }
+
 type nodeTestMsg struct {
 	ch    <-chan app.NodeTestEvent
 	event app.NodeTestEvent
@@ -168,6 +180,12 @@ type logEventMsg struct {
 	ok    bool
 }
 
+type connectionEventMsg struct {
+	ch    <-chan app.ConnectionEvent
+	event app.ConnectionEvent
+	ok    bool
+}
+
 func New(client Capabilities) Model {
 	return NewWithContext(context.Background(), client)
 }
@@ -180,7 +198,7 @@ func NewWithContext(ctx context.Context, client Capabilities) Model {
 	ti.Prompt = "> "
 	ti.CharLimit = 200
 	ti.Width = 70
-	return Model{client: client, ctx: ctx, page: mainMenu, returnPage: actionMenu, input: ti, mainItems: []string{"运行模式", "服务管理", "节点管理", "订阅管理", "白名单管理", "路由诊断", "配置管理", "退出"}}
+	return Model{client: client, ctx: ctx, page: mainMenu, returnPage: actionMenu, input: ti, mainItems: []string{"运行模式", "实时连接", "服务管理", "节点管理", "订阅管理", "白名单管理", "路由诊断", "配置管理", "退出"}}
 }
 
 func (m Model) Init() tea.Cmd { return nil }
@@ -304,6 +322,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitSwitchNodeTestMsg(msg.ch)
 	case logStreamStartedMsg:
 		return m, waitLogEventMsg(msg.ch)
+	case connectionStreamStartedMsg:
+		return m, waitConnectionEventMsg(msg.ch)
 	case actionDoneMsg:
 		m.busy = false
 		m.result = msg.result
@@ -386,6 +406,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.appendLogLine(msg.event.Line.Message)
 		}
 		return m, waitLogEventMsg(msg.ch)
+	case connectionEventMsg:
+		if m.actionCtx != "connections_live" {
+			return m, nil
+		}
+		if !msg.ok {
+			m.connectionFinished = true
+			m.cancelConnectionFollow()
+			return m, nil
+		}
+		if msg.event.Err != nil {
+			if !errors.Is(msg.event.Err, context.Canceled) {
+				m.connectionErr = msg.event.Err
+			}
+			m.connectionFinished = true
+			m.cancelConnectionFollow()
+			return m, nil
+		}
+		if msg.event.Finished {
+			m.connectionFinished = true
+			m.cancelConnectionFollow()
+			return m, nil
+		}
+		m.reduceConnectionEvent(msg.event)
+		return m, waitConnectionEventMsg(msg.ch)
 	case tea.KeyMsg:
 		s := msg.String()
 		if s == "ctrl+c" {
@@ -432,6 +476,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.actionCtx = ""
 				m.actionItems = menuActions("服务管理")
 				m.actionIndex = 0
+				return m, nil
+			}
+			if m.actionCtx == "connections_live" {
+				if m.connectionFollowCancel != nil {
+					m.connectionFollowCancel()
+					m.connectionFollowCancel = nil
+				}
+				m.actionCtx = ""
+				m.actionItems = nil
+				m.page = mainMenu
 				return m, nil
 			}
 			if m.page == actionMenu && (m.actionCtx == "switch_nodes" || m.actionCtx == "group_nodes") {
@@ -515,6 +569,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		if m.actionCtx == "connections_live" {
+			switch s {
+			case "up":
+				if m.connectionScroll > 0 {
+					m.connectionScroll--
+				}
+			case "down":
+				if m.connectionScroll < max(0, len(m.connections)-1) {
+					m.connectionScroll++
+				}
+			}
+			return m, nil
+		}
 
 		switch m.page {
 		case mainMenu:
@@ -563,6 +630,23 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			ctx, cancel := context.WithCancel(m.ctx)
 			m.modeCancel = cancel
 			return m, loadModeStatusCmd(ctx, m.client)
+		}
+		if choice == "实时连接" {
+			m.connections = map[string]app.Connection{}
+			m.connectionClosed = nil
+			m.connectionLastAction = map[string]app.ConnectionAction{}
+			m.connectionScroll = 0
+			m.connectionErr = nil
+			m.connectionFinished = false
+			if m.connectionFollowCancel != nil {
+				m.connectionFollowCancel()
+			}
+			ctx, cancel := context.WithCancel(m.ctx)
+			m.connectionFollowCancel = cancel
+			m.actionCtx = "connections_live"
+			m.actionItems = nil
+			m.page = actionMenu
+			return m, startConnectionFollowCmd(ctx, m.client)
 		}
 		if choice == "节点管理" {
 			m.busy = true
@@ -1037,6 +1121,12 @@ func startLogFollowCmd(ctx context.Context, service Capabilities) tea.Cmd {
 	}
 }
 
+func startConnectionFollowCmd(ctx context.Context, service Capabilities) tea.Cmd {
+	return func() tea.Msg {
+		return connectionStreamStartedMsg{ch: service.FollowConnections(ctx, app.ConnectionRequest{})}
+	}
+}
+
 func diagnoseRouteCmd(ctx context.Context, service Capabilities, input string) tea.Cmd {
 	return func() tea.Msg {
 		value, err := service.DiagnoseRoute(ctx, "", input)
@@ -1177,11 +1267,17 @@ func (m Model) View() string {
 		if m.actionCtx == "log_live" {
 			header = "服务管理 / 实时日志"
 		}
+		if m.actionCtx == "connections_live" {
+			header = "实时连接"
+		}
 		pageSize := m.pageSize()
 		start, end = pageWindow(idx, len(items), pageSize)
 	}
 	if m.page == actionMenu && m.actionCtx == "log_live" {
 		return m.renderLogView(title)
+	}
+	if m.page == actionMenu && m.actionCtx == "connections_live" {
+		return m.renderConnectionsView(title)
 	}
 	if m.page == actionMenu && m.actionCtx == "mode" {
 		return m.renderModeView(title)
@@ -1300,6 +1396,13 @@ func waitLogEventMsg(ch <-chan app.LogEvent) tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-ch
 		return logEventMsg{ch: ch, event: ev, ok: ok}
+	}
+}
+
+func waitConnectionEventMsg(ch <-chan app.ConnectionEvent) tea.Cmd {
+	return func() tea.Msg {
+		event, ok := <-ch
+		return connectionEventMsg{ch: ch, event: event, ok: ok}
 	}
 }
 
@@ -1478,6 +1581,141 @@ func (m *Model) rebuildLogViewFromRaw() {
 	}
 }
 
+func (m *Model) reduceConnectionEvent(event app.ConnectionEvent) {
+	if event.Connection == nil || strings.TrimSpace(event.Connection.ID) == "" {
+		return
+	}
+	if m.connections == nil {
+		m.connections = map[string]app.Connection{}
+	}
+	if m.connectionLastAction == nil {
+		m.connectionLastAction = map[string]app.ConnectionAction{}
+	}
+	id := event.Connection.ID
+	switch event.Action {
+	case app.ConnectionActionOpen, app.ConnectionActionUpdate:
+		m.connections[id] = *event.Connection
+		m.connectionLastAction[id] = event.Action
+	case app.ConnectionActionClosed:
+		delete(m.connections, id)
+		delete(m.connectionLastAction, id)
+		m.connectionClosed = append([]app.Connection{*event.Connection}, m.connectionClosed...)
+		const maxClosedNotices = 20
+		if len(m.connectionClosed) > maxClosedNotices {
+			m.connectionClosed = m.connectionClosed[:maxClosedNotices]
+		}
+	}
+}
+
+func (m *Model) cancelConnectionFollow() {
+	if m.connectionFollowCancel != nil {
+		m.connectionFollowCancel()
+		m.connectionFollowCancel = nil
+	}
+}
+
+func (m Model) renderConnectionsView(title string) string {
+	ids := make([]string, 0, len(m.connections))
+	for id := range m.connections {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	visible := max(3, m.height-9)
+	if m.width < 96 {
+		visible = max(2, visible/2)
+	}
+	maxScroll := max(0, len(ids)-visible)
+	scroll := min(max(0, m.connectionScroll), maxScroll)
+	start, end := scroll, min(len(ids), scroll+visible)
+	var body strings.Builder
+	if m.width >= 96 {
+		body.WriteString(fmt.Sprintf("%-6s %-26s %-6s %-18s %-18s %10s %10s\n", "事件", "目标", "网络", "规则", "最终节点", "上传", "下载"))
+		for _, id := range ids[start:end] {
+			value := m.connections[id]
+			body.WriteString(fmt.Sprintf("%-6s %-26s %-6s %-18s %-18s %10s %10s\n",
+				truncateRunes(string(m.connectionLastAction[id]), 6), truncateRunes(tuiConnectionTarget(value), 26), truncateRunes(value.Network, 6),
+				truncateRunes(tuiConnectionRule(value), 18), truncateRunes(emptyTUIDash(value.FinalNode), 18), tuiFormatBytes(value.Upload), tuiFormatBytes(value.Download)))
+		}
+	} else {
+		for _, id := range ids[start:end] {
+			value := m.connections[id]
+			body.WriteString(fmt.Sprintf("%s  %s  %s\n", m.connectionLastAction[id], tuiConnectionTarget(value), emptyTUIDash(value.Network)))
+			body.WriteString(fmt.Sprintf("  %s | %s | %s/%s\n", tuiConnectionRule(value), emptyTUIDash(strings.Join(value.Chains, " -> ")), tuiFormatBytes(value.Upload), tuiFormatBytes(value.Download)))
+		}
+	}
+	if len(ids) == 0 {
+		body.WriteString("(暂无活动连接)\n")
+	}
+	if len(m.connectionClosed) > 0 {
+		body.WriteString(fmt.Sprintf("\n最近关闭：%s", tuiConnectionTarget(m.connectionClosed[0])))
+		if len(m.connectionClosed) > 1 {
+			body.WriteString(fmt.Sprintf(" 等 %d 条", len(m.connectionClosed)))
+		}
+		body.WriteString("\n")
+	}
+	state := "实时刷新"
+	if m.connectionErr != nil {
+		state = "读取失败：" + m.connectionErr.Error()
+	} else if m.connectionFinished {
+		state = "连接流已结束"
+	}
+	footer := fitFooter(fmt.Sprintf("↑/↓ 滚动  Esc 返回  Ctrl+C 退出 | 活动 %d | %s", len(ids), state), m.width)
+	return fmt.Sprintf("%s\n\n实时连接\n%s\n%s", title, body.String(), footer)
+}
+
+func tuiConnectionTarget(value app.Connection) string {
+	host := strings.TrimSpace(value.Host)
+	if host == "" {
+		host = strings.TrimSpace(value.DestinationIP)
+	}
+	if host == "" {
+		host = "-"
+	}
+	if value.DestinationPort <= 0 {
+		return host
+	}
+	return net.JoinHostPort(host, strconv.Itoa(value.DestinationPort))
+}
+
+func tuiConnectionRule(value app.Connection) string {
+	rule := strings.TrimSpace(value.Rule)
+	if value.RulePayload != "" {
+		rule += ":" + value.RulePayload
+	}
+	return emptyTUIDash(rule)
+}
+
+func tuiFormatBytes(value int64) string {
+	if value < 1024 {
+		return fmt.Sprintf("%dB", value)
+	}
+	if value < 1024*1024 {
+		return fmt.Sprintf("%.1fK", float64(value)/1024)
+	}
+	if value < 1024*1024*1024 {
+		return fmt.Sprintf("%.1fM", float64(value)/(1024*1024))
+	}
+	return fmt.Sprintf("%.1fG", float64(value)/(1024*1024*1024))
+}
+
+func truncateRunes(value string, width int) string {
+	runes := []rune(value)
+	if len(runes) <= width {
+		return value
+	}
+	if width <= 1 {
+		return string(runes[:max(0, width)])
+	}
+	return string(runes[:width-1]) + "…"
+}
+
+func emptyTUIDash(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
+}
+
 func (m Model) renderLogView(title string) string {
 	lines := m.logLines
 	h := m.height - 8
@@ -1538,6 +1776,9 @@ func (m Model) renderModeView(title string) string {
 			body.WriteString("连接处理：已关闭现有连接\n")
 		}
 		body.WriteString("规则集：" + ruleSetSummary(m.modeStatus) + "\n")
+		body.WriteString("监听入口：" + modeSummary(listenerSummary(m.modeStatus.Listeners), m.width) + "\n")
+		body.WriteString("GNOME 代理：" + modeSummary(proxySourceSummary(m.modeStatus.SystemProxy), m.width) + "\n")
+		body.WriteString("CLI 环境代理：" + modeSummary(proxySourceSummary(m.modeStatus.EnvironmentProxy), m.width) + "\n")
 		if m.modeStatus.NextStart {
 			body.WriteString("生效状态：配置已保存，下次启动生效\n")
 		}
@@ -1581,6 +1822,35 @@ func (m Model) renderModeView(title string) string {
 	}
 	footer := fitFooter("↑/↓ 选择  Enter 确认  Space 勾选  Esc 返回  q 退出", m.width)
 	return fmt.Sprintf("%s\n\n%s\n%s", title, body.String(), footer)
+}
+
+func listenerSummary(values []app.ProxyListener) string {
+	if len(values) == 0 {
+		return "无"
+	}
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, value.Protocol+" "+net.JoinHostPort(value.Host, strconv.Itoa(value.Port)))
+	}
+	return strings.Join(parts, "，")
+}
+
+func proxySourceSummary(values []app.ProxySourceStatus) string {
+	if len(values) == 0 {
+		return "未检测"
+	}
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, value.Source+"="+value.State)
+	}
+	return strings.Join(parts, "，")
+}
+
+func modeSummary(value string, width int) string {
+	if width <= 0 {
+		return value
+	}
+	return truncateRunes(value, max(20, width-12))
 }
 
 func routingModeLabel(mode domain.RoutingMode) string {

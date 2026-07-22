@@ -121,7 +121,7 @@ mm daemon --help
 
 通过安装器设置的 `CONFIG_DIR`、`MIHOMO_BIN` 和 `MIHOMO_API_PORT` 会写入受管 systemd service 环境，并在后续未显式覆盖的 `mm daemon enable` 中保留，确保 daemon 重启后继续使用同一 legacy 配置和 core 路径。
 
-2.0 Alpha 的业务 CLI 默认作用于唯一活动 legacy 档案，也可用 `--profile <id>` 显式指定。查询命令使用 `--output table|json`；`node test` 和 `core logs --follow` 使用 `--output text|ndjson`。订阅地址、节点 URI、UUID、密码和日志凭据默认脱敏，只有显式 `--show-secrets` 才显示完整值。
+2.0 Alpha 的业务 CLI 默认作用于唯一活动 legacy 档案，也可用 `--profile <id>` 显式指定。查询命令使用 `--output table|json`；`node test`、`core logs --follow` 和 `route connections --follow` 使用 `--output text|ndjson`。订阅地址、节点 URI、UUID、密码和日志凭据默认脱敏，只有显式 `--show-secrets` 才显示完整值。
 
 当前脚本化命令包括：
 
@@ -129,7 +129,7 @@ mm daemon --help
 - `config validate|backup|restore|edit`
 - `group list|show|select`、`node list|select|test`
 - legacy `subscription show|set|update`
-- legacy `route whitelist list|add|edit|remove`、`route preset cn`、`route diagnose`
+- legacy `route whitelist list|add|edit|remove`、`route preset cn`、`route diagnose`、`route connections [--follow]`
 
 ## 快捷键
 
@@ -141,6 +141,7 @@ mm daemon --help
 ## 功能
 
 - 服务管理：状态、启动、停止、重启、重载、配置测试、日志。
+- 实时连接：展示 mihomo 返回的目标、网络、命中规则、完整 chains、最终节点和累计流量；离开页面会停止 producer。
 - 节点管理：当前节点、切换、测速、切换最快节点。
 - 订阅管理：保存、查看和更新订阅。
 - 白名单：添加、删除和查看直连域名。
@@ -149,6 +150,8 @@ mm daemon --help
 ## 注意事项
 
 - `migrate plan|apply|status|rollback` 负责注册活动 legacy 档案；所有迁移和 A6 业务写入均经 daemon，`rollback` 必须显式指定恢复点，旧 YAML 不会自动转换。
+- `mode status` 同时展示 mihomo listener、GNOME 系统代理和当前 CLI 环境代理的只读匹配结果；诊断不会执行 `gsettings set`、占用端口或控制其他代理进程，代理 URL 的凭据、path 和 query 不进入输出。
+- 活动连接只保留在 daemon/TUI 有界内存中，不写 SQLite 或持久日志；快照和 follow 均要求 mihomo core 已运行。
 - 2.0 的领域模型、SQLite schema/迁移和事务仓储底座已接入 daemon；legacy profile 仅由迁移创建，无法确认归属的文件不会猜测为 managed。
 - 2.0 的 mihomo adapter 已支持原生验证、loopback controller 就绪检查、精确进程停止和失败恢复；A6 已接入 legacy core/config/node/subscription/route/log 命令，多档案、多订阅和完整 managed 配置仍属于 Beta。
 - YAML 写回后字段顺序和注释可能变化。

@@ -2,14 +2,17 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/zhangjianyong66/mihomo-manager/internal/daemon"
 	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
 	"github.com/zhangjianyong66/mihomo-manager/internal/ipc"
+	"github.com/zhangjianyong66/mihomo-manager/internal/platform"
 )
 
 type modeRoundTripper func(*http.Request) (*http.Response, error)
@@ -65,5 +68,33 @@ func TestDaemonCapabilitiesSetModeRejectsInvalidModeLocally(t *testing.T) {
 	var appErr *Error
 	if !errors.As(err, &appErr) || appErr.Code != "INVALID_ROUTING_MODE" || appErr.Category != ErrorCategoryInvalidArgument {
 		t.Fatalf("error=%#v", err)
+	}
+}
+
+func TestConvertModeStatusAddsSanitizedEnvironmentDiagnosis(t *testing.T) {
+	environment := map[string]string{
+		"HTTP_PROXY":  "http://user:secret@127.0.0.1:7890/private?token=secret",
+		"HTTPS_PROXY": "http://127.0.0.1:10808",
+		"ALL_PROXY":   "socks5://[::1]:7891/query",
+	}
+	capabilities := &DaemonCapabilities{lookupEnv: func(key string) (string, bool) { value, ok := environment[key]; return value, ok }}
+	status := capabilities.convertModeStatus(daemon.ModeStatus{
+		Listeners: []platform.ProxyListener{{Protocol: "mixed", Host: "127.0.0.1", Port: 7890}, {Protocol: "socks", Host: "127.0.0.1", Port: 7891}},
+		Warnings:  []string{}, SystemProxy: []platform.ProxySource{},
+	})
+	if len(status.EnvironmentProxy) != 3 || status.EnvironmentProxy[0].State != "matched" || status.EnvironmentProxy[1].State != "mismatched" || status.EnvironmentProxy[2].State != "matched" {
+		t.Fatalf("environment=%+v", status.EnvironmentProxy)
+	}
+	encoded, err := json.Marshal(status.EnvironmentProxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"user", "secret", "private", "token", "query"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("environment diagnosis leaked %q: %s", secret, encoded)
+		}
+	}
+	if len(status.Warnings) != 1 || !strings.Contains(status.Warnings[0], "普通应用流量不会进入 mihomo") {
+		t.Fatalf("warnings=%v", status.Warnings)
 	}
 }

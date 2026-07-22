@@ -3,7 +3,7 @@
   "name": "m5-route-observability",
   "title": "M5 提供实时链路与入口诊断",
   "description": "展示真实活动连接链路并检测系统代理是否实际进入 mihomo。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

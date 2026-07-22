@@ -319,7 +319,7 @@ func newRouteCommand(deps Dependencies) *cobra.Command {
 			return err
 		}})
 	}
-	command.AddCommand(whitelist, preset, diagnose)
+	command.AddCommand(whitelist, preset, diagnose, newRouteConnectionsCommand(deps))
 	return command
 }
 

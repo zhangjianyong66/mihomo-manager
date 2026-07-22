@@ -46,6 +46,7 @@ type RoutingRuntime interface {
 	SetMode(context.Context, domain.RoutingMode) error
 	Reload(context.Context, string) error
 	LoadedRules(context.Context) ([]RuntimeRule, error)
+	Connections(context.Context) ([]RuntimeConnection, error)
 	ConnectionCount(context.Context) (int, error)
 	CloseConnections(context.Context) error
 	SelectedProxy(context.Context, string) (string, error)
@@ -138,13 +139,11 @@ func (c *runtimeClient) LoadedRules(ctx context.Context) ([]RuntimeRule, error) 
 }
 
 func (c *runtimeClient) ConnectionCount(ctx context.Context) (int, error) {
-	var response struct {
-		Connections []json.RawMessage `json:"connections"`
-	}
-	if err := c.getJSON(ctx, "/connections", &response); err != nil {
+	connections, err := c.Connections(ctx)
+	if err != nil {
 		return 0, err
 	}
-	return len(response.Connections), nil
+	return len(connections), nil
 }
 
 func (c *runtimeClient) CloseConnections(ctx context.Context) error {
