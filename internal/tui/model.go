@@ -58,6 +58,14 @@ const (
 	inputView
 )
 
+type nodeTestMode uint8
+
+const (
+	nodeTestIdle nodeTestMode = iota
+	nodeTestSingle
+	nodeTestBatch
+)
+
 type Model struct {
 	client Capabilities
 	ctx    context.Context
@@ -84,7 +92,9 @@ type Model struct {
 	liveResults            []app.NodeDelay
 	nodeResults            map[string]app.NodeDelay
 	nodeTestable           map[string]bool
-	nodeTestActive         bool
+	nodeTestMode           nodeTestMode
+	nodeTestCurrent        domain.NodeID
+	nodeTestQueue          []domain.NodeID
 	switchTestDone         int
 	switchTestTotal        int
 	switchTestCancel       context.CancelFunc
@@ -402,7 +412,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.switchTestMessage = "节点已切换"
 		return m, nil
 	case nodeTestStartedMsg:
-		if msg.generation != m.switchTestGeneration || !m.nodeTestActive {
+		if msg.generation != m.switchTestGeneration || m.nodeTestMode == nodeTestIdle {
 			return m, nil
 		}
 		return m, waitSwitchNodeTestMsg(msg.ch, msg.generation)
@@ -459,20 +469,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, waitNodeTestMsg(msg.ch)
 	case switchNodeTestMsg:
-		if msg.generation != m.switchTestGeneration || (m.actionCtx != "switch_nodes" && m.actionCtx != "group_nodes") {
+		if msg.generation != m.switchTestGeneration || m.nodeTestMode == nodeTestIdle || (m.actionCtx != "switch_nodes" && m.actionCtx != "group_nodes") {
 			return m, nil
 		}
 		if !msg.ok {
-			m.nodeTestActive = false
-			m.switchTestCancel = nil
-			return m, nil
+			return m.finishNodeTestStream("测速流已结束")
 		}
 		if msg.event.Err != nil {
-			m.nodeTestActive = false
-			m.switchTestCancel = nil
+			message := ""
 			if !errors.Is(msg.event.Err, context.Canceled) {
-				m.switchTestMessage = "测速失败: " + msg.event.Err.Error()
+				message = "测速失败: " + msg.event.Err.Error()
 			}
+			m.cancelNodeTest(message)
 			return m, nil
 		}
 		if msg.event.Result != nil {
@@ -488,10 +496,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.switchTestDone = msg.event.Done
 		m.switchTestTotal = msg.event.Total
 		if msg.event.Finished {
-			m.nodeTestActive = false
-			m.switchTestCancel = nil
-			m.switchTestMessage = fmt.Sprintf("测速完成 %d/%d", msg.event.Done, msg.event.Total)
-			return m, nil
+			return m.finishNodeTestStream(fmt.Sprintf("测速完成 %d/%d", msg.event.Done, msg.event.Total))
 		}
 		return m, waitSwitchNodeTestMsg(msg.ch, msg.generation)
 	case logEventMsg:
@@ -615,7 +620,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.page == actionMenu && (m.actionCtx == "switch_nodes" || m.actionCtx == "group_nodes") {
-				if m.nodeTestActive {
+				if m.nodeTestMode != nodeTestIdle {
 					m.cancelNodeTest("测速已取消")
 					return m, nil
 				}
@@ -827,7 +832,8 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.switchTestMessage = "当前代理组没有可测速节点"
 				return m, nil
 			}
-			return m.beginNodeTest(app.NodeTestRequest{GroupID: domain.GroupID(m.currentGroupID), Concurrency: 5, Limit: 0})
+			m.nodeTestQueue = nil
+			return m.startNodeTest(app.NodeTestRequest{GroupID: domain.GroupID(m.currentGroupID), Concurrency: 5, Limit: 0}, nodeTestBatch)
 		}
 		if m.actionCtx == "whitelist_list" {
 			m.inputTitle = "新增白名单域名"
@@ -853,7 +859,22 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.switchTestMessage = "该节点不可测速"
 				return m, nil
 			}
-			return m.beginNodeTest(app.NodeTestRequest{GroupID: domain.GroupID(m.currentGroupID), NodeID: domain.NodeID(node)})
+			nodeID := domain.NodeID(node)
+			if m.nodeTestMode == nodeTestSingle {
+				if nodeID == m.nodeTestCurrent {
+					m.switchTestMessage = "该节点正在测速"
+					return m, nil
+				}
+				if m.nodeTestQueued(nodeID) {
+					m.switchTestMessage = "该节点已在队列中"
+					return m, nil
+				}
+				m.nodeTestQueue = append(m.nodeTestQueue, nodeID)
+				m.switchTestMessage = "已加入队列: " + node
+				return m, nil
+			}
+			m.nodeTestQueue = nil
+			return m.startNodeTest(app.NodeTestRequest{GroupID: domain.GroupID(m.currentGroupID), NodeID: nodeID}, nodeTestSingle)
 		}
 	case "up":
 		if m.actionIndex > 0 {
@@ -1573,10 +1594,13 @@ func (m Model) View() string {
 		if m.actionCtx == "group_nodes" {
 			navigation := fitFooter(fmt.Sprintf("↑/↓ 选择 Enter 切换 ←/→ 翻页 | 第 %d/%d 页", currentPage, max(1, totalPages)), m.width)
 			action := "t 单测 | a 批量 | Esc 返回"
-			if m.nodeTestActive {
-				action = fmt.Sprintf("t 单测 | a 批量 | 进度 %d/%d | Esc 取消", m.switchTestDone, m.switchTestTotal)
+			switch m.nodeTestMode {
+			case nodeTestSingle:
+				action = fmt.Sprintf("单测 %s %d/%d | 待测 %d | t 入队 a 批量 Esc 取消", m.nodeTestCurrent, m.switchTestDone, m.switchTestTotal, len(m.nodeTestQueue))
+			case nodeTestBatch:
+				action = fmt.Sprintf("批量测速 %d/%d | t 单测 a 重测 Esc 取消", m.switchTestDone, m.switchTestTotal)
 			}
-			if m.switchTestMessage != "" && !m.nodeTestActive {
+			if m.switchTestMessage != "" {
 				action += " | " + m.switchTestMessage
 			}
 			footer = navigation + "\n" + fitFooter(action, m.width)
@@ -1767,7 +1791,7 @@ func fitFooter(s string, width int) string {
 		return s
 	}
 	maxw := width - 2
-	if len([]rune(s)) <= maxw {
+	if lipgloss.Width(s) <= maxw {
 		return s
 	}
 	compact := strings.NewReplacer(
@@ -1777,14 +1801,10 @@ func fitFooter(s string, width int) string {
 		" | ←/→ 翻页 | ", " | ←/→ | ",
 		"进度 ", "",
 	).Replace(s)
-	if len([]rune(compact)) <= maxw {
+	if lipgloss.Width(compact) <= maxw {
 		return compact
 	}
-	r := []rune(compact)
-	if maxw <= 3 {
-		return string(r[:max(0, maxw)])
-	}
-	return string(r[:maxw-3]) + "..."
+	return truncateDisplayWidth(compact, max(0, maxw))
 }
 
 func formatGroupItems(groups []app.Group) []string {
@@ -1827,6 +1847,7 @@ func (m Model) enterLoadedGroup(group app.Group) (tea.Model, tea.Cmd) {
 	m.page = actionMenu
 	m.actionItems = append(nodes, "返回")
 	m.actionIndex = 0
+	m.cancelNodeTest("")
 	m.nodeResults = map[string]app.NodeDelay{}
 	m.nodeTestable = map[string]bool{}
 	if len(group.NodeStates) == 0 {
@@ -1842,24 +1863,28 @@ func (m Model) enterLoadedGroup(group app.Group) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
-	m.nodeTestActive = false
 	m.switchTestDone = 0
 	m.switchTestTotal = 0
 	m.switchTestMessage = ""
 	return m, nil
 }
 
-func (m Model) beginNodeTest(request app.NodeTestRequest) (tea.Model, tea.Cmd) {
+func (m Model) startNodeTest(request app.NodeTestRequest, mode nodeTestMode) (tea.Model, tea.Cmd) {
 	m.switchTestGeneration++
 	if m.switchTestCancel != nil {
 		m.switchTestCancel()
 	}
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.switchTestCancel = cancel
-	m.nodeTestActive = true
+	m.nodeTestMode = mode
+	m.nodeTestCurrent = request.NodeID
 	m.switchTestDone = 0
 	m.switchTestTotal = 0
-	m.switchTestMessage = "测速中"
+	if mode == nodeTestBatch {
+		m.switchTestMessage = "批量测速已开始"
+	} else {
+		m.switchTestMessage = "单测已开始"
+	}
 	return m, startNodeTestCmd(ctx, m.client, request, m.switchTestGeneration)
 }
 
@@ -1869,8 +1894,36 @@ func (m *Model) cancelNodeTest(message string) {
 		m.switchTestCancel()
 	}
 	m.switchTestCancel = nil
-	m.nodeTestActive = false
+	m.nodeTestMode = nodeTestIdle
+	m.nodeTestCurrent = ""
+	m.nodeTestQueue = nil
 	m.switchTestMessage = message
+}
+
+func (m Model) finishNodeTestStream(message string) (tea.Model, tea.Cmd) {
+	if m.nodeTestMode == nodeTestSingle && len(m.nodeTestQueue) > 0 {
+		next := m.nodeTestQueue[0]
+		m.nodeTestQueue = m.nodeTestQueue[1:]
+		return m.startNodeTest(app.NodeTestRequest{GroupID: domain.GroupID(m.currentGroupID), NodeID: next}, nodeTestSingle)
+	}
+	if m.switchTestCancel != nil {
+		m.switchTestCancel()
+	}
+	m.switchTestCancel = nil
+	m.nodeTestMode = nodeTestIdle
+	m.nodeTestCurrent = ""
+	m.nodeTestQueue = nil
+	m.switchTestMessage = message
+	return m, nil
+}
+
+func (m Model) nodeTestQueued(nodeID domain.NodeID) bool {
+	for _, queued := range m.nodeTestQueue {
+		if queued == nodeID {
+			return true
+		}
+	}
+	return false
 }
 
 func (m Model) testableNodeCount() int {

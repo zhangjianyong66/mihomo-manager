@@ -227,9 +227,11 @@ POST /v1/nodes/test-single
 ### 3. Contracts
 
 - TUI 进入节点列表只调用 group 查询并展示最新 history，不产生 `/delay` 请求；无 history 显示“未测速”。
-- TUI 使用 `t` 测试光标节点、`a` 测试当前组全部可测速 leaf；批测固定低并发且 `limit=0` 表示不截断。
+- TUI 空闲时使用 `t` 测试光标节点；单测进行中再次按 `t` 会把其他节点加入有序去重的串行队列，当前节点继续执行，且 `t` 不自动移动光标。批测固定低并发且 `limit=0` 表示不截断。
+- TUI 任意测速状态按 `a` 都清空单测队列、取消当前 generation 并立即重启整组批测；批测中按 `t` 则取消批测并立即单测光标节点。活动状态必须即时显示模式、当前节点或进度、待测数及按键反馈。
 - 测速只更新结果，不自动切换节点；Enter 选择成功后不得清空 history 或启动测速。
-- 测速中 Esc 取消并留在列表，保留部分结果；空闲 Esc 才返回。每轮异步消息携带 generation，取消或替换后丢弃旧流事件。
+- 测速中 Esc 清空队列、取消并留在列表，保留部分结果；空闲 Esc 才返回。每轮异步消息携带 generation，取消、替换或启动队首下一项后丢弃旧流的 started/result/done/close/error 事件。
+- 单节点失败/超时作为节点结果继续队列；系统性 stream 错误停止并清空队列，channel 异常关闭按当前单测结束处理并继续队首下一项。
 - 单测固定走 `/v1/nodes/test-single`，不得把 `nodeId` 仅加到旧批量 body；指定 group 时在请求 `/delay` 前验证成员关系和 leaf 可测速性。
 - NDJSON event 保留 `done/total/name/delayMs`，追加 `status=success|failed` 与 RFC3339Nano `testedAt`；旧响应缺字段时按正 delay 推导 success，不伪造测试时间。
 - history 归 mihomo 运行时所有，不写 SQLite，也不承诺跨 core 重启保留。
@@ -248,7 +250,7 @@ POST /v1/nodes/test-single
 
 ### 5. Good / Base / Bad Cases
 
-- Good：进入列表立即看到最新 history；按 `t` 只产生一个节点请求，按 `a` 完整测试超过 120 个可测速 leaf，结果逐项刷新且当前选择不变。
+- Good：进入列表立即看到最新 history；连续按 `t` 只串行执行有序去重的单节点请求，按 `a` 可抢占单测并完整测试超过 120 个可测速 leaf，结果逐项刷新且当前选择不变。
 - Base：core history 为空或旧 daemon 未返回 additive 字段时显示“未测速”；旧批量 event 缺 `status/testedAt` 时只按正 delay 推导 success。
 - Bad：进入列表或 Enter 选择后隐式调用 `/delay`；把 `nodeId` 放进旧 `/v1/nodes/test` body 让旧 daemon 忽略后执行整组测速；两种行为都禁止发布。
 
@@ -257,7 +259,7 @@ POST /v1/nodes/test-single
 - `internal/mihomo`：history 的 null/空/成功/失败、嵌套组过滤、单测恰好一次、成员拒绝、`limit=0` 超过 120 和取消。
 - `internal/daemon` / `internal/app`：additive group 字段、新旧路由、status/time 解码、旧 event 兼容和取消。
 - `internal/cli`：`--node`、可选 group、与显式批量参数冲突、text/NDJSON 成功失败及脱敏。
-- `internal/tui`：进入列表零测速、相对时间、`t/a`、两阶段 Esc、generation 丢弃迟到事件、Enter 不测速和窄终端稳定行宽。
+- `internal/tui`：进入列表零测速、相对时间、长期未完成流中的 `t` 入队与去重、single/batch 双向抢占、队列完成/失败/异常关闭、系统错误停止、两阶段 Esc、generation 丢弃所有迟到事件、Enter 不测速和窄终端稳定行宽。
 
 ### 7. Wrong vs Correct
 
@@ -275,6 +277,24 @@ if request.NodeID != "" {
     path = "/v1/nodes/test-single"
 }
 return m, nil
+```
+
+错误：single 模式再次按 `t` 仍调用会取消当前 context 的启动入口；测试只断言返回了非空 command。
+
+```go
+return m.startNodeTest(singleRequest(nodeID), nodeTestSingle)
+```
+
+正确：当前节点和队列先去重，其他节点只追加到队尾并即时反馈；只有队首完成后才为下一节点返回新 command。
+
+```go
+if m.nodeTestMode == nodeTestSingle {
+    if nodeID == m.nodeTestCurrent || m.nodeTestQueued(nodeID) {
+        return m, nil
+    }
+    m.nodeTestQueue = append(m.nodeTestQueue, nodeID)
+    return m, nil
+}
 ```
 
 ## Scenario：daemon 组合重启的 CLI 与 TUI 投影

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -34,6 +35,8 @@ type fakeTUIService struct {
 	testCalls        int
 	testRequests     []app.NodeTestRequest
 	testContext      context.Context
+	testContexts     []context.Context
+	testStreams      []chan app.NodeTestEvent
 	selectedGroup    string
 	selectedNode     string
 	restartCalls     int
@@ -120,6 +123,10 @@ func (f *fakeTUIService) TestNodes(ctx context.Context, request app.NodeTestRequ
 	f.testCalls++
 	f.testRequests = append(f.testRequests, request)
 	f.testContext = ctx
+	f.testContexts = append(f.testContexts, ctx)
+	if index := f.testCalls - 1; index < len(f.testStreams) {
+		return f.testStreams[index]
+	}
 	result := make(chan app.NodeTestEvent, len(f.testEvents))
 	for _, event := range f.testEvents {
 		result <- event
@@ -280,7 +287,7 @@ func TestNodeListLoadsHistoryWithoutAutomaticTest(t *testing.T) {
 	next, command := model.enterLoadedGroup(group)
 	model = next.(Model)
 	view := model.View()
-	if command != nil || fake.testCalls != 0 || model.nodeTestActive {
+	if command != nil || fake.testCalls != 0 || model.nodeTestMode != nodeTestIdle {
 		t.Fatalf("entering group started a test: command=%v calls=%d model=%+v", command != nil, fake.testCalls, model)
 	}
 	for _, want := range []string{"238ms · 9分钟前", "未测速", "t 单测", "a 批量"} {
@@ -301,8 +308,8 @@ func TestNodeListSingleAndBatchTestsUseExplicitRequests(t *testing.T) {
 
 	next, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
 	model = next.(Model)
-	if command == nil || fake.testCalls != 0 || !model.nodeTestActive {
-		t.Fatalf("single test was not deferred: command=%v calls=%d active=%v", command != nil, fake.testCalls, model.nodeTestActive)
+	if command == nil || fake.testCalls != 0 || model.nodeTestMode != nodeTestSingle {
+		t.Fatalf("single test was not deferred: command=%v calls=%d mode=%v", command != nil, fake.testCalls, model.nodeTestMode)
 	}
 	next, _ = model.Update(command())
 	model = next.(Model)
@@ -321,21 +328,226 @@ func TestNodeListSingleAndBatchTestsUseExplicitRequests(t *testing.T) {
 	}
 }
 
+func TestNodeListQueuesSingleTestsWithoutCancellingActiveStream(t *testing.T) {
+	streams := []chan app.NodeTestEvent{
+		make(chan app.NodeTestEvent, 2),
+		make(chan app.NodeTestEvent, 2),
+		make(chan app.NodeTestEvent, 1),
+	}
+	fake := &fakeTUIService{testStreams: streams}
+	model := New(fake)
+	next, _ := model.enterLoadedGroup(app.Group{
+		ID: "GLOBAL", Name: "GLOBAL", NodeIDs: []domain.NodeID{"node-a", "node-b", "node-c"},
+		NodeStates: []app.GroupNodeState{
+			{NodeID: "node-a", Testable: true},
+			{NodeID: "node-b", Testable: true},
+			{NodeID: "node-c", Testable: true},
+		},
+	})
+	model = next.(Model)
+
+	next, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	model = next.(Model)
+	started := command().(nodeTestStartedMsg)
+	next, wait := model.Update(started)
+	model = next.(Model)
+	if wait == nil || fake.testCalls != 1 || model.nodeTestCurrent != "node-a" {
+		t.Fatalf("first single test did not start: calls=%d current=%q", fake.testCalls, model.nodeTestCurrent)
+	}
+	next, command = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	model = next.(Model)
+	if command != nil || len(model.nodeTestQueue) != 0 || !strings.Contains(model.View(), "该节点正在测速") {
+		t.Fatalf("active node was queued again or feedback missing: queue=%v view=%s", model.nodeTestQueue, model.View())
+	}
+
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = next.(Model)
+	next, command = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	model = next.(Model)
+	if command != nil || !reflect.DeepEqual(model.nodeTestQueue, []domain.NodeID{"node-b"}) {
+		t.Fatalf("second node was not queued: command=%v queue=%v", command != nil, model.nodeTestQueue)
+	}
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	model = next.(Model)
+	if len(model.nodeTestQueue) != 1 || !strings.Contains(model.View(), "该节点已在队列中") {
+		t.Fatalf("queued node was duplicated or feedback missing: queue=%v view=%s", model.nodeTestQueue, model.View())
+	}
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = next.(Model)
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	model = next.(Model)
+	if !reflect.DeepEqual(model.nodeTestQueue, []domain.NodeID{"node-b", "node-c"}) || !strings.Contains(model.View(), "待测 2") || !strings.Contains(model.View(), "已加入队列: node-c") {
+		t.Fatalf("single queue state is not visible: queue=%v view=%s", model.nodeTestQueue, model.View())
+	}
+	select {
+	case <-fake.testContexts[0].Done():
+		t.Fatal("queueing another node cancelled the active single test")
+	default:
+	}
+
+	streams[0] <- app.NodeTestEvent{Done: 1, Total: 1, Finished: true}
+	next, command = model.Update(wait())
+	model = next.(Model)
+	if command == nil || model.nodeTestCurrent != "node-b" || !reflect.DeepEqual(model.nodeTestQueue, []domain.NodeID{"node-c"}) {
+		t.Fatalf("queue did not advance to node-b: current=%q queue=%v", model.nodeTestCurrent, model.nodeTestQueue)
+	}
+	started = command().(nodeTestStartedMsg)
+	next, wait = model.Update(started)
+	model = next.(Model)
+	failed := app.NodeDelay{NodeID: "node-b", Status: app.NodeTestStatusFailed}
+	streams[1] <- app.NodeTestEvent{Done: 1, Total: 1, Result: &failed}
+	next, wait = model.Update(wait())
+	model = next.(Model)
+	streams[1] <- app.NodeTestEvent{Done: 1, Total: 1, Finished: true}
+	next, command = model.Update(wait())
+	model = next.(Model)
+	if command == nil || model.nodeTestCurrent != "node-c" || model.nodeResults["node-b"].Status != app.NodeTestStatusFailed {
+		t.Fatalf("failed single test did not continue: current=%q result=%+v", model.nodeTestCurrent, model.nodeResults["node-b"])
+	}
+	_ = command().(nodeTestStartedMsg)
+	if got := []domain.NodeID{fake.testRequests[0].NodeID, fake.testRequests[1].NodeID, fake.testRequests[2].NodeID}; !reflect.DeepEqual(got, []domain.NodeID{"node-a", "node-b", "node-c"}) {
+		t.Fatalf("single tests ran out of order: %v", got)
+	}
+}
+
+func TestNodeListSystemStreamErrorStopsSingleQueue(t *testing.T) {
+	stream := make(chan app.NodeTestEvent, 1)
+	fake := &fakeTUIService{testStreams: []chan app.NodeTestEvent{stream}}
+	model := New(fake)
+	next, _ := model.enterLoadedGroup(app.Group{
+		ID: "GLOBAL", Name: "GLOBAL", NodeIDs: []domain.NodeID{"node-a", "node-b"},
+		NodeStates: []app.GroupNodeState{{NodeID: "node-a", Testable: true}, {NodeID: "node-b", Testable: true}},
+	})
+	model = next.(Model)
+	next, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	model = next.(Model)
+	next, wait := model.Update(command())
+	model = next.(Model)
+	model.actionIndex = 1
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	model = next.(Model)
+	stream <- app.NodeTestEvent{Err: errors.New("stream broken"), Finished: true}
+	next, command = model.Update(wait())
+	model = next.(Model)
+	if command != nil || model.nodeTestMode != nodeTestIdle || len(model.nodeTestQueue) != 0 || !strings.Contains(model.switchTestMessage, "stream broken") {
+		t.Fatalf("system stream error did not stop queue: command=%v model=%+v", command != nil, model)
+	}
+}
+
+func TestNodeListUnexpectedSingleStreamCloseContinuesQueue(t *testing.T) {
+	first := make(chan app.NodeTestEvent)
+	second := make(chan app.NodeTestEvent)
+	fake := &fakeTUIService{testStreams: []chan app.NodeTestEvent{first, second}}
+	model := New(fake)
+	next, _ := model.enterLoadedGroup(app.Group{
+		ID: "GLOBAL", Name: "GLOBAL", NodeIDs: []domain.NodeID{"node-a", "node-b"},
+		NodeStates: []app.GroupNodeState{{NodeID: "node-a", Testable: true}, {NodeID: "node-b", Testable: true}},
+	})
+	model = next.(Model)
+	next, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	model = next.(Model)
+	next, wait := model.Update(command())
+	model = next.(Model)
+	model.actionIndex = 1
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	model = next.(Model)
+	close(first)
+	next, command = model.Update(wait())
+	model = next.(Model)
+	if command == nil || model.nodeTestCurrent != "node-b" || model.nodeTestMode != nodeTestSingle {
+		t.Fatalf("closed stream did not advance queue: command=%v model=%+v", command != nil, model)
+	}
+	_ = command().(nodeTestStartedMsg)
+}
+
+func TestNodeListSingleAndBatchTestsPreemptEachOther(t *testing.T) {
+	streams := []chan app.NodeTestEvent{
+		make(chan app.NodeTestEvent),
+		make(chan app.NodeTestEvent),
+		make(chan app.NodeTestEvent),
+		make(chan app.NodeTestEvent),
+	}
+	fake := &fakeTUIService{testStreams: streams}
+	model := New(fake)
+	next, _ := model.enterLoadedGroup(app.Group{
+		ID: "GLOBAL", Name: "GLOBAL", NodeIDs: []domain.NodeID{"node-a", "node-b"},
+		NodeStates: []app.GroupNodeState{{NodeID: "node-a", Testable: true}, {NodeID: "node-b", Testable: true}},
+	})
+	model = next.(Model)
+	next, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	model = next.(Model)
+	oldGeneration := model.switchTestGeneration
+	_ = command().(nodeTestStartedMsg)
+	model.actionIndex = 1
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	model = next.(Model)
+
+	next, command = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	model = next.(Model)
+	if command == nil || model.nodeTestMode != nodeTestBatch || len(model.nodeTestQueue) != 0 {
+		t.Fatalf("batch did not preempt single queue: command=%v model=%+v", command != nil, model)
+	}
+	select {
+	case <-fake.testContexts[0].Done():
+	default:
+		t.Fatal("batch did not cancel active single context")
+	}
+	_ = command().(nodeTestStartedMsg)
+	stale := app.NodeDelay{NodeID: "node-a", Status: app.NodeTestStatusSuccess, Delay: time.Millisecond}
+	next, _ = model.Update(switchNodeTestMsg{generation: oldGeneration, event: app.NodeTestEvent{Done: 1, Total: 1, Result: &stale, Finished: true}, ok: true})
+	model = next.(Model)
+	if model.nodeTestMode != nodeTestBatch {
+		t.Fatalf("stale single completion changed batch state: %+v", model)
+	}
+	next, command = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	model = next.(Model)
+	if command == nil || model.nodeTestMode != nodeTestBatch {
+		t.Fatalf("batch restart did not start: command=%v model=%+v", command != nil, model)
+	}
+	select {
+	case <-fake.testContexts[1].Done():
+	default:
+		t.Fatal("batch restart did not cancel previous batch context")
+	}
+	_ = command().(nodeTestStartedMsg)
+
+	next, command = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	model = next.(Model)
+	if command == nil || model.nodeTestMode != nodeTestSingle || model.nodeTestCurrent != "node-b" {
+		t.Fatalf("single did not preempt batch: command=%v model=%+v", command != nil, model)
+	}
+	select {
+	case <-fake.testContexts[2].Done():
+	default:
+		t.Fatal("single did not cancel active batch context")
+	}
+	_ = command().(nodeTestStartedMsg)
+	if fake.testRequests[1].NodeID != "" || fake.testRequests[1].Concurrency != 5 || fake.testRequests[1].Limit != 0 || fake.testRequests[2].NodeID != "" || fake.testRequests[3].NodeID != "node-b" {
+		t.Fatalf("unexpected preemption requests: %+v", fake.testRequests)
+	}
+}
+
 func TestNodeListEscapeCancelsBeforeLeavingAndStaleEventsAreIgnored(t *testing.T) {
 	fake := &fakeTUIService{}
 	model := New(fake)
-	next, _ := model.enterLoadedGroup(app.Group{ID: "GLOBAL", Name: "GLOBAL", NodeIDs: []domain.NodeID{"node-a"}, NodeStates: []app.GroupNodeState{{NodeID: "node-a", Testable: true}}})
+	next, _ := model.enterLoadedGroup(app.Group{
+		ID: "GLOBAL", Name: "GLOBAL", NodeIDs: []domain.NodeID{"node-a", "node-b"},
+		NodeStates: []app.GroupNodeState{{NodeID: "node-a", Testable: true}, {NodeID: "node-b", Testable: true}},
+	})
 	model = next.(Model)
 	next, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
 	model = next.(Model)
 	started := command().(nodeTestStartedMsg)
 	next, _ = model.Update(started)
 	model = next.(Model)
+	model.actionIndex = 1
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	model = next.(Model)
 	oldGeneration := model.switchTestGeneration
 
 	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	model = next.(Model)
-	if model.actionCtx != "group_nodes" || model.nodeTestActive || model.switchTestGeneration == oldGeneration {
+	if model.actionCtx != "group_nodes" || model.nodeTestMode != nodeTestIdle || len(model.nodeTestQueue) != 0 || model.switchTestGeneration == oldGeneration {
 		t.Fatalf("first escape should only cancel: %+v", model)
 	}
 	select {
@@ -385,6 +597,32 @@ func TestNodeListNarrowRowsKeepStatusWithinTerminalWidth(t *testing.T) {
 	row := model.renderSwitchNodeItem(model.currentNodeName)
 	if lipgloss.Width(row) > model.width-4 || !strings.Contains(row, "[238ms · 刚刚]") {
 		t.Fatalf("narrow row overflowed or lost status: width=%d row=%q", lipgloss.Width(row), row)
+	}
+}
+
+func TestNodeListNarrowActiveFooterKeepsModeVisibleWithinTerminalWidth(t *testing.T) {
+	model := New(&fakeTUIService{})
+	model.width = 32
+	next, _ := model.enterLoadedGroup(app.Group{
+		ID: "GLOBAL", Name: "GLOBAL", NodeIDs: []domain.NodeID{"这是一个非常长的中文节点名称"},
+		NodeStates: []app.GroupNodeState{{NodeID: "这是一个非常长的中文节点名称", Testable: true}},
+	})
+	model = next.(Model)
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	model = next.(Model)
+	lines := strings.Split(model.View(), "\n")
+	found := false
+	for _, line := range lines {
+		if !strings.Contains(line, "单测") {
+			continue
+		}
+		found = true
+		if lipgloss.Width(line) > model.width-2 {
+			t.Fatalf("active footer overflowed: width=%d line=%q", lipgloss.Width(line), line)
+		}
+	}
+	if !found {
+		t.Fatalf("narrow active footer lost test mode: %s", model.View())
 	}
 }
 
