@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 16
+- **Total Sessions**: 17
 - **Last Active**: 2026-07-22
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~537 | Active |
+| `journal-1.md` | ~570 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 17 | 2026-07-22 | 修复 legacy 迁移重复备份 | `8ddb447` | `master` |
 | 16 | 2026-07-22 | 完成端口冲突检测与监听端口管理 | `8ddb447`, `4ef2007` | `master` |
 | 15 | 2026-07-22 | 完成 M5 实时链路与入口诊断 | `4a5680e` | `master` |
 | 14 | 2026-07-22 | 完成 M4 模式 CLI 与 TUI | `6761798` | `master` |

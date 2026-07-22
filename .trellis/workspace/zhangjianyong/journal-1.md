@@ -535,3 +535,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 17: 修复 legacy 迁移重复备份
+
+**Date**: 2026-07-22
+**Task**: 修复 legacy 迁移重复备份
+**Branch**: `master`
+
+### Summary
+
+统一去重 legacy 固定与动态备份候选，补充标准备份和时间戳备份回归测试，完成真实迁移验证并归档任务。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8ddb447` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
