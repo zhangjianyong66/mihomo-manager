@@ -568,3 +568,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 18: 完成三模式路由父任务验收
+
+**Date**: 2026-07-22
+**Task**: 完成三模式路由父任务验收
+**Branch**: `master`
+
+### Summary
+
+完成 M1-M5 到父 AC1-AC14 的证据映射，补跑全量 test/race/vet、安装器、Shell、双架构与 mihomo 原生验证；真实验证 global/direct/rule、CN domain/IP、MATCH 链路和显式关闭连接，恢复 rule 运行态并确认 xray 与 GNOME 代理未变化。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2b387e2` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
