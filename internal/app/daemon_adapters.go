@@ -26,6 +26,7 @@ func NewDaemonService(paths config.ManagerPaths) *DaemonService {
 		Client:     daemonIPCClient{client: ipc.NewClient(paths.Socket)},
 		Runner:     localDaemonRunner{paths: paths},
 		Controller: systemdController{controller: controller},
+		Core:       NewCapabilityService(paths),
 	}
 }
 
@@ -140,9 +141,18 @@ func (c systemdController) Stop(ctx context.Context) (DaemonControlResult, error
 	result, err := c.controller.Stop(ctx)
 	return convertSystemdResult(result), mapSystemdError(err)
 }
+func (c systemdController) Restart(ctx context.Context) (DaemonControlResult, error) {
+	result, err := c.controller.Restart(ctx)
+	return convertSystemdResult(result), mapSystemdError(err)
+}
 
 func convertSystemdResult(result systemd.Result) DaemonControlResult {
-	return DaemonControlResult{Installed: result.Installed, Enabled: result.Enabled, Active: result.Active, Message: result.Message, Hint: result.Hint}
+	return DaemonControlResult{
+		Installed: result.Installed, Managed: result.Managed, Available: result.Available,
+		Enabled: result.Enabled, Active: result.Active,
+		ServiceActive: result.ServiceActive, SocketActive: result.SocketActive,
+		Message: result.Message, Hint: result.Hint,
+	}
 }
 
 func mapIPCError(err error) error {

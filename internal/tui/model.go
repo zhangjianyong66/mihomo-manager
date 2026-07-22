@@ -21,6 +21,7 @@ import (
 )
 
 type Capabilities interface {
+	RestartDaemon(context.Context, app.DaemonRestartProgressFunc) (app.DaemonRestartResult, error)
 	ModeStatus(context.Context, string) (app.RoutingModeStatus, error)
 	SetMode(context.Context, app.SetRoutingModeRequest) (app.RoutingModeStatus, error)
 	CoreStatus(context.Context, string) (app.CoreStatus, error)
@@ -118,6 +119,8 @@ type Model struct {
 	listenerPortStatus     app.ListenerPortStatus
 	listenerPortField      string
 	listenerPortResult     string
+	daemonRestartProgress  app.DaemonRestartProgress
+	daemonRestartSeen      map[app.DaemonRestartPhase]bool
 }
 
 type actionDoneMsg struct {
@@ -207,6 +210,16 @@ type connectionEventMsg struct {
 	ok    bool
 }
 
+type daemonRestartStartedMsg struct{ ch <-chan daemonRestartEvent }
+
+type daemonRestartEvent struct {
+	ch       <-chan daemonRestartEvent
+	progress *app.DaemonRestartProgress
+	result   app.DaemonRestartResult
+	err      error
+	done     bool
+}
+
 func New(client Capabilities) Model {
 	return NewWithContext(context.Background(), client)
 }
@@ -226,6 +239,29 @@ func (m Model) Init() tea.Cmd { return nil }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case daemonRestartStartedMsg:
+		return m, waitDaemonRestartEventMsg(msg.ch)
+	case daemonRestartEvent:
+		if msg.progress != nil {
+			m.daemonRestartProgress = *msg.progress
+			if m.daemonRestartSeen == nil {
+				m.daemonRestartSeen = map[app.DaemonRestartPhase]bool{}
+			}
+			m.daemonRestartSeen[msg.progress.Phase] = true
+			return m, waitDaemonRestartEventMsg(msg.ch)
+		}
+		if msg.done {
+			m.busy = false
+			m.actionCtx = ""
+			m.actionItems = menuActions("服务管理")
+			m.actionIndex = 4
+			m.result = formatDaemonRestartResult(msg.result, msg.err)
+			m.err = msg.err
+			m.returnPage = actionMenu
+			m.page = resultView
+			return m, nil
+		}
+		return m, nil
 	case modeStatusMsg:
 		m.busy = false
 		m.modeCancel = nil
@@ -502,6 +538,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitConnectionEventMsg(msg.ch)
 	case tea.KeyMsg:
 		s := msg.String()
+		if m.actionCtx == "daemon_restart_progress" && m.busy {
+			return m, nil
+		}
+		if m.actionCtx == "daemon_restart_confirm" {
+			switch s {
+			case "esc":
+				m.actionCtx = ""
+				m.actionItems = menuActions("服务管理")
+				m.actionIndex = 4
+				return m, nil
+			case "enter":
+				m.actionCtx = "daemon_restart_progress"
+				m.busy = true
+				m.daemonRestartProgress = app.DaemonRestartProgress{Phase: app.DaemonRestartPhasePreflight, Step: 1, Total: 6, Message: "正在启动组合重启"}
+				m.daemonRestartSeen = map[app.DaemonRestartPhase]bool{}
+				return m, startDaemonRestartCmd(context.WithoutCancel(m.ctx), m.client)
+			default:
+				return m, nil
+			}
+		}
 		if s == "ctrl+c" {
 			return m, tea.Quit
 		}
@@ -1053,9 +1109,15 @@ func (m Model) executeAction(cat, act string) (tea.Model, tea.Cmd) {
 		case "停止":
 			m.busy = true
 			return m, actionCmd("已停止", func() error { return m.client.CoreAction(m.ctx, "", "stop") })
-		case "重启":
+		case "重启 Core":
 			m.busy = true
-			return m, actionCmd("已重启", func() error { return m.client.CoreAction(m.ctx, "", "restart") })
+			return m, actionCmd("Core 已重启", func() error { return m.client.CoreAction(m.ctx, "", "restart") })
+		case "重启全部":
+			m.actionCtx = "daemon_restart_confirm"
+			m.actionItems = nil
+			m.actionIndex = 0
+			m.page = actionMenu
+			return m, nil
 		case "热重载":
 			m.busy = true
 			return m, actionCmd("已热重载", func() error { return m.client.CoreAction(m.ctx, "", "reload") })
@@ -1131,7 +1193,7 @@ func (m Model) executeAction(cat, act string) (tea.Model, tea.Cmd) {
 func menuActions(main string) []string {
 	switch main {
 	case "服务管理":
-		return []string{"状态", "启动", "停止", "重启", "热重载", "配置测试", "查看实时日志", "返回"}
+		return []string{"状态", "启动", "停止", "重启 Core", "重启全部", "热重载", "配置测试", "查看实时日志", "返回"}
 	case "节点管理":
 		return []string{"返回"}
 	case "订阅管理":
@@ -1327,6 +1389,21 @@ func setListenerPortCmd(ctx context.Context, service Capabilities, request app.S
 	}
 }
 
+func startDaemonRestartCmd(ctx context.Context, service Capabilities) tea.Cmd {
+	return func() tea.Msg {
+		events := make(chan daemonRestartEvent, 16)
+		go func() {
+			defer close(events)
+			result, err := service.RestartDaemon(ctx, func(progress app.DaemonRestartProgress) {
+				value := progress
+				events <- daemonRestartEvent{progress: &value}
+			})
+			events <- daemonRestartEvent{result: result, err: err, done: true}
+		}()
+		return daemonRestartStartedMsg{ch: events}
+	}
+}
+
 func actionCmd(result string, run func() error) tea.Cmd {
 	return func() tea.Msg { return actionDoneMsg{result: result, err: run()} }
 }
@@ -1469,6 +1546,12 @@ func (m Model) View() string {
 	if m.page == actionMenu && m.actionCtx == "listener_ports" {
 		return m.renderListenerPortsView(title)
 	}
+	if m.page == actionMenu && m.actionCtx == "daemon_restart_confirm" {
+		return m.renderDaemonRestartConfirm(title)
+	}
+	if m.page == actionMenu && m.actionCtx == "daemon_restart_progress" {
+		return m.renderDaemonRestartProgress(title)
+	}
 	var b strings.Builder
 	for i := start; i < end; i++ {
 		it := items[i]
@@ -1600,6 +1683,17 @@ func waitConnectionEventMsg(ch <-chan app.ConnectionEvent) tea.Cmd {
 	return func() tea.Msg {
 		event, ok := <-ch
 		return connectionEventMsg{ch: ch, event: event, ok: ok}
+	}
+}
+
+func waitDaemonRestartEventMsg(ch <-chan daemonRestartEvent) tea.Cmd {
+	return func() tea.Msg {
+		event, ok := <-ch
+		if !ok {
+			return daemonRestartEvent{done: true, err: &app.Error{Code: app.ErrorCodeInternal, Message: "组合重启进度流意外结束"}}
+		}
+		event.ch = ch
+		return event
 	}
 }
 
@@ -2197,6 +2291,158 @@ func (m Model) renderListenerPortsView(title string) string {
 	}
 	footer := fitFooter("↑/↓ 选择  Enter 修改  Esc 返回  q 退出", m.width)
 	return fmt.Sprintf("%s\n\n%s\n%s", title, body.String(), footer)
+}
+
+func (m Model) renderDaemonRestartConfirm(title string) string {
+	width := 76
+	if m.width > 0 {
+		width = m.width - 4
+	}
+	if width < 20 {
+		width = 20
+	}
+	warning := wrapDisplayText("重启全部会先停止 Core，再重启 mihomo-manager daemon，并按当前状态恢复 Core。代理连接会短暂中断，测速历史、实时连接等 Core 内存状态会丢失。", width)
+	footer := fitFooter("Enter 确认重启  Esc 取消", m.width)
+	return fmt.Sprintf("%s\n\n服务管理 / 重启全部\n%s\n\n%s", title, warning, footer)
+}
+
+func (m Model) renderDaemonRestartProgress(title string) string {
+	phases := []app.DaemonRestartPhase{
+		app.DaemonRestartPhasePreflight,
+		app.DaemonRestartPhaseStopCore,
+		app.DaemonRestartPhaseRestartDaemon,
+		app.DaemonRestartPhaseWaitDaemon,
+		app.DaemonRestartPhaseRestoreCore,
+		app.DaemonRestartPhaseVerify,
+	}
+	if m.daemonRestartProgress.Phase == app.DaemonRestartPhaseRecover {
+		phases = append(phases, app.DaemonRestartPhaseRecover)
+	}
+	var body strings.Builder
+	for _, phase := range phases {
+		marker := "[ ]"
+		step := daemonRestartPhaseStep(phase)
+		switch {
+		case phase == m.daemonRestartProgress.Phase:
+			marker = "[>]"
+		case step < m.daemonRestartProgress.Step && m.daemonRestartSeen[phase]:
+			marker = "[x]"
+		case step < m.daemonRestartProgress.Step:
+			marker = "[-]"
+		}
+		body.WriteString(fmt.Sprintf("%s %s\n", marker, daemonRestartPhaseLabel(phase)))
+	}
+	width := 76
+	if m.width > 0 {
+		width = max(20, m.width-4)
+	}
+	message := wrapDisplayText(m.daemonRestartProgress.Message, width)
+	footer := fitFooter("操作进行中，不可取消", m.width)
+	return fmt.Sprintf("%s\n\n服务管理 / 重启全部\n%s\n%s\n\n%s", title, body.String(), message, footer)
+}
+
+func formatDaemonRestartResult(result app.DaemonRestartResult, err error) string {
+	var body strings.Builder
+	switch {
+	case err == nil:
+		body.WriteString("重启全部完成\n")
+	case result.RecoverySucceeded:
+		body.WriteString("组合重启异常，服务已恢复\n")
+	default:
+		body.WriteString("组合重启失败，服务状态需要复核\n")
+	}
+	body.WriteString(fmt.Sprintf("daemon PID: %d -> %d\n", result.PreviousDaemonPID, result.DaemonPID))
+	body.WriteString(fmt.Sprintf("Core 状态: %s -> %s\n", result.PreviousCoreState, result.CoreState))
+	body.WriteString("daemon 已更换: " + tuiBoolLabel(result.DaemonRestarted) + "\n")
+	body.WriteString("Core 已恢复: " + tuiCoreRestoreLabel(result) + "\n")
+	if result.RecoveryAttempted {
+		body.WriteString("自动恢复: ")
+		if result.RecoverySucceeded {
+			body.WriteString("成功\n")
+		} else {
+			body.WriteString("失败\n")
+		}
+	}
+	if result.FailurePhase != "" {
+		body.WriteString("失败阶段: " + daemonRestartPhaseLabel(result.FailurePhase) + "\n")
+	}
+	return strings.TrimSpace(body.String())
+}
+
+func daemonRestartPhaseStep(phase app.DaemonRestartPhase) int {
+	switch phase {
+	case app.DaemonRestartPhasePreflight:
+		return 1
+	case app.DaemonRestartPhaseStopCore:
+		return 2
+	case app.DaemonRestartPhaseRestartDaemon:
+		return 3
+	case app.DaemonRestartPhaseWaitDaemon:
+		return 4
+	case app.DaemonRestartPhaseRestoreCore:
+		return 5
+	case app.DaemonRestartPhaseVerify:
+		return 6
+	case app.DaemonRestartPhaseRecover:
+		return 7
+	default:
+		return 0
+	}
+}
+
+func daemonRestartPhaseLabel(phase app.DaemonRestartPhase) string {
+	switch phase {
+	case app.DaemonRestartPhasePreflight:
+		return "预检"
+	case app.DaemonRestartPhaseStopCore:
+		return "停止 Core"
+	case app.DaemonRestartPhaseRestartDaemon:
+		return "重启 daemon"
+	case app.DaemonRestartPhaseWaitDaemon:
+		return "等待握手"
+	case app.DaemonRestartPhaseRestoreCore:
+		return "恢复 Core"
+	case app.DaemonRestartPhaseVerify:
+		return "最终验证"
+	case app.DaemonRestartPhaseRecover:
+		return "自动恢复"
+	default:
+		return string(phase)
+	}
+}
+
+func tuiBoolLabel(value bool) string {
+	if value {
+		return "是"
+	}
+	return "否"
+}
+
+func tuiCoreRestoreLabel(result app.DaemonRestartResult) string {
+	if result.PreviousCoreState == domain.CoreStateStopped {
+		return "无需"
+	}
+	return tuiBoolLabel(result.CoreRestored)
+}
+
+func wrapDisplayText(value string, width int) string {
+	if width <= 0 || lipgloss.Width(value) <= width {
+		return value
+	}
+	var lines []string
+	var line strings.Builder
+	for _, character := range value {
+		candidate := line.String() + string(character)
+		if line.Len() > 0 && lipgloss.Width(candidate) > width {
+			lines = append(lines, line.String())
+			line.Reset()
+		}
+		line.WriteRune(character)
+	}
+	if line.Len() > 0 {
+		lines = append(lines, line.String())
+	}
+	return strings.Join(lines, "\n")
 }
 
 func proxySourceSummary(values []app.ProxySourceStatus) string {

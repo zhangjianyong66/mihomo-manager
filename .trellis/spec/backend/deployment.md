@@ -61,6 +61,8 @@ make install
 - `mm daemon enable` 原子写入并保存未知/本地修改 unit 的备份；daemon-reload 或 enable 失败会恢复原文件。systemd 用户会话不可用时保留已校验 unit，返回“已安装未启用”和 `mm daemon run` 提示，不启用 linger 或 sudo。
 - 一键安装在正式 `mm` 发布后调用 `daemon enable/start/status`。本次新建配置且 daemon 可用时自动执行 `migrate apply`；已有配置只提示 `migrate plan/apply`。
 - 升级前通过旧 `mm daemon status --output json` 探测 core，并在 stop 前再次核对：只有 core stopped 才允许重启 daemon 加载新二进制，running/starting/degraded/未知状态均保持现有进程。
+- 用户可在升级后显式执行 `mm daemon restart` 或使用 TUI“重启全部”加载新 daemon。该手动事务只接受摘要有效的受管 `mm.service/mm.socket`，会按原 Core 状态停止、重启 service、握手和恢复；前台 daemon 或 systemd user 不可用时拒绝接管。
+- 手动组合重启不改变安装器的无人值守策略：安装器仍不得为了加载新二进制而中断 running/degraded/未知 Core，也不得自动调用组合重启。
 
 ## 状态与卸载
 

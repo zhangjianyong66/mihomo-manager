@@ -29,12 +29,17 @@ func RunInteractiveContext(ctx context.Context, input io.Reader, output io.Write
 // to the embedded daemon capability.
 type InteractiveCapabilities struct {
 	CapabilityAPI
-	editor string
-	run    func(context.Context, string, ...string) error
+	restarter DaemonRestarter
+	editor    string
+	run       func(context.Context, string, ...string) error
 }
 
-func NewInteractiveCapabilities(capabilities CapabilityAPI, editor string) *InteractiveCapabilities {
-	return &InteractiveCapabilities{
+type DaemonRestarter interface {
+	Restart(context.Context, DaemonRestartProgressFunc) (DaemonRestartResult, error)
+}
+
+func NewInteractiveCapabilities(capabilities CapabilityAPI, editor string, restarters ...DaemonRestarter) *InteractiveCapabilities {
+	interactive := &InteractiveCapabilities{
 		CapabilityAPI: capabilities,
 		editor:        strings.TrimSpace(editor),
 		run: func(ctx context.Context, name string, args ...string) error {
@@ -45,6 +50,17 @@ func NewInteractiveCapabilities(capabilities CapabilityAPI, editor string) *Inte
 			return command.Run()
 		},
 	}
+	if len(restarters) > 0 {
+		interactive.restarter = restarters[0]
+	}
+	return interactive
+}
+
+func (c *InteractiveCapabilities) RestartDaemon(ctx context.Context, progress DaemonRestartProgressFunc) (DaemonRestartResult, error) {
+	if c == nil || c.restarter == nil {
+		return DaemonRestartResult{}, &Error{Code: ErrorCodeInternal, Message: "daemon 组合重启服务未配置"}
+	}
+	return c.restarter.Restart(ctx, progress)
 }
 
 func (c *InteractiveCapabilities) EditConfig(ctx context.Context, profileID string) error {

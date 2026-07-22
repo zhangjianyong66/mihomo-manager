@@ -38,20 +38,32 @@ type DaemonController interface {
 	Disable(context.Context) (DaemonControlResult, error)
 	Start(context.Context) (DaemonControlResult, error)
 	Stop(context.Context) (DaemonControlResult, error)
+	Restart(context.Context) (DaemonControlResult, error)
 }
 
 type DaemonControlResult struct {
-	Installed bool   `json:"installed"`
-	Enabled   bool   `json:"enabled"`
-	Active    bool   `json:"active"`
-	Message   string `json:"message"`
-	Hint      string `json:"hint,omitempty"`
+	Installed     bool   `json:"installed"`
+	Managed       bool   `json:"managed"`
+	Available     bool   `json:"available"`
+	Enabled       bool   `json:"enabled"`
+	Active        bool   `json:"active"`
+	ServiceActive bool   `json:"serviceActive"`
+	SocketActive  bool   `json:"socketActive"`
+	Message       string `json:"message"`
+	Hint          string `json:"hint,omitempty"`
 }
 
 type DaemonService struct {
 	Client     DaemonStatusClient
 	Runner     DaemonRunner
 	Controller DaemonController
+	Core       DaemonCoreController
+
+	restartTimeout  time.Duration
+	readyTimeout    time.Duration
+	recoveryTimeout time.Duration
+	pollInterval    time.Duration
+	sleep           func(context.Context, time.Duration) error
 }
 
 func (s *DaemonService) Status(ctx context.Context) (DaemonStatus, error) {

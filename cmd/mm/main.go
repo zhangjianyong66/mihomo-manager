@@ -24,7 +24,7 @@ func main() {
 		migrationService = app.NewMigrationService(paths)
 		capabilityService = app.NewCapabilityService(paths)
 	}
-	interactiveCapabilities := app.NewInteractiveCapabilities(capabilityService, os.Getenv("EDITOR"))
+	interactiveCapabilities := app.NewInteractiveCapabilities(capabilityService, os.Getenv("EDITOR"), daemonService)
 	code := cli.Execute(
 		ctx,
 		cli.Dependencies{

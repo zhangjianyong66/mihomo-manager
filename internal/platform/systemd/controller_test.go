@@ -2,7 +2,9 @@ package systemd
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,12 +16,16 @@ import (
 type fakeRunner struct {
 	available bool
 	failAt    int
+	failArgs  map[string]bool
 	calls     [][]string
 }
 
 func (f *fakeRunner) Available(context.Context) bool { return f.available }
 func (f *fakeRunner) Run(_ context.Context, args ...string) error {
 	f.calls = append(f.calls, append([]string(nil), args...))
+	if f.failArgs[strings.Join(args, " ")] {
+		return errors.New("fixture failure")
+	}
 	if f.failAt > 0 && len(f.calls) == f.failAt {
 		return errors.New("fixture failure")
 	}
@@ -198,11 +204,97 @@ func TestControl_UsesOnlyManagerUnits(t *testing.T) {
 	if _, err := controller.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := controller.Restart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := controller.Disable(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"start", "mm.socket"}, {"stop", "mm.service", "mm.socket"}, {"disable", "--now", "mm.socket", "mm.service"}}
+	want := [][]string{{"start", "mm.socket"}, {"stop", "mm.service", "mm.socket"}, {"restart", "mm.service"}, {"disable", "--now", "mm.socket", "mm.service"}}
 	if !reflect.DeepEqual(runner.calls, want) {
 		t.Fatalf("unexpected systemctl calls: %#v", runner.calls)
+	}
+}
+
+func TestStatus_ReportsManagedServiceAndSocketSeparately(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "systemd", "user")
+	controller := &Controller{UnitDir: dir, Runner: &fakeRunner{}}
+	if _, err := controller.Enable(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{available: true, failArgs: map[string]bool{"is-active --quiet mm.service": true}}
+	controller.Runner = runner
+	result, err := controller.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Available || !result.Installed || !result.Managed || result.ServiceActive || !result.SocketActive {
+		t.Fatalf("unexpected status: %+v", result)
+	}
+	want := [][]string{{"is-active", "--quiet", "mm.service"}, {"is-active", "--quiet", "mm.socket"}}
+	if !reflect.DeepEqual(runner.calls, want) {
+		t.Fatalf("unexpected status calls: %#v", runner.calls)
+	}
+}
+
+func TestStatus_RejectsModifiedManagedUnit(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "systemd", "user")
+	controller := &Controller{UnitDir: dir, Runner: &fakeRunner{}}
+	if _, err := controller.Enable(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	servicePath := filepath.Join(dir, "mm.service")
+	file, err := os.OpenFile(servicePath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("# local unmanaged edit\n"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	controller.Runner = &fakeRunner{available: true}
+	result, err := controller.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Installed || result.Managed {
+		t.Fatalf("modified units should not be managed: %+v", result)
+	}
+}
+
+func TestStatus_RejectsForgedManagedHeaderWithoutUnitContract(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "systemd", "user")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	forgedBody := []byte("# mihomo-manager template-version=2\n[Service]\nExecStart=/tmp/not-mm\n")
+	digest := sha256.Sum256(forgedBody)
+	forged := append([]byte(fmt.Sprintf("# Managed by mihomo-manager; content-sha256=%x\n", digest)), forgedBody...)
+	for _, name := range []string{"mm.socket", "mm.service"} {
+		if err := os.WriteFile(filepath.Join(dir, name), forged, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	controller := &Controller{UnitDir: dir, Runner: &fakeRunner{available: true}}
+	result, err := controller.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Installed || result.Managed {
+		t.Fatalf("forged unit contract should be rejected: %+v", result)
+	}
+}
+
+func TestRestart_ReportsUnavailableAndCommandFailure(t *testing.T) {
+	controller := &Controller{UnitDir: t.TempDir(), Runner: &fakeRunner{}}
+	if _, err := controller.Restart(context.Background()); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("unexpected unavailable error: %v", err)
+	}
+	controller.Runner = &fakeRunner{available: true, failAt: 1}
+	if _, err := controller.Restart(context.Background()); err == nil || errors.Is(err, ErrUnavailable) {
+		t.Fatalf("unexpected restart command error: %v", err)
 	}
 }

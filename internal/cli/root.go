@@ -99,7 +99,31 @@ func newDaemonCommand(deps Dependencies) *cobra.Command {
 			},
 		})
 	})
-	daemonCommand.AddCommand(run, status)
+	restart := &cobra.Command{Use: "restart", Short: "重启 daemon 并按原状态恢复 Core", Args: noArgs}
+	addDaemonOutput(restart, func(cmd *cobra.Command) error {
+		if deps.Daemon == nil {
+			return &app.Error{Code: app.ErrorCodeInternal, Message: "daemon 服务未配置"}
+		}
+		value, err := deps.Daemon.Restart(cmd.Context(), nil)
+		if err != nil {
+			return err
+		}
+		return daemonPresenter(cmd).WriteResult(Result{
+			Kind: "DaemonRestart",
+			Data: func(bool) any { return value },
+			Table: func(w io.Writer, _ bool) error {
+				_, err := fmt.Fprintf(w,
+					"daemon PID: %d -> %d\ndaemon 启动时间: %s -> %s\nCore 状态: %s -> %s\ndaemon 已更换: %s\nCore 已恢复: %s\n自动恢复: %s\n",
+					value.PreviousDaemonPID, value.DaemonPID,
+					value.PreviousStartedAt.Format(time.RFC3339Nano), value.StartedAt.Format(time.RFC3339Nano),
+					value.PreviousCoreState, value.CoreState,
+					boolLabel(value.DaemonRestarted), coreRestoreLabel(value), recoveryLabel(value),
+				)
+				return err
+			},
+		})
+	})
+	daemonCommand.AddCommand(run, status, restart)
 	for _, action := range []string{"enable", "disable", "start", "stop"} {
 		action := action
 		command := &cobra.Command{Use: action, Short: "daemon " + action, Args: noArgs}
@@ -127,6 +151,30 @@ func newDaemonCommand(deps Dependencies) *cobra.Command {
 		daemonCommand.AddCommand(command)
 	}
 	return daemonCommand
+}
+
+func boolLabel(value bool) string {
+	if value {
+		return "是"
+	}
+	return "否"
+}
+
+func recoveryLabel(value app.DaemonRestartResult) string {
+	if !value.RecoveryAttempted {
+		return "未执行"
+	}
+	if value.RecoverySucceeded {
+		return "成功"
+	}
+	return "失败"
+}
+
+func coreRestoreLabel(value app.DaemonRestartResult) string {
+	if value.PreviousCoreState == "stopped" {
+		return "无需"
+	}
+	return boolLabel(value.CoreRestored)
 }
 
 func addDaemonOutput(command *cobra.Command, run func(*cobra.Command) error) {

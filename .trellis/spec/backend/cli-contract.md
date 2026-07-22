@@ -276,3 +276,63 @@ if request.NodeID != "" {
 }
 return m, nil
 ```
+
+## Scenario：daemon 组合重启的 CLI 与 TUI 投影
+
+### 1. Scope / Trigger
+
+修改 `mm daemon restart`、TUI 服务管理菜单或 `DaemonRestartResult` 展示时适用。应用事务事实来源见 `daemon-ipc.md`，表层不得复制状态矩阵或根据错误文本推断失败阶段。
+
+### 2. Signatures
+
+```text
+mm daemon restart [--output table|json]
+```
+
+```go
+type DaemonRestartProgressFunc func(DaemonRestartProgress)
+func (c *InteractiveCapabilities) RestartDaemon(context.Context, DaemonRestartProgressFunc) (DaemonRestartResult, error)
+```
+
+### 3. Contracts
+
+- CLI 成功 kind 固定为 `DaemonRestart`，table/json 均展示旧/新 daemon PID、旧/最终 Core 状态、daemon 是否更换、Core 是否恢复和自动恢复结论。
+- 应用失败只要存在部分结果，就在 JSON error `details.restart` 中输出同一个 typed result；table 错误消息必须说明失败阶段、恢复结论及 `mm daemon status`/`mm core status` 等可执行提示。
+- TUI 菜单固定区分“重启 Core”和“重启全部”。后者先进入确认页，再由 `tea.Cmd` 启动事务；callback 经有界 channel 转为消息，`Update`/`View` 不直接执行 systemctl 或 IPC。
+- TUI 执行页按 `DaemonRestartPhase` 枚举投影，Esc/q/Ctrl+C 均被消费；恢复成功仍显示“组合重启异常，服务已恢复”，不得展示为完整成功。
+
+### 4. Validation & Error Matrix
+
+| 条件 | CLI | TUI |
+|---|---|---|
+| Core starting/stopping | `DAEMON_RESTART_CORE_BUSY`，退出码 4 | 保留服务菜单，显示稍后重试 |
+| systemd/协议不可用 | 退出码 5，JSON details 保留 partial | 显示失败阶段和手工恢复命令 |
+| 自动恢复成功 | 原失败退出码不变 | 明确“异常，服务已恢复” |
+| 自动恢复失败 | 原失败分类，`recoverySucceeded=false` | 明确状态需复核，不永久 busy |
+
+### 5. Good / Base / Bad Cases
+
+- Good：CLI JSON 可直接判断 PID、Core 终态与恢复结果；TUI 按阶段刷新后显示同一结果。
+- Base：确认页 Esc 返回且 fake restarter 调用次数为零；只重启 Core 不改变 daemon PID。
+- Bad：TUI 仍使用含义不明的“重启”，或从 `err.Error()` 字符串解析 phase/recovery；均禁止。
+
+### 6. Tests Required
+
+- CLI 覆盖 help、table/json、冲突与 daemon unavailable 退出码、partial details、writer 分离。
+- TUI 覆盖确认零副作用、命令延迟执行、阶段顺序、三个取消键锁定、结果投影和窄终端换行。
+- fake 测试不得连接真实 systemd、用户 Unix socket 或 mihomo。
+
+### 7. Wrong vs Correct
+
+错误：在 TUI `Update` 内同步执行组合重启，并用字符串判断恢复。
+
+```go
+result, err := service.Restart(ctx, nil)
+if strings.Contains(err.Error(), "恢复") { /* ... */ }
+```
+
+正确：`tea.Cmd` 运行用例，页面只消费 typed progress/result。
+
+```go
+return model, startDaemonRestartCmd(context.WithoutCancel(model.ctx), model.client)
+```

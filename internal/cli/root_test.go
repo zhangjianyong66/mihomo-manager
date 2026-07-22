@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zhangjianyong66/mihomo-manager/internal/app"
+	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
 )
 
 type fakeTUIRunner struct {
@@ -24,6 +25,30 @@ type fakeDaemonClient struct {
 }
 
 func (f fakeDaemonClient) Status(context.Context) (app.DaemonStatus, error) { return f.status, f.err }
+
+type sequenceDaemonClient struct {
+	statuses []app.DaemonStatus
+	index    int
+}
+
+func (f *sequenceDaemonClient) Status(context.Context) (app.DaemonStatus, error) {
+	if len(f.statuses) == 0 {
+		return app.DaemonStatus{}, errors.New("missing daemon status fixture")
+	}
+	index := f.index
+	if index >= len(f.statuses) {
+		index = len(f.statuses) - 1
+	}
+	f.index++
+	return f.statuses[index], nil
+}
+
+type fakeDaemonCore struct{ actions []string }
+
+func (f *fakeDaemonCore) CoreAction(_ context.Context, _ string, action string) error {
+	f.actions = append(f.actions, action)
+	return nil
+}
 
 type fakeDaemonRunner struct{ calls int }
 
@@ -48,6 +73,9 @@ func (f fakeDaemonController) Start(context.Context) (app.DaemonControlResult, e
 	return f.result, nil
 }
 func (f fakeDaemonController) Stop(context.Context) (app.DaemonControlResult, error) {
+	return f.result, nil
+}
+func (f fakeDaemonController) Restart(context.Context) (app.DaemonControlResult, error) {
 	return f.result, nil
 }
 
@@ -154,6 +182,76 @@ func TestDaemonProtocolErrorUsesJSONAndExitFive(t *testing.T) {
 	code := Execute(context.Background(), Dependencies{Daemon: service}, []string{"daemon", "status", "--output=json"}, nil, &stdout, &stderr)
 	if code != ExitDaemonUnavailable || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"kind":"Error"`) {
 		t.Fatalf("unexpected protocol error: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestDaemonRestartTableAndJSONUseSharedResult(t *testing.T) {
+	oldTime := time.Date(2026, 7, 22, 1, 2, 3, 0, time.UTC)
+	newTime := oldTime.Add(time.Minute)
+	status := func(pid int, started time.Time) app.DaemonStatus {
+		return app.DaemonStatus{ProtocolVersion: 1, State: "running", PID: pid, StartedAt: started, Core: app.DaemonCoreStatus{State: domain.CoreStateStopped.String(), ProfileID: "legacy-mihomo"}}
+	}
+	for _, format := range []string{"table", "json"} {
+		t.Run(format, func(t *testing.T) {
+			client := &sequenceDaemonClient{statuses: []app.DaemonStatus{status(100, oldTime), status(100, oldTime), status(200, newTime), status(200, newTime)}}
+			service := &app.DaemonService{
+				Client: client, Core: &fakeDaemonCore{},
+				Controller: fakeDaemonController{result: app.DaemonControlResult{Installed: true, Managed: true, Available: true, Active: true, ServiceActive: true, SocketActive: true}},
+			}
+			var stdout, stderr bytes.Buffer
+			code := Execute(context.Background(), Dependencies{Daemon: service}, []string{"daemon", "restart", "--output", format}, nil, &stdout, &stderr)
+			if code != 0 || stderr.Len() != 0 {
+				t.Fatalf("unexpected restart result: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			if format == "json" {
+				for _, want := range []string{`"kind":"DaemonRestart"`, `"previousDaemonPid":100`, `"daemonPid":200`, `"daemonRestarted":true`} {
+					if !strings.Contains(stdout.String(), want) {
+						t.Fatalf("json missing %q: %s", want, stdout.String())
+					}
+				}
+			} else if !strings.Contains(stdout.String(), "daemon PID: 100 -> 200") || !strings.Contains(stdout.String(), "Core 状态: stopped -> stopped") {
+				t.Fatalf("unexpected table: %s", stdout.String())
+			}
+		})
+	}
+}
+
+func TestDaemonRestartBusyUsesConflictExitAndPartialJSON(t *testing.T) {
+	started := time.Date(2026, 7, 22, 1, 2, 3, 0, time.UTC)
+	service := &app.DaemonService{
+		Client: fakeDaemonClient{status: app.DaemonStatus{PID: 100, StartedAt: started, Core: app.DaemonCoreStatus{State: domain.CoreStateStarting.String()}}},
+		Core:   &fakeDaemonCore{},
+		Controller: fakeDaemonController{result: app.DaemonControlResult{
+			Installed: true, Managed: true, Available: true, ServiceActive: true, SocketActive: true,
+		}},
+	}
+	var stdout, stderr bytes.Buffer
+	code := Execute(context.Background(), Dependencies{Daemon: service}, []string{"daemon", "restart", "--output=json"}, nil, &stdout, &stderr)
+	if code != ExitConflict || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"DAEMON_RESTART_CORE_BUSY"`) || !strings.Contains(stderr.String(), `"restart"`) {
+		t.Fatalf("unexpected busy result: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestDaemonRestartUnavailableUsesExitFiveAndPartialJSON(t *testing.T) {
+	service := &app.DaemonService{
+		Client: &fakeDaemonClient{err: &app.Error{Category: app.ErrorCategoryDaemonUnavailable, Code: app.ErrorCodeDaemonUnavailable, Message: "daemon 协议不兼容"}},
+		Core:   &fakeDaemonCore{},
+		Controller: fakeDaemonController{result: app.DaemonControlResult{
+			Installed: true, Managed: true, Available: true, ServiceActive: true, SocketActive: true,
+		}},
+	}
+	var stdout, stderr bytes.Buffer
+	code := Execute(context.Background(), Dependencies{Daemon: service}, []string{"daemon", "restart", "--output=json"}, nil, &stdout, &stderr)
+	if code != ExitDaemonUnavailable || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"DAEMON_UNAVAILABLE"`) || !strings.Contains(stderr.String(), `"restart"`) {
+		t.Fatalf("unexpected unavailable result: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestDaemonRestartHelpDoesNotExecuteService(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Execute(context.Background(), Dependencies{}, []string{"daemon", "restart", "--help"}, nil, &stdout, &stderr)
+	if code != 0 || !strings.Contains(stdout.String(), "--output") || stderr.Len() != 0 {
+		t.Fatalf("unexpected restart help: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 

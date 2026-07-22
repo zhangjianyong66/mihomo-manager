@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +36,26 @@ type fakeTUIService struct {
 	testContext      context.Context
 	selectedGroup    string
 	selectedNode     string
+	restartCalls     int
+	restartProgress  []app.DaemonRestartProgress
+	restartResult    app.DaemonRestartResult
+	restartErr       error
+	coreActions      []string
+}
+
+func (f *fakeTUIService) RestartDaemon(_ context.Context, progress app.DaemonRestartProgressFunc) (app.DaemonRestartResult, error) {
+	f.restartCalls++
+	for _, event := range f.restartProgress {
+		if progress != nil {
+			progress(event)
+		}
+	}
+	return f.restartResult, f.restartErr
+}
+
+func (f *fakeTUIService) CoreAction(_ context.Context, _ string, action string) error {
+	f.coreActions = append(f.coreActions, action)
+	return nil
 }
 
 func (f *fakeTUIService) ModeStatus(context.Context, string) (app.RoutingModeStatus, error) {
@@ -108,6 +129,141 @@ func (f *fakeTUIService) TestNodes(ctx context.Context, request app.NodeTestRequ
 }
 
 var _ Capabilities = (*fakeTUIService)(nil)
+
+func TestServiceMenuSeparatesCoreAndFullRestart(t *testing.T) {
+	model := New(&fakeTUIService{})
+	model.mainIndex = 2
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = next.(Model)
+	view := model.View()
+	if !strings.Contains(view, "重启 Core") || !strings.Contains(view, "重启全部") || strings.Contains(view, "> 重启\n") {
+		t.Fatalf("restart actions are ambiguous: %s", view)
+	}
+}
+
+func TestServiceCoreRestartDoesNotInvokeDaemonRestart(t *testing.T) {
+	fake := &fakeTUIService{}
+	model := New(fake)
+	model.mainIndex = 2
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = next.(Model)
+	model.actionIndex = 3
+	next, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = next.(Model)
+	if command == nil || fake.restartCalls != 0 || len(fake.coreActions) != 0 {
+		t.Fatalf("core restart was not deferred or touched daemon: command=%v restart=%d core=%v", command != nil, fake.restartCalls, fake.coreActions)
+	}
+	next, _ = model.Update(command())
+	model = next.(Model)
+	if fake.restartCalls != 0 || !reflect.DeepEqual(fake.coreActions, []string{"restart"}) || !strings.Contains(model.View(), "Core 已重启") {
+		t.Fatalf("unexpected core restart: restart=%d core=%v view=%s", fake.restartCalls, fake.coreActions, model.View())
+	}
+}
+
+func TestDaemonRestartConfirmationCancelsWithoutSideEffects(t *testing.T) {
+	fake := &fakeTUIService{}
+	model := New(fake)
+	model.mainIndex = 2
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = next.(Model)
+	model.actionIndex = 4
+	next, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = next.(Model)
+	if command != nil || fake.restartCalls != 0 || model.actionCtx != "daemon_restart_confirm" {
+		t.Fatalf("confirmation should be side-effect free: command=%v calls=%d model=%+v", command != nil, fake.restartCalls, model)
+	}
+	for _, want := range []string{"代理连接会短暂中断", "测速历史", "Enter 确认重启", "Esc 取消"} {
+		if !strings.Contains(model.View(), want) {
+			t.Fatalf("confirmation missing %q: %s", want, model.View())
+		}
+	}
+	next, command = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = next.(Model)
+	if command != nil || fake.restartCalls != 0 || model.actionCtx != "" || !reflect.DeepEqual(model.actionItems, menuActions("服务管理")) {
+		t.Fatalf("escape did not cancel cleanly: calls=%d model=%+v", fake.restartCalls, model)
+	}
+}
+
+func TestDaemonRestartStreamsProgressLocksKeysAndShowsResult(t *testing.T) {
+	oldTime := time.Date(2026, 7, 22, 1, 0, 0, 0, time.UTC)
+	newTime := oldTime.Add(time.Minute)
+	fake := &fakeTUIService{
+		restartProgress: []app.DaemonRestartProgress{
+			{Phase: app.DaemonRestartPhasePreflight, Step: 1, Total: 6, Message: "检查状态"},
+			{Phase: app.DaemonRestartPhaseRestartDaemon, Step: 3, Total: 6, Message: "重启服务"},
+			{Phase: app.DaemonRestartPhaseWaitDaemon, Step: 4, Total: 6, Message: "等待握手"},
+			{Phase: app.DaemonRestartPhaseVerify, Step: 6, Total: 6, Message: "最终验证"},
+		},
+		restartResult: app.DaemonRestartResult{
+			PreviousDaemonPID: 100, DaemonPID: 200, PreviousStartedAt: oldTime, StartedAt: newTime,
+			PreviousCoreState: domain.CoreStateStopped, CoreState: domain.CoreStateStopped, DaemonRestarted: true,
+		},
+	}
+	model := New(fake)
+	model.page = actionMenu
+	model.actionCtx = "daemon_restart_confirm"
+	next, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = next.(Model)
+	if command == nil || fake.restartCalls != 0 || !model.busy || model.actionCtx != "daemon_restart_progress" {
+		t.Fatalf("restart was not deferred: command=%v calls=%d model=%+v", command != nil, fake.restartCalls, model)
+	}
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEsc}, {Type: tea.KeyRunes, Runes: []rune("q")}, {Type: tea.KeyCtrlC}} {
+		next, blocked := model.Update(key)
+		model = next.(Model)
+		if blocked != nil || !model.busy || model.actionCtx != "daemon_restart_progress" {
+			t.Fatalf("key %q interrupted restart: command=%v model=%+v", key.String(), blocked != nil, model)
+		}
+	}
+
+	next, command = model.Update(command())
+	model = next.(Model)
+	for command != nil {
+		next, command = model.Update(command())
+		model = next.(Model)
+	}
+	if fake.restartCalls != 1 || model.page != resultView || model.busy {
+		t.Fatalf("restart did not finish: calls=%d model=%+v", fake.restartCalls, model)
+	}
+	view := model.View()
+	for _, want := range []string{"重启全部完成", "daemon PID: 100 -> 200", "Core 状态: stopped -> stopped", "daemon 已更换: 是"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("result missing %q: %s", want, view)
+		}
+	}
+}
+
+func TestDaemonRestartRecoveryResultDoesNotClaimFullSuccess(t *testing.T) {
+	model := New(&fakeTUIService{})
+	result := app.DaemonRestartResult{
+		PreviousDaemonPID: 100, DaemonPID: 200,
+		PreviousCoreState: domain.CoreStateRunning, CoreState: domain.CoreStateRunning,
+		DaemonRestarted: true, CoreRestored: true, RecoveryAttempted: true, RecoverySucceeded: true,
+		FailurePhase: app.DaemonRestartPhaseRestoreCore,
+	}
+	next, _ := model.Update(daemonRestartEvent{done: true, result: result, err: &app.Error{Code: app.ErrorCodeUpstreamFailure, Message: "恢复阶段失败"}})
+	model = next.(Model)
+	view := model.View()
+	for _, want := range []string{"组合重启异常，服务已恢复", "自动恢复: 成功", "失败阶段: 恢复 Core"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("recovery result missing %q: %s", want, view)
+		}
+	}
+}
+
+func TestDaemonRestartConfirmationWrapsOnNarrowTerminal(t *testing.T) {
+	model := New(&fakeTUIService{})
+	model.page = actionMenu
+	model.actionCtx = "daemon_restart_confirm"
+	model.width = 32
+	view := model.View()
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "重启全部会先停止") || strings.Contains(line, "代理连接会短暂") || strings.Contains(line, "Core 内存状态") {
+			if lipgloss.Width(line) > model.width-4 {
+				t.Fatalf("confirmation line overflowed: width=%d line=%q", lipgloss.Width(line), line)
+			}
+		}
+	}
+}
 
 func TestNodeListLoadsHistoryWithoutAutomaticTest(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)

@@ -27,11 +27,15 @@ var serviceUnit []byte
 var ErrUnavailable = errors.New("systemd user session unavailable")
 
 type Result struct {
-	Installed bool   `json:"installed"`
-	Enabled   bool   `json:"enabled"`
-	Active    bool   `json:"active"`
-	Message   string `json:"message"`
-	Hint      string `json:"hint,omitempty"`
+	Installed     bool   `json:"installed"`
+	Managed       bool   `json:"managed"`
+	Available     bool   `json:"available"`
+	Enabled       bool   `json:"enabled"`
+	Active        bool   `json:"active"`
+	ServiceActive bool   `json:"serviceActive"`
+	SocketActive  bool   `json:"socketActive"`
+	Message       string `json:"message"`
+	Hint          string `json:"hint,omitempty"`
 }
 
 type Runner interface {
@@ -68,11 +72,19 @@ type Controller struct {
 }
 
 func (c *Controller) Status(ctx context.Context) (Result, error) {
+	installed := unitsInstalled(c.UnitDir)
+	managed := unitsManaged(c.UnitDir)
 	if c.Runner == nil || !c.Runner.Available(ctx) {
-		return Result{Installed: unitsInstalled(c.UnitDir), Message: "systemd user 会话不可用", Hint: "请运行 mm daemon run 前台启动"}, nil
+		return Result{Installed: installed, Managed: managed, Message: "systemd user 会话不可用", Hint: "请运行 mm daemon run 前台启动"}, nil
 	}
-	active := c.Runner.Run(ctx, "is-active", "--quiet", "mm.socket") == nil
-	return Result{Installed: unitsInstalled(c.UnitDir), Enabled: active, Active: active, Message: "systemd daemon 状态已探测"}, nil
+	serviceActive := c.Runner.Run(ctx, "is-active", "--quiet", "mm.service") == nil
+	socketActive := c.Runner.Run(ctx, "is-active", "--quiet", "mm.socket") == nil
+	return Result{
+		Installed: installed, Managed: managed, Available: true,
+		Enabled: socketActive, Active: socketActive,
+		ServiceActive: serviceActive, SocketActive: socketActive,
+		Message: "systemd daemon 状态已探测",
+	}, nil
 }
 
 func New(unitDir string) *Controller {
@@ -91,7 +103,7 @@ func (c *Controller) Enable(ctx context.Context) (Result, error) {
 		return Result{}, err
 	}
 	if c.Runner == nil || !c.Runner.Available(ctx) {
-		return Result{Installed: true, Message: "systemd user unit 已安装但未启用", Hint: "请运行 mm daemon run 前台启动"}, nil
+		return Result{Installed: true, Managed: true, Message: "systemd user unit 已安装但未启用", Hint: "请运行 mm daemon run 前台启动"}, nil
 	}
 	if err := c.Runner.Run(ctx, "daemon-reload"); err != nil {
 		c.restore(backups)
@@ -102,25 +114,33 @@ func (c *Controller) Enable(ctx context.Context) (Result, error) {
 		_ = c.Runner.Run(ctx, "daemon-reload")
 		return Result{}, fmt.Errorf("enable systemd user socket: %w", err)
 	}
-	return Result{Installed: true, Enabled: true, Active: true, Message: "daemon socket 已启用"}, nil
+	return Result{Installed: true, Managed: true, Available: true, Enabled: true, Active: true, SocketActive: true, Message: "daemon socket 已启用"}, nil
 }
 
 func (c *Controller) Disable(ctx context.Context) (Result, error) {
 	if c.Runner == nil || !c.Runner.Available(ctx) {
-		return Result{Installed: unitsInstalled(c.UnitDir), Message: "systemd user 会话不可用", Hint: "如有前台 daemon，请在其终端中停止"}, nil
+		return Result{Installed: unitsInstalled(c.UnitDir), Managed: unitsManaged(c.UnitDir), Message: "systemd user 会话不可用", Hint: "如有前台 daemon，请在其终端中停止"}, nil
 	}
 	if err := c.Runner.Run(ctx, "disable", "--now", "mm.socket", "mm.service"); err != nil {
 		return Result{}, fmt.Errorf("disable systemd user units: %w", err)
 	}
-	return Result{Installed: unitsInstalled(c.UnitDir), Message: "daemon user units 已停用"}, nil
+	return Result{Installed: unitsInstalled(c.UnitDir), Managed: unitsManaged(c.UnitDir), Available: true, Message: "daemon user units 已停用"}, nil
 }
 
 func (c *Controller) Start(ctx context.Context) (Result, error) {
-	return c.run(ctx, "start", []string{"start", "mm.socket"}, Result{Installed: unitsInstalled(c.UnitDir), Enabled: true, Active: true, Message: "daemon socket 已启动"})
+	return c.run(ctx, "start", []string{"start", "mm.socket"}, Result{Installed: unitsInstalled(c.UnitDir), Managed: unitsManaged(c.UnitDir), Available: true, Enabled: true, Active: true, SocketActive: true, Message: "daemon socket 已启动"})
 }
 
 func (c *Controller) Stop(ctx context.Context) (Result, error) {
-	return c.run(ctx, "stop", []string{"stop", "mm.service", "mm.socket"}, Result{Installed: unitsInstalled(c.UnitDir), Message: "daemon 已停止"})
+	return c.run(ctx, "stop", []string{"stop", "mm.service", "mm.socket"}, Result{Installed: unitsInstalled(c.UnitDir), Managed: unitsManaged(c.UnitDir), Available: true, Message: "daemon 已停止"})
+}
+
+func (c *Controller) Restart(ctx context.Context) (Result, error) {
+	return c.run(ctx, "restart", []string{"restart", "mm.service"}, Result{
+		Installed: unitsInstalled(c.UnitDir), Managed: unitsManaged(c.UnitDir), Available: true,
+		Enabled: true, Active: true, ServiceActive: true, SocketActive: true,
+		Message: "daemon service 已重启",
+	})
 }
 
 func (c *Controller) run(ctx context.Context, action string, args []string, success Result) (Result, error) {
@@ -403,4 +423,47 @@ func unitsInstalled(dir string) bool {
 		}
 	}
 	return true
+}
+
+func unitsManaged(dir string) bool {
+	for _, name := range []string{"mm.socket", "mm.service"} {
+		content, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || !managedUnitChecksumValid(content) || !managedUnitContractValid(name, content) {
+			return false
+		}
+	}
+	return true
+}
+
+func managedUnitContractValid(name string, content []byte) bool {
+	text := string(content)
+	switch name {
+	case "mm.socket":
+		for _, required := range []string{"template-version=2", "ListenStream=%t/mihomo-manager/mm.sock", "SocketMode=0600", "DirectoryMode=0700", "Accept=no", "RemoveOnStop=yes"} {
+			if !strings.Contains(text, required) {
+				return false
+			}
+		}
+		return true
+	case "mm.service":
+		for _, required := range []string{"template-version=2", "ExecStart=%h/.local/bin/mm daemon run", "Restart=on-failure", "RestartSec=2s", "NoNewPrivileges=yes", "UMask=0077"} {
+			if !strings.Contains(text, required) {
+				return false
+			}
+		}
+		return !strings.Contains(text, "sudo") && strings.Count(text, "\nExecStart=") == 1
+	default:
+		return false
+	}
+}
+
+func managedUnitChecksumValid(content []byte) bool {
+	const prefix = "# Managed by mihomo-manager; content-sha256="
+	header, body, ok := bytes.Cut(content, []byte("\n"))
+	if !ok || !bytes.HasPrefix(header, []byte(prefix)) {
+		return false
+	}
+	want := strings.TrimSpace(strings.TrimPrefix(string(header), prefix))
+	digest := sha256.Sum256(body)
+	return want == fmt.Sprintf("%x", digest)
 }

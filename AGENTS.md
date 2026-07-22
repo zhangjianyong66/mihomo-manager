@@ -26,7 +26,9 @@
 - `/v1/config/ports` 提供六类监听端口 typed GET/PUT；CLI 为 `mm config ports` 和 `mm config port set <field> <port>`，TUI 入口为“配置管理 > 监听端口”。五类代理端口允许 `0` 禁用，controller 必须 `1-65535` 且保留 loopback host；running 修改经 CoreManager 受控重启并可恢复，stopped 只保存到下次启动。
 - CLI/TUI 配置编辑都在客户端本地以 `0600` 临时文件启动 `EDITOR`，再携带 expected SHA-256 回传 daemon；daemon 核对摘要、原子写入并验证，systemd daemon 不直接占用终端。
 - legacy capability 从活动配置动态读取 `external-controller`，不把 systemd 中初始 `MIHOMO_API_PORT` 当作端口修改后的运行时事实来源。
-- daemon 前台入口为 `mm daemon run`，状态/控制入口为 `mm daemon status|start|stop|enable|disable`；默认使用 XDG 下的 `~/.local/share/mihomo-manager/state.db`、`~/.local/state/mihomo-manager/run/mm.sock`，有 `XDG_RUNTIME_DIR` 时运行目录改为 `$XDG_RUNTIME_DIR/mihomo-manager`。
+- daemon 前台入口为 `mm daemon run`，状态/控制入口为 `mm daemon status|start|stop|restart|enable|disable`；默认使用 XDG 下的 `~/.local/share/mihomo-manager/state.db`、`~/.local/state/mihomo-manager/run/mm.sock`，有 `XDG_RUNTIME_DIR` 时运行目录改为 `$XDG_RUNTIME_DIR/mihomo-manager`。
+- `mm daemon restart` 与 TUI“重启全部”由客户端侧 `app.DaemonService` 编排，只支持摘要有效且 service/socket 均 active 的 systemd user `mm.service/mm.socket`；按 running/stopped/degraded/failed 状态停止并复核 Core、只重启 `mm.service`、验证新 PID/startedAt 与协议握手后恢复 Core，失败执行有界尽力恢复。前台 daemon、过渡态 Core 或非受管 unit 均在副作用前拒绝。
+- TUI“服务管理”明确区分“重启 Core”和“重启全部”；组合重启确认后 Esc/q/Ctrl+C 不会取消，执行期间代理短暂中断且 Core 内存中的测速 history、实时连接不保留。此手动能力不改变安装器仅在 Core 明确 stopped 时自动重启 daemon 的无人值守策略。
 - 一键安装会通过正式 CLI 安装/启用/启动 manager daemon，但保持 core stopped；仅本次新建配置自动 `migrate apply`，已有配置只提示显式迁移。升级只有在 core 明确为 stopped 且 stop 前复核仍为 stopped 时才重启 daemon，其他状态均保持现有进程。
 - daemon 启动会装配 CoreManager，但 core 初始状态始终为 `stopped`，不会自动启动代理；后续显式切换使用 operation 阶段记录，失败时恢复旧 RuntimeSpec，恢复失败进入明确 `failed`。
 - M3 模式事务仅支持活动 legacy profile；`GET/PUT /v1/mode` 返回配置/runtime 模式、core、有效组/节点、规则集、连接数和 warnings。PUT 必须带 `MM-Request-ID`，core stopped 时只保存已验证配置并报告下次启动生效，不启动或探测 controller。

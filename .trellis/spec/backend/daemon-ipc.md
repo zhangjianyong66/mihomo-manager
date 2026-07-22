@@ -18,10 +18,10 @@ func daemon.New(daemon.Options) *daemon.Server
 func (*daemon.Server) Run(context.Context) error
 
 func systemd.New(unitDir string) *systemd.Controller
-func (*systemd.Controller) Enable|Disable|Start|Stop|Status(context.Context) (systemd.Result, error)
+func (*systemd.Controller) Enable|Disable|Start|Stop|Restart|Status(context.Context) (systemd.Result, error)
 ```
 
-CLI 签名：`mm daemon run|status|start|stop|enable|disable`；除 `run` 外均支持 `--output table|json`。
+CLI 签名：`mm daemon run|status|start|stop|restart|enable|disable`；除 `run` 外均支持 `--output table|json`。
 
 ## 3. Contracts
 
@@ -144,3 +144,83 @@ IPC 为 `GET /v1/mode?profileId=...` 与 `PUT /v1/mode`；PUT body 固定为 `pr
 错误：core stopped 时尝试请求 `127.0.0.1:9090`，或 mode 失败后只恢复 YAML、不恢复 runtime/expected 摘要。
 
 正确：候选临时文件先 `mihomo -t`，原子发布后仅在 CoreManager 明确 running 时使用 typed runtime；失败进入同一补偿流程并核验恢复结果。
+
+## Scenario：客户端组合重启 daemon 与 Core
+
+### 1. Scope / Trigger
+
+修改 `app.DaemonService.Restart`、`systemd.Controller.Restart/Status`、`mm daemon restart` 或 TUI“重启全部”时适用。目标是让已安装的新 `mm` 在用户明确触发后安全替换旧 daemon，同时保持 Core 的目标状态；daemon 不得通过新 IPC 重启自身。
+
+### 2. Signatures
+
+```go
+func (*DaemonService) Restart(context.Context, DaemonRestartProgressFunc) (DaemonRestartResult, error)
+func (*systemd.Controller) Restart(context.Context) (systemd.Result, error)
+
+type DaemonRestartResult struct {
+    PreviousDaemonPID int
+    DaemonPID int
+    PreviousStartedAt time.Time
+    StartedAt time.Time
+    PreviousCoreState domain.CoreState
+    CoreState domain.CoreState
+    DaemonRestarted bool
+    CoreRestored bool
+    RecoveryAttempted bool
+    RecoverySucceeded bool
+    FailurePhase DaemonRestartPhase
+}
+```
+
+CLI 为 `mm daemon restart [--output table|json]`；TUI“服务管理”分别提供“重启 Core”和“重启全部”。不新增 daemon HTTP 路由或协议版本。
+
+### 3. Contracts
+
+- 事务由仍存活的 CLI/TUI 客户端执行：旧 daemon capability 负责 Core stop，新旧 daemon 都只通过现有 `/v1/status` 与 `/v1/core/*` 握手；systemd adapter 只执行 `systemctl --user restart mm.service`，保持 `mm.socket` active。
+- 任何副作用前必须确认 systemd user 可用、两个 unit 文件摘要有效且均为受管文件、`mm.service`/`mm.socket` 都 active；不得通过 PID 信号、进程名扫描、sudo、linger 或 system service 接管前台 daemon。
+- Core 目标矩阵：running -> running，stopped -> stopped，degraded/failed -> 尝试干净 running，starting/stopping -> 冲突且零副作用。需停止时必须通过 capability stop 并再次读取 `/v1/status` 确认 stopped。
+- 新 daemon 只有在协议握手成功，且 PID 与 startedAt 都不同于旧实例后才算更换成功；随后恢复 Core 并再次验证 daemon 身份、Core 目标状态及 systemd service/socket 状态。
+- 默认前向事务 40 秒、新 daemon ready 10 秒、轮询 200ms；发生副作用后的失败使用独立 15 秒 context 启动 socket、等待兼容 daemon 并恢复 Core。恢复成功仍返回原失败，partial result 固定放入 `app.Error.Details["restart"]`。
+- TUI 确认前 Esc 零副作用；执行开始后 Esc/q/Ctrl+C 不取消事务，页面按 typed phase 展示预检、停止 Core、重启 daemon、等待握手、恢复 Core、验证与必要的自动恢复。
+
+### 4. Validation & Error Matrix
+
+| 条件 | code / 分类 | 必须行为 |
+|---|---|---|
+| systemd user 不可用、service/socket inactive | `DAEMON_RESTART_PREFLIGHT_FAILED` / daemon_unavailable | 零启停调用，提示前台 daemon 不受支持 |
+| unit 缺失、摘要无效或非受管 | `DAEMON_RESTART_PREFLIGHT_FAILED` / conflict | 零副作用，不覆盖或接管 unit |
+| Core starting/stopping | `DAEMON_RESTART_CORE_BUSY` / conflict | 零副作用，退出码 4 |
+| Core stop 后复核非 stopped 或 daemon 身份并发变化 | conflict | 不执行 systemd restart；有副作用时进入恢复 |
+| 新 daemon PID 或 startedAt 未变化、ready 超时 | `DAEMON_RESTART_TIMEOUT` / daemon_unavailable | 不误报成功，进入有界恢复 |
+| 协议无交集 | daemon_unavailable，retryable=false | 不通过不兼容客户端控制 Core，报告手工命令 |
+| Core 恢复或最终验证失败 | 原 capability 分类 | 保留新 daemon，执行一次有界恢复并报告最终状态 |
+
+### 5. Good / Base / Bad Cases
+
+- Good：旧 daemon/Core running，Core 经 capability 停止；service 重启后 PID/startedAt 均变化，新 daemon 协议兼容，Core 恢复 running，TUI 保持运行。
+- Base：旧 Core stopped，事务不调用 Core stop/start，只替换 daemon 并保持 stopped；安装器升级策略不因此自动中断 running Core。
+- Bad：把 socket active 当成 service active、只校验 PID、让 daemon IPC handler 调用 `systemctl restart`，或协议不兼容后回退 `pkill`/直连 mihomo；均禁止发布。
+
+### 6. Tests Required
+
+- `internal/platform/systemd`：service/socket 独立状态、受管摘要、Restart 只触及 `mm.service`、unavailable 与 systemctl 失败。
+- `internal/app`：六种 Core 状态、stop 二次复核、并发 daemon 变化、PID/startedAt 任一未变化、握手重试/超时/协议不兼容、每个失败阶段及恢复成功/失败；只用 fake client/controller/core/clock。
+- `internal/cli`：help、table/json kind、partial error details、退出码和 stdout/stderr 分离。
+- `internal/tui`：菜单拆分、确认零副作用、阶段流、Esc/q/Ctrl+C 锁定、完整/恢复/失败结果与窄终端。
+- 全量门禁不得访问真实用户 socket、systemd、配置或 Core。
+
+### 7. Wrong vs Correct
+
+错误：让 daemon 重启自己，或同时停止 socket 造成监听端点竞态。
+
+```go
+handler := func() { exec.Command("systemctl", "--user", "restart", "mm.service", "mm.socket").Run() }
+```
+
+正确：外部客户端先通过 capability 收敛 Core，再只重启 service，并用 typed status 验证新身份。
+
+```go
+_ = core.CoreAction(ctx, profileID, "stop")
+_, _ = controller.Restart(ctx) // systemctl --user restart mm.service
+status, _ := waitForChangedDaemon(ctx, oldPID, oldStartedAt)
+```

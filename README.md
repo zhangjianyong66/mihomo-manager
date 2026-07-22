@@ -96,6 +96,7 @@ mm
 mm tui
 mm daemon run
 mm daemon status --output json
+mm daemon restart --output json
 mm daemon enable
 mm migrate plan --output json
 mm migrate status
@@ -122,6 +123,8 @@ mm daemon --help
 
 安装升级只有在受管 core 明确为 `stopped` 且 stop 前复核仍为 `stopped` 时才重启 daemon；其他状态不会停止现有 daemon，新二进制在后续 daemon 重启时生效。systemd user 会话不可用时只保留已安装 unit，并提示使用 `mm daemon run`，不会启用 linger 或创建临时后台进程。
 
+安装新 `mm` 后如需立即加载新 daemon，可在 TUI“服务管理”中选择“重启全部”，或执行 `mm daemon restart`。该操作只支持校验通过的 systemd user `mm.service/mm.socket`：它会先停止并复核 Core，只重启 `mm.service`，等待新 daemon 身份和协议握手成功，再按原状态恢复 Core。前台 daemon、systemd 不可用或 unit 被修改时会在任何启停前拒绝；执行期间代理会短暂中断，Core 内存中的测速历史和实时连接不会保留。
+
 通过安装器设置的 `CONFIG_DIR`、`MIHOMO_BIN` 和 `MIHOMO_API_PORT` 会写入受管 systemd service 环境，并在后续未显式覆盖的 `mm daemon enable` 中保留，确保 daemon 重启后继续使用同一 legacy 配置和 core 路径。
 
 2.0 Alpha 的业务 CLI 默认作用于唯一活动 legacy 档案，也可用 `--profile <id>` 显式指定。查询命令使用 `--output table|json`；`node test`、`core logs --follow` 和 `route connections --follow` 使用 `--output text|ndjson`。订阅地址、节点 URI、UUID、密码和日志凭据默认脱敏，只有显式 `--show-secrets` 才显示完整值。
@@ -142,11 +145,12 @@ mm daemon --help
 - 节点列表中 `t`：测试光标所在节点。
 - 节点列表中 `a`：测试当前代理组全部可测速节点。
 - 节点测速中 `Esc`：取消测速并停留在列表；空闲时再次按下才返回。
+- “重启全部”确认页中 `Enter`：开始组合重启；执行后 `Esc`、`q`、`Ctrl+C` 不会中途取消。
 - `q`：在主菜单退出。
 
 ## 功能
 
-- 服务管理：状态、启动、停止、重启、重载、配置测试、日志。
+- 服务管理：状态、启动、停止、只重启 Core、组合重启 daemon 与 Core、重载、配置测试、日志。
 - 实时连接：展示 mihomo 返回的目标、网络、命中规则、完整 chains、最终节点和累计流量；离开页面会停止 producer。
 - 节点管理：进入节点列表时显示 mihomo 运行时的最新历史测速结果，不自动测速；单节点或批量测速只更新结果，按 `Enter` 才切换节点。
 - 订阅管理：保存、查看和更新订阅。
