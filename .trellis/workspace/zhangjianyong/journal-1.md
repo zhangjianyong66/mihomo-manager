@@ -468,3 +468,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 15: 完成 M5 实时链路与入口诊断
+
+**Date**: 2026-07-22
+**Task**: 完成 M5 实时链路与入口诊断
+**Branch**: `master`
+
+### Summary
+
+实现连接快照/follow、TUI 实时页和 GNOME/env 入口诊断，并通过全量质量门。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4a5680e` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

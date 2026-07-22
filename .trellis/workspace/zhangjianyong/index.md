@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 14
+- **Total Sessions**: 15
 - **Last Active**: 2026-07-22
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~470 | Active |
+| `journal-1.md` | ~503 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 15 | 2026-07-22 | 完成 M5 实时链路与入口诊断 | `4a5680e` | `master` |
 | 14 | 2026-07-22 | 完成 M4 模式 CLI 与 TUI | `6761798` | `master` |
 | 13 | 2026-07-21 | 完成 M3 模式事务与 daemon API | `45b4829` | `master` |
 | 12 | 2026-07-21 | 完成 M2 Rule 分流与订阅保留 | `2c3a7e5` | `master` |
