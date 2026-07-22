@@ -62,8 +62,11 @@ func (c *RequestCache) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		recorder := &responseRecorder{header: make(http.Header), status: http.StatusOK}
+		recorder := &responseRecorder{target: w, header: make(http.Header), status: http.StatusOK}
 		next.ServeHTTP(recorder, r)
+		if recorder.passthrough {
+			return
+		}
 		copyHeader(w.Header(), recorder.header)
 		w.WriteHeader(recorder.status)
 		_, _ = w.Write(recorder.body.Bytes())
@@ -115,14 +118,54 @@ func (c *RequestCache) prune(now time.Time) {
 }
 
 type responseRecorder struct {
-	header http.Header
-	status int
-	body   bytes.Buffer
+	target      http.ResponseWriter
+	header      http.Header
+	status      int
+	body        bytes.Buffer
+	wroteHeader bool
+	passthrough bool
 }
 
-func (r *responseRecorder) Header() http.Header            { return r.header }
-func (r *responseRecorder) WriteHeader(statusCode int)     { r.status = statusCode }
-func (r *responseRecorder) Write(data []byte) (int, error) { return r.body.Write(data) }
+func (r *responseRecorder) Header() http.Header { return r.header }
+
+func (r *responseRecorder) WriteHeader(statusCode int) {
+	if r.wroteHeader {
+		return
+	}
+	r.status = statusCode
+	r.wroteHeader = true
+}
+
+func (r *responseRecorder) Write(data []byte) (int, error) {
+	if !r.wroteHeader {
+		r.WriteHeader(http.StatusOK)
+	}
+	if r.passthrough {
+		return r.target.Write(data)
+	}
+	return r.body.Write(data)
+}
+
+func (r *responseRecorder) Flush() {
+	if r.target == nil {
+		return
+	}
+	if !r.passthrough {
+		if !r.wroteHeader {
+			r.WriteHeader(http.StatusOK)
+		}
+		copyHeader(r.target.Header(), r.header)
+		r.target.WriteHeader(r.status)
+		if r.body.Len() > 0 {
+			_, _ = r.target.Write(r.body.Bytes())
+			r.body.Reset()
+		}
+		r.passthrough = true
+	}
+	if flusher, ok := r.target.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
 
 func copyHeader(destination, source http.Header) {
 	for key, values := range source {

@@ -31,7 +31,7 @@ CLI 签名：`mm daemon run|status|start|stop|restart|enable|disable`；除 `run
 - 状态 DTO：`protocolVersion`、`state`、`pid`、`startedAt`、`schemaVersion`、类型化 `core` 状态；daemon 初始 core 为真实 `stopped`，不得伪造 running。
 - NDJSON：`seq` 从 1 单调递增，`kind` 只能是 `event|done|error`，且必须以 `done` 或 `error` 终止；终止后禁止继续写。
 - 安全：Linux listener 在 HTTP 前以 `SO_PEERCRED` 校验 peer UID；root daemon 拒绝启动；daemon 不监听 TCP、不调用 sudo、不启用 linger。启动 daemon 不自动启动 mihomo core，显式 CoreManager 操作才可托管。
-- 幂等：完成且非 5xx/非流式的 JSON 响应按 request ID 缓存 5 分钟、最多 1024 条；同 ID 不同 method/path/body 返回 `REQUEST_ID_CONFLICT`。
+- 幂等：完成且非 5xx/非流式的 JSON 响应按 request ID 缓存 5 分钟、最多 1024 条；同 ID 不同 method/path/body 返回 `REQUEST_ID_CONFLICT`。带 request ID 的 handler 一旦调用 `Flush()`，缓存 writer 必须立即提交已写 header/status/body 并切换为直通，后续内容逐次 flush；该响应不得写入 RequestCache，相同 ID 再次请求时重新执行 handler。
 - systemd：`mm.socket` 使用 `%t/mihomo-manager/mm.sock`、`0600/0700`、`Accept=no`、`RemoveOnStop=yes`；service 只执行 `%h/.local/bin/mm daemon run`，设置 `Restart=on-failure`、退避、`NoNewPrivileges=yes`、`UMask=0077`。unit 模板版本为 2，带 owner/version/content checksum marker，以临时文件 fsync+rename 安装。
 - 显式执行 `CONFIG_DIR=... MIHOMO_BIN=... MIHOMO_API_PORT=... mm daemon enable` 时，controller 将三个白名单变量校验、转义并写入受管 `Environment=` 块；后续未显式传环境的重复 enable 保留该块，确保 systemd 重启后 legacy 迁移与兼容操作仍使用同一路径。环境值不得包含凭据或控制字符，两个路径必须绝对，端口必须为 1-65535。
 - 监听端口 IPC 为 `GET /v1/config/ports?profileId=...` 与 `PUT /v1/config/ports`；PUT body 固定为 `profileId`、`field`、`port` 且必须带 `MM-Request-ID`。响应包含六项 typed ports、core state、`restarted`、`nextStart` 和最近 `portConflicts`，错误 details 保留 `conflicts` 及可用的 partial `status`。
@@ -64,7 +64,7 @@ CLI 签名：`mm daemon run|status|start|stop|restart|enable|disable`；除 `run
 - `internal/config`：XDG 与 fallback、所有相对路径拒绝。
 - `internal/platform`：目录/lock/socket mode、符号链接、普通文件目标、flock 竞争、同 UID 成功和错误 UID 断连。
 - `internal/ipc`：协议交集/无交集、request ID、超大 body/line、JSON envelope、NDJSON 序号/终止/取消。
-- `internal/daemon`：真实临时 Unix socket、两个 client、schema status、operation conflict、幂等重放/冲突/过期、graceful cleanup；不得启动真实 core。
+- `internal/daemon`：真实临时 Unix socket、两个 client、schema status、operation conflict、幂等重放/冲突/过期、POST NDJSON 首条事件在 handler 完成前可读且流响应不缓存、graceful cleanup；不得启动真实 core。
 - `internal/daemon` 端口路由：GET 六字段、PUT request ID/非法字段、stopped `nextStart`、running `restarted`、配置内容/权限和多冲突 details。
 - `internal/platform/systemd`：模板结构/checksum、受管环境 round-trip/转义/保留、无 systemd 降级、fake systemctl 调用范围、失败恢复和未知 unit 备份。
 - 完成门：`go test ./...`、`go test -race ./...`、`go vet ./...`、Linux amd64/arm64 `CGO_ENABLED=0` 构建、隔离 XDG 前台 daemon/status/SIGTERM 冒烟。
@@ -84,6 +84,77 @@ net.Listen("tcp", "127.0.0.1:9091")
 paths, _ := config.LoadManagerPaths()
 client := ipc.NewClient(paths.Socket)
 err := client.Do(ctx, http.MethodGet, "/v1/status", "", nil, &status)
+```
+
+## Scenario：带 request ID 的流式响应直通
+
+### 1. Scope / Trigger
+
+修改 `RequestCache.Middleware`、任何带 `MM-Request-ID` 的流式写路由，或包装 daemon `http.ResponseWriter` 时必须遵守本节。目标是在保留普通 JSON 幂等重放的同时，不破坏 NDJSON 的逐事件传输时序。
+
+### 2. Signatures
+
+```go
+func (*RequestCache) Middleware(http.Handler) http.Handler
+
+type responseRecorder struct {
+	// 内部持有最终 http.ResponseWriter，并实现 http.ResponseWriter 与 http.Flusher。
+}
+```
+
+该行为通用于所有带 request ID 的非 GET/HEAD 请求，不按 `/v1/nodes/test*`、日志或连接路由硬编码。
+
+### 3. Contracts
+
+- recorder 初始处于 buffered 模式；普通 JSON 的 header/status/body 在 handler 返回后一次性提交，并沿用五分钟、1024 条、非 5xx 缓存语义。
+- handler 首次调用 `Flush()` 时，recorder 按 header、status、已缓冲 body 的顺序提交到底层 writer，再切换为单向 passthrough；后续 `Write` 与 `Flush` 直接作用于底层 writer。
+- 一旦进入 passthrough，middleware 在 handler 返回后不得二次写 header/body，也不得调用 RequestCache store；相同 request ID 再次请求时重新执行 handler。
+- 底层 writer 不实现 `http.Flusher` 时，首次 `Flush()` 仍须提交已有响应并进入 passthrough；真实 HTTP server 的底层 writer支持 flush。
+- 未主动 flush 的 `application/x-ndjson` 响应仍不得缓存，作为异常 handler 的防御；NDJSON 的 `seq`、终止事件和单行上限保持不变。
+
+### 4. Validation & Error Matrix
+
+| 条件 | 行为 |
+|---|---|
+| 无 request ID，或 GET/HEAD | 绕过 RequestCache wrapper，直接执行 handler |
+| 同 ID、同签名、普通非 5xx JSON | 重放缓存响应，不重复执行 handler |
+| 同 ID、不同 method/path/body | HTTP 409 `REQUEST_ID_CONFLICT` |
+| handler 已调用 `Flush()` | 实时直通且不缓存，相同 ID 后续请求重新执行 |
+| status >= 500 或未 flush 的 NDJSON | 返回响应但不缓存 |
+| 请求体读取失败或超过 1 MiB | HTTP 400 `INVALID_REQUEST`，不执行 handler |
+
+### 5. Good / Base / Bad Cases
+
+- Good：节点批量测速写出首条 event 并 flush 后继续探测，客户端在 terminal 前读到 event，随后逐条更新进度。
+- Base：普通 JSON 修改请求不调用 flush，仍原子返回并可按相同 request ID 重放。
+- Bad：用只在内存记录 body、未实现 `http.Flusher` 的 recorder 包装流 handler，导致客户端直到 handler 完成才一次性收到全部事件。
+
+### 6. Tests Required
+
+- 使用真实 `httptest.Server`：POST 带 request ID，handler 写首条 NDJSON event、flush 后阻塞；断言 `client.Do` 和首行读取均在解除阻塞前完成。
+- 解除阻塞后断言只收到一个 terminal event，HTTP status/content type 正确且无重复 body。
+- 相同 request ID 再请求一次并断言 handler 调用次数增加；现有普通 JSON 重放、签名冲突和过期测试必须继续通过。
+
+### 7. Wrong vs Correct
+
+错误：只在 handler 返回后识别 content type；此时实时事件已经全部被内存缓冲。
+
+```go
+recorder := httptest.NewRecorder()
+next.ServeHTTP(recorder, request)
+if recorder.Header().Get("Content-Type") == "application/x-ndjson" {
+	// 已经来不及恢复逐事件时序。
+}
+```
+
+正确：wrapper 本身实现 `http.Flusher`，首次 flush 即提交已缓冲内容并永久切换直通；middleware 看到直通状态后直接返回且不缓存。
+
+```go
+next.ServeHTTP(recorder, request)
+if recorder.passthrough {
+	return
+}
+storeCompletedJSON(recorder)
 ```
 
 ## Scenario：三模式查询与事务切换

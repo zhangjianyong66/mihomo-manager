@@ -3,9 +3,12 @@
 package daemon
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -113,6 +116,124 @@ func TestRequestCache_ReplayConflictAndExpiry(t *testing.T) {
 	request("two")
 	if calls.Load() != 2 {
 		t.Fatalf("expired request was not executed: %d", calls.Load())
+	}
+}
+
+func TestRequestCache_FlushedResponseStreamsAndIsNotCached(t *testing.T) {
+	cache := NewRequestCache(time.Minute, 2)
+	var calls atomic.Int32
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+
+	handler := cache.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte("{\"seq\":1,\"kind\":\"event\"}\n"))
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "response writer does not support flushing", http.StatusInternalServerError)
+			return
+		}
+		flusher.Flush()
+
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = w.Write([]byte("{\"seq\":2,\"kind\":\"done\"}\n"))
+		flusher.Flush()
+	}))
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	doRequest := func() (*http.Response, error) {
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/stream", strings.NewReader("{}"))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set(ipc.RequestIDHeader, "stream-request")
+		return server.Client().Do(req)
+	}
+
+	type responseResult struct {
+		response *http.Response
+		err      error
+	}
+	responseCh := make(chan responseResult, 1)
+	go func() {
+		response, err := doRequest()
+		responseCh <- responseResult{response: response, err: err}
+	}()
+
+	var first *http.Response
+	select {
+	case result := <-responseCh:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		first = result.response
+	case <-time.After(time.Second):
+		t.Fatal("client did not receive flushed response before handler completed")
+	}
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected response status: %d", first.StatusCode)
+	}
+	if contentType := first.Header.Get("Content-Type"); contentType != "application/x-ndjson" {
+		t.Fatalf("unexpected content type: %q", contentType)
+	}
+	reader := bufio.NewReader(first.Body)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line != "{\"seq\":1,\"kind\":\"event\"}\n" {
+		t.Fatalf("unexpected first event: %q", line)
+	}
+
+	close(release)
+	line, err = reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line != "{\"seq\":2,\"kind\":\"done\"}\n" {
+		t.Fatalf("unexpected terminal event: %q", line)
+	}
+	if extra, err := reader.ReadString('\n'); err != io.EOF || extra != "" {
+		t.Fatalf("unexpected data after terminal event: data=%q err=%v", extra, err)
+	}
+	if err := first.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := doRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondReader := bufio.NewReader(second.Body)
+	for _, expected := range []string{
+		"{\"seq\":1,\"kind\":\"event\"}\n",
+		"{\"seq\":2,\"kind\":\"done\"}\n",
+	} {
+		line, err := secondReader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if line != expected {
+			t.Fatalf("unexpected replay event: got %q, want %q", line, expected)
+		}
+	}
+	if err := second.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("stream response was cached: handler calls=%d", calls.Load())
 	}
 }
 

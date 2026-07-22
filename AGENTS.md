@@ -37,6 +37,7 @@
 - M5 提供 `mm route connections [--follow]` 和 TUI“实时连接”页；mihomo `/connections` 在 `internal/mihomo` 一次性类型化，`connections:null` 视为空列表，单响应仍限 1 MiB，活动/follow map 最多 4096 条。follow 每秒轮询并输出 `open|update|closed` 与 NDJSON terminal event，连接详情和短关闭提示仅驻留有界内存，不写 SQLite 或持久日志。
 - M5 的 mode 状态还展示配置中的 mixed/http/socks listener、daemon 只读采集的 GNOME system proxy，以及 CLI/TUI 进程本地的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`。只按协议、等价 loopback 和端口匹配；userinfo/path/query 在进入 DTO 前丢弃，检测只调用 `gsettings get`，不会设置系统代理、探测/停止 xray 或占用端口。
 - daemon 只监听 Unix socket，不监听 TCP；socket 父目录为 `0700`、socket/锁为 `0600`，Linux 通过 `SO_PEERCRED` 限制为当前 UID，root daemon 被拒绝。IPC 使用 `/v1/`、`MM-Protocol-Min/Max` 和 `MM-Request-ID`，流式扩展采用 NDJSON。
+- daemon 请求幂等缓存只保存完成且非 5xx/非流式的写响应；带 `MM-Request-ID` 的 handler 首次调用 `Flush()` 时必须立即把已缓冲响应下沉并切换直通，逐条发送 NDJSON，且该流响应不得缓存或按相同 request ID 重放。
 - A5 legacy 恢复点位于 `${XDG_DATA_HOME:-~/.local/share}/mihomo-manager/backups/<restore-point-id>/files`，目录/快照文件权限为 `0700/0600`；`migrate rollback` 必须显式指定 `--restore-point`，daemon 会核对 expected SHA-256 后才恢复。
 - legacy 文件发现会合并固定允许列表与动态 `config.yaml.*.bak` 候选，按相对路径统一去重并稳定排序；标准备份和时间戳备份必须分别且仅纳入一次。
 - systemd user unit 模板位于 `internal/platform/systemd/units`；`mm daemon enable` 在无 systemd 用户会话时只安装并报告“已安装未启用”，不会启用 linger、sudo 或启动 mihomo core。
