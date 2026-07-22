@@ -601,3 +601,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 19: 重设计节点测速交互
+
+**Date**: 2026-07-22
+**Task**: 重设计节点测速交互
+**Branch**: `master`
+
+### Summary
+
+节点列表改为展示 mihomo 历史结果并由 t/a 显式触发单个或批量测速；新增独立单测 IPC 路由、CLI --node、取消与 generation 隔离，并完成全量测试、race、vet 和双架构构建。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6f4232b` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
