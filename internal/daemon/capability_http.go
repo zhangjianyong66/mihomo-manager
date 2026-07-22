@@ -28,6 +28,7 @@ func registerCapabilityRoutes(mux *http.ServeMux, service *CapabilityService) {
 	mux.HandleFunc("/v1/groups", handler.groups)
 	mux.HandleFunc("/v1/groups/", handler.group)
 	mux.HandleFunc("/v1/nodes", handler.nodes)
+	mux.HandleFunc("/v1/nodes/test-single", handler.nodeTestSingle)
 	mux.HandleFunc("/v1/nodes/test", handler.nodeTest)
 	mux.HandleFunc("/v1/subscription", handler.subscription)
 	mux.HandleFunc("/v1/routes/whitelist", handler.whitelist)
@@ -275,6 +276,31 @@ func (h *capabilityHandler) nodeTest(w http.ResponseWriter, r *http.Request) {
 	writeNodeTestStream(w, r, stream)
 }
 
+func (h *capabilityHandler) nodeTestSingle(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var request struct {
+		ProfileID string `json:"profileId,omitempty"`
+		GroupID   string `json:"groupId,omitempty"`
+		NodeID    string `json:"nodeId"`
+	}
+	if err := ipc.DecodeJSON(w, r, &request); err != nil {
+		return
+	}
+	if strings.TrimSpace(request.NodeID) == "" {
+		writeCapabilityError(w, errors.New("node id is required"))
+		return
+	}
+	stream, err := h.service.TestNode(r.Context(), request.ProfileID, request.GroupID, request.NodeID)
+	if err != nil {
+		writeCapabilityError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	writeNodeTestStream(w, r, stream)
+}
+
 func writeNodeTestStream(w http.ResponseWriter, r *http.Request, stream <-chan mihomo.NodeTestEvent) {
 	writer := ipc.NewStreamWriter(w)
 	for event := range stream {
@@ -294,7 +320,18 @@ func writeNodeTestStream(w http.ResponseWriter, r *http.Request, stream <-chan m
 			flushResponse(w)
 			return
 		}
-		data, _ := json.Marshal(map[string]any{"done": event.Done, "total": event.Total, "name": event.Result.Name, "delayMs": event.Result.Delay})
+		status := event.Result.Status
+		if status == "" {
+			status = mihomo.NodeTestStatusFailed
+			if event.Result.Delay > 0 {
+				status = mihomo.NodeTestStatusSuccess
+			}
+		}
+		value := map[string]any{"done": event.Done, "total": event.Total, "name": event.Result.Name, "delayMs": event.Result.Delay, "status": status}
+		if !event.Result.TestedAt.IsZero() {
+			value["testedAt"] = event.Result.TestedAt
+		}
+		data, _ := json.Marshal(value)
 		if err := writer.Write(r.Context(), ipc.StreamEvent{Kind: "event", Data: data}); err != nil {
 			return
 		}
@@ -554,6 +591,10 @@ func classifyCapabilityError(err error) (int, string, string, bool) {
 		return http.StatusConflict, "PORT_CONFLICT", err.Error(), false
 	case errors.Is(err, ErrCapabilityNotFound), errors.Is(err, store.ErrNotFound):
 		return http.StatusNotFound, "NOT_FOUND", "资源不存在", false
+	case errors.Is(err, mihomo.ErrProxyNotFound):
+		return http.StatusNotFound, "NOT_FOUND", "节点或代理组不存在", false
+	case errors.Is(err, mihomo.ErrNodeNotInGroup), errors.Is(err, mihomo.ErrNodeNotTestable):
+		return http.StatusBadRequest, "INVALID_REQUEST", "节点不属于代理组或不可测速", false
 	case errors.Is(err, store.ErrInvalid):
 		return http.StatusBadRequest, "INVALID_REQUEST", "请求参数无效", false
 	case errors.Is(err, ErrOperationConflict), errors.Is(err, legacy.ErrConflict), errors.Is(err, store.ErrConflict):

@@ -61,6 +61,8 @@
 - 卸载命令：`make uninstall`，默认删除 `mm`、隔离 Go 和安装器 PATH 块，保留 core 与配置；`scripts/uninstall.sh --purge` 删除可确认归属的 core，`--purge-config` 显式删除配置。
 - 安装状态记录在 `~/.local/share/mihomo-manager/install-state`，只保存路径、版本和归属等非敏感信息。
 - 远程安装默认使用 `master`，可用 `MM_REF` 固定源码引用；下载源可通过 `MM_GITHUB_BASE_URL`、`MM_GITHUB_API_BASE_URL`、`MM_GO_DOWNLOAD_BASE_URL` 显式覆盖，脚本不会自动切换第三方镜像。
+- 节点列表从 mihomo `/proxies` 的运行时 `history` 读取最新测速状态，不写 SQLite；进入列表和节点选择成功后都不自动测速。TUI 使用 `t` 单测光标节点、`a` 以并发 5 且 `limit=0` 批测当前组全部可测速 leaf，测速中 Esc 只取消并保留部分结果，空闲 Esc 才返回。
+- 单节点测速固定使用 `/v1/nodes/test-single`；`mm node test --node <id> [--group <group>]` 不得回退到旧 `/v1/nodes/test` 批量路由。节点测速 NDJSON 追加 `status` 与 `testedAt`，新客户端仍兼容旧事件缺少这两个字段。
 
 # 协作约定
 

@@ -105,6 +105,7 @@ mm config ports
 mm config port set mixed-port 7890
 mm group list
 mm node test --group GLOBAL --output ndjson
+mm node test --node node-a --group GLOBAL
 mm subscription show
 mm route whitelist list
 ```
@@ -138,13 +139,16 @@ mm daemon --help
 - `↑/↓`：移动选择。
 - `Enter`：确认或进入。
 - `Esc`：返回。
+- 节点列表中 `t`：测试光标所在节点。
+- 节点列表中 `a`：测试当前代理组全部可测速节点。
+- 节点测速中 `Esc`：取消测速并停留在列表；空闲时再次按下才返回。
 - `q`：在主菜单退出。
 
 ## 功能
 
 - 服务管理：状态、启动、停止、重启、重载、配置测试、日志。
 - 实时连接：展示 mihomo 返回的目标、网络、命中规则、完整 chains、最终节点和累计流量；离开页面会停止 producer。
-- 节点管理：当前节点、切换、测速、切换最快节点。
+- 节点管理：进入节点列表时显示 mihomo 运行时的最新历史测速结果，不自动测速；单节点或批量测速只更新结果，按 `Enter` 才切换节点。
 - 订阅管理：保存、查看和更新订阅。
 - 白名单：添加、删除和查看直连域名。
 - 配置管理：查看和逐项修改监听端口、备份、恢复、编辑及应用分流规则。
@@ -159,4 +163,4 @@ mm daemon --help
 - 2.0 的领域模型、SQLite schema/迁移和事务仓储底座已接入 daemon；legacy profile 仅由迁移创建，无法确认归属的文件不会猜测为 managed。
 - 2.0 的 mihomo adapter 已支持原生验证、loopback controller 就绪检查、精确进程停止和失败恢复；A6 已接入 legacy core/config/node/subscription/route/log 命令，多档案、多订阅和完整 managed 配置仍属于 Beta。
 - YAML 写回后字段顺序和注释可能变化。
-- 节点测速并发固定较低，以提高稳定性。
+- 节点批量测速使用低并发但不受列表分页或 120 节点上限截断；历史来自 mihomo 运行时，不写 SQLite，core 重启后可能显示“未测速”。

@@ -4,8 +4,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/zhangjianyong66/mihomo-manager/internal/app"
 	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
 )
@@ -26,6 +28,13 @@ type fakeTUIService struct {
 	portCalls        int
 	setPortCalls     int
 	setPortRequest   app.SetListenerPortRequest
+	group            app.Group
+	testEvents       []app.NodeTestEvent
+	testCalls        int
+	testRequests     []app.NodeTestRequest
+	testContext      context.Context
+	selectedGroup    string
+	selectedNode     string
 }
 
 func (f *fakeTUIService) ModeStatus(context.Context, string) (app.RoutingModeStatus, error) {
@@ -73,7 +82,155 @@ func (f *fakeTUIService) SetListenerPort(_ context.Context, request app.SetListe
 	return f.portStatus, nil
 }
 
+func (f *fakeTUIService) Groups(context.Context, string) ([]app.Group, error) {
+	return []app.Group{f.group}, nil
+}
+
+func (f *fakeTUIService) Group(context.Context, string, string) (app.Group, error) {
+	return f.group, nil
+}
+
+func (f *fakeTUIService) SelectGroupNode(_ context.Context, _, group, node string) error {
+	f.selectedGroup, f.selectedNode = group, node
+	return nil
+}
+
+func (f *fakeTUIService) TestNodes(ctx context.Context, request app.NodeTestRequest) <-chan app.NodeTestEvent {
+	f.testCalls++
+	f.testRequests = append(f.testRequests, request)
+	f.testContext = ctx
+	result := make(chan app.NodeTestEvent, len(f.testEvents))
+	for _, event := range f.testEvents {
+		result <- event
+	}
+	close(result)
+	return result
+}
+
 var _ Capabilities = (*fakeTUIService)(nil)
+
+func TestNodeListLoadsHistoryWithoutAutomaticTest(t *testing.T) {
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	fake := &fakeTUIService{}
+	model := New(fake)
+	model.now = func() time.Time { return now }
+	group := app.Group{
+		ID: "GLOBAL", Name: "GLOBAL", SelectedNodeID: "node-a", NodeIDs: []domain.NodeID{"node-a", "node-b"},
+		NodeStates: []app.GroupNodeState{
+			{NodeID: "node-a", Testable: true, Latest: &app.NodeDelay{NodeID: "node-a", Status: app.NodeTestStatusSuccess, Delay: 238 * time.Millisecond, TestedAt: now.Add(-9 * time.Minute)}},
+			{NodeID: "node-b", Testable: true},
+		},
+	}
+	next, command := model.enterLoadedGroup(group)
+	model = next.(Model)
+	view := model.View()
+	if command != nil || fake.testCalls != 0 || model.nodeTestActive {
+		t.Fatalf("entering group started a test: command=%v calls=%d model=%+v", command != nil, fake.testCalls, model)
+	}
+	for _, want := range []string{"238ms · 9分钟前", "未测速", "t 单测", "a 批量"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("node view missing %q: %s", want, view)
+		}
+	}
+}
+
+func TestNodeListSingleAndBatchTestsUseExplicitRequests(t *testing.T) {
+	fake := &fakeTUIService{testEvents: []app.NodeTestEvent{{Done: 1, Total: 1, Finished: true}}}
+	model := New(fake)
+	next, _ := model.enterLoadedGroup(app.Group{
+		ID: "GLOBAL", Name: "GLOBAL", NodeIDs: []domain.NodeID{"node-a"},
+		NodeStates: []app.GroupNodeState{{NodeID: "node-a", Testable: true}},
+	})
+	model = next.(Model)
+
+	next, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	model = next.(Model)
+	if command == nil || fake.testCalls != 0 || !model.nodeTestActive {
+		t.Fatalf("single test was not deferred: command=%v calls=%d active=%v", command != nil, fake.testCalls, model.nodeTestActive)
+	}
+	next, _ = model.Update(command())
+	model = next.(Model)
+	if fake.testCalls != 1 || fake.testRequests[0].NodeID != "node-a" || fake.testRequests[0].GroupID != "GLOBAL" {
+		t.Fatalf("unexpected single request: %+v", fake.testRequests)
+	}
+
+	next, command = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	model = next.(Model)
+	if command == nil {
+		t.Fatal("batch test command is nil")
+	}
+	_, _ = model.Update(command())
+	if fake.testCalls != 2 || fake.testRequests[1].NodeID != "" || fake.testRequests[1].Concurrency != 5 || fake.testRequests[1].Limit != 0 {
+		t.Fatalf("unexpected batch request: %+v", fake.testRequests)
+	}
+}
+
+func TestNodeListEscapeCancelsBeforeLeavingAndStaleEventsAreIgnored(t *testing.T) {
+	fake := &fakeTUIService{}
+	model := New(fake)
+	next, _ := model.enterLoadedGroup(app.Group{ID: "GLOBAL", Name: "GLOBAL", NodeIDs: []domain.NodeID{"node-a"}, NodeStates: []app.GroupNodeState{{NodeID: "node-a", Testable: true}}})
+	model = next.(Model)
+	next, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	model = next.(Model)
+	started := command().(nodeTestStartedMsg)
+	next, _ = model.Update(started)
+	model = next.(Model)
+	oldGeneration := model.switchTestGeneration
+
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = next.(Model)
+	if model.actionCtx != "group_nodes" || model.nodeTestActive || model.switchTestGeneration == oldGeneration {
+		t.Fatalf("first escape should only cancel: %+v", model)
+	}
+	select {
+	case <-fake.testContext.Done():
+	default:
+		t.Fatal("test context was not cancelled")
+	}
+	stale := app.NodeDelay{NodeID: "node-a", Status: app.NodeTestStatusSuccess, Delay: time.Millisecond}
+	next, _ = model.Update(switchNodeTestMsg{generation: oldGeneration, event: app.NodeTestEvent{Done: 1, Total: 1, Result: &stale}, ok: true})
+	model = next.(Model)
+	if _, exists := model.nodeResults["node-a"]; exists {
+		t.Fatal("stale generation polluted node results")
+	}
+
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = next.(Model)
+	if model.actionCtx != "group_list" {
+		t.Fatalf("second escape did not leave node list: %+v", model)
+	}
+}
+
+func TestNodeSelectionDoesNotClearHistoryOrStartTest(t *testing.T) {
+	fake := &fakeTUIService{}
+	model := New(fake)
+	history := app.NodeDelay{NodeID: "node-a", Status: app.NodeTestStatusSuccess, Delay: 20 * time.Millisecond, TestedAt: time.Now()}
+	next, _ := model.enterLoadedGroup(app.Group{ID: "GLOBAL", Name: "GLOBAL", NodeIDs: []domain.NodeID{"node-a"}, NodeStates: []app.GroupNodeState{{NodeID: "node-a", Testable: true, Latest: &history}}})
+	model = next.(Model)
+	next, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = next.(Model)
+	if command == nil {
+		t.Fatal("selection command is nil")
+	}
+	next, _ = model.Update(command())
+	model = next.(Model)
+	if fake.selectedGroup != "GLOBAL" || fake.selectedNode != "node-a" || fake.testCalls != 0 || model.nodeResults["node-a"].Delay != 20*time.Millisecond {
+		t.Fatalf("selection changed test state: group=%q node=%q calls=%d results=%+v", fake.selectedGroup, fake.selectedNode, fake.testCalls, model.nodeResults)
+	}
+}
+
+func TestNodeListNarrowRowsKeepStatusWithinTerminalWidth(t *testing.T) {
+	model := New(&fakeTUIService{})
+	model.width = 32
+	model.currentNodeName = "这是一个非常长的中文节点名称"
+	model.nodeResults = map[string]app.NodeDelay{
+		model.currentNodeName: {NodeID: domain.NodeID(model.currentNodeName), Status: app.NodeTestStatusSuccess, Delay: 238 * time.Millisecond, TestedAt: time.Now()},
+	}
+	row := model.renderSwitchNodeItem(model.currentNodeName)
+	if lipgloss.Width(row) > model.width-4 || !strings.Contains(row, "[238ms · 刚刚]") {
+		t.Fatalf("narrow row overflowed or lost status: width=%d row=%q", lipgloss.Width(row), row)
+	}
+}
 
 func TestModePageLoadsAsynchronouslyAndShowsStoppedState(t *testing.T) {
 	fake := &fakeTUIService{status: app.RoutingModeStatus{

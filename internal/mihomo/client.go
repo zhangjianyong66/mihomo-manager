@@ -17,7 +17,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -155,15 +154,18 @@ func (c *Client) SwitchNode(name string) error {
 }
 
 type NodeDelay struct {
-	Name  string
-	Delay int
+	Name     string
+	Delay    int
+	Status   NodeTestStatus
+	TestedAt time.Time
 }
 
 type ProxyGroup struct {
-	Name string
-	Type string
-	Now  string
-	All  []string
+	Name       string
+	Type       string
+	Now        string
+	All        []string
+	NodeStates []ProxyNodeState
 }
 
 type NodeTestEvent struct {
@@ -358,58 +360,14 @@ func (c *Client) SwitchNodeInGroup(group, node string) error {
 }
 
 func (c *Client) TestNodes(concurrency int) ([]NodeDelay, error) {
-	nodes, err := c.GlobalNodes()
-	if err != nil {
-		return nil, err
-	}
-	proxies, _ := c.Proxies()
-	validNodes := filterTestableNodes(nodes, proxies)
-	const maxProbeNodes = 120
-	if len(validNodes) > maxProbeNodes {
-		validNodes = validNodes[:maxProbeNodes]
-	}
-	if concurrency < 1 {
-		concurrency = 1
-	}
-	jobs := make(chan string)
-	out := make(chan NodeDelay)
-	wg := sync.WaitGroup{}
-
-	for i := 0; i < concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for n := range jobs {
-				if n == "DIRECT" || n == "REJECT" {
-					continue
-				}
-				enc := url.PathEscape(n)
-				b, err := c.call(http.MethodGet, "/proxies/"+enc+"/delay?timeout=3000&url=http://www.gstatic.com/generate_204", nil)
-				if err != nil {
-					continue
-				}
-				var d struct {
-					Delay int `json:"delay"`
-				}
-				if json.Unmarshal(b, &d) == nil && d.Delay > 0 {
-					out <- NodeDelay{Name: n, Delay: d.Delay}
-				}
-			}
-		}()
-	}
-
-	go func() {
-		for _, n := range validNodes {
-			jobs <- n
-		}
-		close(jobs)
-		wg.Wait()
-		close(out)
-	}()
-
 	res := make([]NodeDelay, 0)
-	for d := range out {
-		res = append(res, d)
+	for event := range c.TestNodesStream(concurrency, 120) {
+		if event.Err != nil {
+			return nil, event.Err
+		}
+		if event.Result != nil && event.Result.Status == NodeTestStatusSuccess {
+			res = append(res, *event.Result)
+		}
 	}
 	sort.Slice(res, func(i, j int) bool { return res[i].Delay < res[j].Delay })
 	return res, nil
@@ -420,186 +378,11 @@ func (c *Client) TestNodesStream(concurrency, maxProbeNodes int) <-chan NodeTest
 }
 
 func (c *Client) TestNodesStreamWithStop(concurrency, maxProbeNodes int, stop <-chan struct{}) <-chan NodeTestEvent {
-	ch := make(chan NodeTestEvent, 32)
-	go func() {
-		defer close(ch)
-		nodes, err := c.GlobalNodes()
-		if err != nil {
-			ch <- NodeTestEvent{Err: err, Finished: true}
-			return
-		}
-		proxies, _ := c.Proxies()
-		validNodes := filterTestableNodes(nodes, proxies)
-		if maxProbeNodes > 0 && len(validNodes) > maxProbeNodes {
-			validNodes = validNodes[:maxProbeNodes]
-		}
-		total := len(validNodes)
-		if total == 0 {
-			ch <- NodeTestEvent{Done: 0, Total: 0, Finished: true}
-			return
-		}
-		if concurrency < 1 {
-			concurrency = 1
-		}
-
-		jobs := make(chan string)
-		doneCh := make(chan NodeDelay, total)
-		wg := sync.WaitGroup{}
-
-		for i := 0; i < concurrency; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for n := range jobs {
-					if isStopped(stop) {
-						return
-					}
-					enc := url.PathEscape(n)
-					b, callErr := c.call(http.MethodGet, "/proxies/"+enc+"/delay?timeout=3000&url=http://www.gstatic.com/generate_204", nil)
-					if callErr != nil {
-						if !sendNodeDelay(stop, doneCh, NodeDelay{Name: n, Delay: -1}) {
-							return
-						}
-						continue
-					}
-					var d struct {
-						Delay int `json:"delay"`
-					}
-					if json.Unmarshal(b, &d) != nil || d.Delay <= 0 {
-						if !sendNodeDelay(stop, doneCh, NodeDelay{Name: n, Delay: -1}) {
-							return
-						}
-						continue
-					}
-					if !sendNodeDelay(stop, doneCh, NodeDelay{Name: n, Delay: d.Delay}) {
-						return
-					}
-				}
-			}()
-		}
-
-		go func() {
-			for _, n := range validNodes {
-				if isStopped(stop) {
-					break
-				}
-				select {
-				case jobs <- n:
-				case <-stop:
-					close(jobs)
-					wg.Wait()
-					close(doneCh)
-					return
-				}
-			}
-			close(jobs)
-			wg.Wait()
-			close(doneCh)
-		}()
-
-		done := 0
-		for nd := range doneCh {
-			if isStopped(stop) {
-				break
-			}
-			done++
-			copyNd := nd
-			res := &copyNd
-			ch <- NodeTestEvent{Done: done, Total: total, Result: res}
-		}
-		ch <- NodeTestEvent{Done: done, Total: total, Finished: true}
-	}()
-	return ch
+	return c.testNodesStreamWithStop("", concurrency, maxProbeNodes, stop)
 }
 
 func (c *Client) TestGroupNodesStreamWithStop(group string, concurrency, maxProbeNodes int, stop <-chan struct{}) <-chan NodeTestEvent {
-	ch := make(chan NodeTestEvent, 32)
-	go func() {
-		defer close(ch)
-		nodes, _, err := c.GroupNodes(group)
-		if err != nil {
-			ch <- NodeTestEvent{Err: err, Finished: true}
-			return
-		}
-		validNodes := filterDisplayNodes(nodes)
-		if maxProbeNodes > 0 && len(validNodes) > maxProbeNodes {
-			validNodes = validNodes[:maxProbeNodes]
-		}
-		total := len(validNodes)
-		if total == 0 {
-			ch <- NodeTestEvent{Done: 0, Total: 0, Finished: true}
-			return
-		}
-		if concurrency < 1 {
-			concurrency = 1
-		}
-		jobs := make(chan string)
-		doneCh := make(chan NodeDelay, total)
-		wg := sync.WaitGroup{}
-
-		for i := 0; i < concurrency; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for n := range jobs {
-					if isStopped(stop) {
-						return
-					}
-					enc := url.PathEscape(n)
-					b, callErr := c.call(http.MethodGet, "/proxies/"+enc+"/delay?timeout=3000&url=http://www.gstatic.com/generate_204", nil)
-					if callErr != nil {
-						if !sendNodeDelay(stop, doneCh, NodeDelay{Name: n, Delay: -1}) {
-							return
-						}
-						continue
-					}
-					var d struct {
-						Delay int `json:"delay"`
-					}
-					if json.Unmarshal(b, &d) != nil || d.Delay <= 0 {
-						if !sendNodeDelay(stop, doneCh, NodeDelay{Name: n, Delay: -1}) {
-							return
-						}
-						continue
-					}
-					if !sendNodeDelay(stop, doneCh, NodeDelay{Name: n, Delay: d.Delay}) {
-						return
-					}
-				}
-			}()
-		}
-
-		go func() {
-			for _, n := range validNodes {
-				if isStopped(stop) {
-					break
-				}
-				select {
-				case jobs <- n:
-				case <-stop:
-					close(jobs)
-					wg.Wait()
-					close(doneCh)
-					return
-				}
-			}
-			close(jobs)
-			wg.Wait()
-			close(doneCh)
-		}()
-
-		done := 0
-		for nd := range doneCh {
-			if isStopped(stop) {
-				break
-			}
-			done++
-			copyNd := nd
-			ch <- NodeTestEvent{Done: done, Total: total, Result: &copyNd}
-		}
-		ch <- NodeTestEvent{Done: done, Total: total, Finished: true}
-	}()
-	return ch
+	return c.testNodesStreamWithStop(group, concurrency, maxProbeNodes, stop)
 }
 
 func isStopped(stop <-chan struct{}) bool {
@@ -612,57 +395,6 @@ func isStopped(stop <-chan struct{}) bool {
 	default:
 		return false
 	}
-}
-
-func sendNodeDelay(stop <-chan struct{}, output chan<- NodeDelay, value NodeDelay) bool {
-	if stop == nil {
-		output <- value
-		return true
-	}
-	select {
-	case output <- value:
-		return true
-	case <-stop:
-		return false
-	}
-}
-
-func filterTestableNodes(nodes []string, proxies map[string]any) []string {
-	groupTypes := map[string]bool{
-		"Selector": true, "URLTest": true, "Fallback": true, "LoadBalance": true,
-		"Direct": true, "Reject": true, "RejectDrop": true, "Pass": true, "Compatible": true,
-	}
-	pmap := map[string]any{}
-	if proxies != nil {
-		if ps, ok := proxies["proxies"].(map[string]any); ok {
-			pmap = ps
-		}
-	}
-	out := make([]string, 0, len(nodes))
-	for _, n := range nodes {
-		if n == "DIRECT" || n == "REJECT" || strings.HasPrefix(n, "官网") || strings.HasPrefix(n, "有效期") {
-			continue
-		}
-		if raw, ok := pmap[n].(map[string]any); ok {
-			if t, ok2 := raw["type"].(string); ok2 && groupTypes[t] {
-				continue
-			}
-		}
-		out = append(out, n)
-	}
-	return out
-}
-
-func filterDisplayNodes(nodes []string) []string {
-	out := make([]string, 0, len(nodes))
-	for _, n := range nodes {
-		n = strings.TrimSpace(n)
-		if n == "" || n == "DIRECT" || n == "REJECT" || strings.HasPrefix(n, "官网") || strings.HasPrefix(n, "有效期") {
-			continue
-		}
-		out = append(out, n)
-	}
-	return dedupNonEmpty(out)
 }
 
 func dedupNonEmpty(in []string) []string {

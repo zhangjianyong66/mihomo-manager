@@ -191,12 +191,13 @@ func newNodeCommand(deps Dependencies) *cobra.Command {
 		})
 	}
 	test := &cobra.Command{Use: "test", Short: "测试节点延迟", Args: noArgs}
-	var testProfile, testGroup, testOutput string
+	var testProfile, testGroup, testNode, testOutput string
 	var concurrency, limit int
 	var timeout time.Duration
 	var showSecrets bool
 	test.Flags().StringVar(&testProfile, "profile", "", "档案 ID（默认使用活动 legacy 档案）")
 	test.Flags().StringVar(&testGroup, "group", "", "按代理组测试")
+	test.Flags().StringVar(&testNode, "node", "", "测试单个节点")
 	test.Flags().IntVar(&concurrency, "concurrency", 5, "并发数")
 	test.Flags().IntVar(&limit, "limit", 120, "最多测试节点数")
 	test.Flags().DurationVar(&timeout, "timeout", 0, "超时时间")
@@ -207,13 +208,16 @@ func newNodeCommand(deps Dependencies) *cobra.Command {
 		if concurrency < 1 || concurrency > 64 || limit < 0 || limit > 1000 || (testOutput != "text" && testOutput != "ndjson") {
 			return &app.Error{Code: app.ErrorCodeInvalidArgument, Message: "node test 参数无效"}
 		}
+		if strings.TrimSpace(testNode) != "" && (command.Flags().Changed("concurrency") || command.Flags().Changed("limit")) {
+			return &app.Error{Code: app.ErrorCodeInvalidArgument, Message: "单节点测速不能同时指定 --concurrency 或 --limit"}
+		}
 		ctx := command.Context()
 		if timeout > 0 {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, timeout)
 			defer cancel()
 		}
-		return streamNodeTest(command, deps.Capabilities, ctx, app.NodeTestRequest{ProfileID: domain.ProfileID(testProfile), GroupID: domain.GroupID(testGroup), Concurrency: concurrency, Limit: limit}, testOutput == "ndjson", showSecrets)
+		return streamNodeTest(command, deps.Capabilities, ctx, app.NodeTestRequest{ProfileID: domain.ProfileID(testProfile), GroupID: domain.GroupID(testGroup), NodeID: domain.NodeID(strings.TrimSpace(testNode)), Concurrency: concurrency, Limit: limit}, testOutput == "ndjson", showSecrets)
 	}
 	nodeCommand.AddCommand(list, selectCommand, test)
 	return nodeCommand
@@ -645,13 +649,37 @@ func streamNodeTest(command *cobra.Command, service app.CapabilityAPI, ctx conte
 		if event.Result == nil {
 			continue
 		}
+		status := event.Result.Status
+		if status == "" {
+			status = app.NodeTestStatusFailed
+			if event.Result.Delay > 0 {
+				status = app.NodeTestStatusSuccess
+			}
+		}
 		if ndjson {
-			if err := writeJSON(command.OutOrStdout(), map[string]any{"apiVersion": APIVersion, "kind": "NodeTestEvent", "data": map[string]any{"done": event.Done, "total": event.Total, "nodeId": RedactTextOrShow(event.Result.NodeID.String(), show), "delayMs": event.Result.Delay.Milliseconds()}, "warnings": []string{}}); err != nil {
+			data := map[string]any{"done": event.Done, "total": event.Total, "nodeId": RedactTextOrShow(event.Result.NodeID.String(), show), "status": status, "delayMs": event.Result.Delay.Milliseconds()}
+			if !event.Result.TestedAt.IsZero() {
+				data["testedAt"] = event.Result.TestedAt
+			}
+			if err := writeJSON(command.OutOrStdout(), map[string]any{"apiVersion": APIVersion, "kind": "NodeTestEvent", "data": data, "warnings": []string{}}); err != nil {
 				return err
 			}
-		} else if _, err := fmt.Fprintf(command.OutOrStdout(), "%d/%d\t%s\t%dms\n", event.Done, event.Total, RedactTextOrShow(event.Result.NodeID.String(), show), event.Result.Delay.Milliseconds()); err != nil {
-			return err
+		} else {
+			result := "失败"
+			if status == app.NodeTestStatusSuccess && event.Result.Delay > 0 {
+				result = fmt.Sprintf("%dms", event.Result.Delay.Milliseconds())
+			}
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "%d/%d\t%s\t%s\t%s\n", event.Done, event.Total, RedactTextOrShow(event.Result.NodeID.String(), show), result, formatTestedAt(event.Result.TestedAt)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+func formatTestedAt(value time.Time) string {
+	if value.IsZero() {
+		return "-"
+	}
+	return value.Format(time.RFC3339Nano)
 }

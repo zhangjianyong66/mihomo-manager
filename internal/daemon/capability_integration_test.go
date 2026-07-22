@@ -23,7 +23,7 @@ func TestCapabilityRoutesLegacyThroughUnixIPC(t *testing.T) {
 	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/proxies":
-			_, _ = w.Write([]byte(`{"proxies":{"GLOBAL":{"type":"Selector","now":"node-a","all":["node-a"]},"node-a":{"type":"VLESS"}}}`))
+			_, _ = w.Write([]byte(`{"proxies":{"GLOBAL":{"type":"Selector","now":"node-a","all":["node-a"]},"node-a":{"type":"VLESS","history":[{"time":"2026-07-22T12:00:00Z","delay":25}]},"node-b":{"type":"VLESS"}}}`))
 		case r.URL.Path == "/proxies/GLOBAL" && r.Method == http.MethodGet:
 			_, _ = w.Write([]byte(`{"now":"node-a","all":["node-a"]}`))
 		case r.URL.Path == "/proxies/node-a/delay":
@@ -161,6 +161,15 @@ func TestCapabilityRoutesLegacyThroughUnixIPC(t *testing.T) {
 		cancel()
 		t.Fatalf("unexpected groups: %+v", groups)
 	}
+	var group GroupInfo
+	if err := client.Do(context.Background(), http.MethodGet, "/v1/groups/GLOBAL", "", nil, &group); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	if len(group.NodeStates) != 1 || !group.NodeStates[0].Testable || group.NodeStates[0].Latest == nil || group.NodeStates[0].Latest.DelayMS != 25 {
+		cancel()
+		t.Fatalf("unexpected group node states: %+v", group)
+	}
 	var validated map[string]any
 	if err := client.Do(context.Background(), http.MethodPost, "/v1/config/validate", "validate-integration", map[string]string{}, &validated); err != nil {
 		cancel()
@@ -227,6 +236,36 @@ func TestCapabilityRoutesLegacyThroughUnixIPC(t *testing.T) {
 	if err != nil || last.Kind != "done" {
 		cancel()
 		t.Fatalf("unexpected terminal event: event=%+v err=%v", last, err)
+	}
+	singleStream, err := client.OpenStream(context.Background(), http.MethodPost, "/v1/nodes/test-single", "test-single-integration", map[string]any{"groupId": "GLOBAL", "nodeId": "node-a"})
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	singleDecoder := ipc.NewStreamDecoder(singleStream)
+	singleEvent, err := singleDecoder.Next(context.Background())
+	if err != nil || singleEvent.Kind != "event" || !strings.Contains(string(singleEvent.Data), `"status":"success"`) || !strings.Contains(string(singleEvent.Data), `"testedAt"`) {
+		_ = singleStream.Close()
+		cancel()
+		t.Fatalf("unexpected single node event: event=%+v err=%v", singleEvent, err)
+	}
+	singleDone, err := singleDecoder.Next(context.Background())
+	_ = singleStream.Close()
+	if err != nil || singleDone.Kind != "done" {
+		cancel()
+		t.Fatalf("unexpected single terminal event: event=%+v err=%v", singleDone, err)
+	}
+	invalidStream, err := client.OpenStream(context.Background(), http.MethodPost, "/v1/nodes/test-single", "test-single-invalid", map[string]any{"groupId": "GLOBAL", "nodeId": "node-b"})
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	invalidDecoder := ipc.NewStreamDecoder(invalidStream)
+	invalidEvent, err := invalidDecoder.Next(context.Background())
+	_ = invalidStream.Close()
+	if err != nil || invalidEvent.Kind != "error" || invalidEvent.Error == nil || invalidEvent.Error.Code != "INVALID_REQUEST" {
+		cancel()
+		t.Fatalf("unexpected single membership error: event=%+v err=%v", invalidEvent, err)
 	}
 	var logs map[string]string
 	if err := client.Do(context.Background(), http.MethodGet, "/v1/logs?lines=5", "", nil, &logs); err != nil || !strings.Contains(logs["content"], "ready") {

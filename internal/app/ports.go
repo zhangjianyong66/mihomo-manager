@@ -36,6 +36,20 @@ type Group struct {
 	Type           string
 	SelectedNodeID domain.NodeID
 	NodeIDs        []domain.NodeID
+	NodeStates     []GroupNodeState
+}
+
+type NodeTestStatus string
+
+const (
+	NodeTestStatusSuccess NodeTestStatus = "success"
+	NodeTestStatusFailed  NodeTestStatus = "failed"
+)
+
+type GroupNodeState struct {
+	NodeID   domain.NodeID
+	Testable bool
+	Latest   *NodeDelay
 }
 
 type Subscription struct {
@@ -47,13 +61,16 @@ type Subscription struct {
 }
 
 type NodeDelay struct {
-	NodeID domain.NodeID
-	Delay  time.Duration
+	NodeID   domain.NodeID
+	Status   NodeTestStatus
+	Delay    time.Duration
+	TestedAt time.Time
 }
 
 type NodeTestRequest struct {
 	ProfileID   domain.ProfileID
 	GroupID     domain.GroupID
+	NodeID      domain.NodeID
 	Concurrency int
 	Limit       int
 }

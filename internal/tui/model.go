@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -80,10 +81,15 @@ type Model struct {
 	progressDone           int
 	progressTotal          int
 	liveResults            []app.NodeDelay
-	switchNodeDelay        map[string]int
+	nodeResults            map[string]app.NodeDelay
+	nodeTestable           map[string]bool
+	nodeTestActive         bool
 	switchTestDone         int
 	switchTestTotal        int
 	switchTestCancel       context.CancelFunc
+	switchTestGeneration   uint64
+	switchTestMessage      string
+	now                    func() time.Time
 	currentNodeName        string
 	currentGroupID         string
 	currentGroupName       string
@@ -167,7 +173,10 @@ type nodeSelectedMsg struct {
 	err  error
 }
 
-type nodeTestStartedMsg struct{ ch <-chan app.NodeTestEvent }
+type nodeTestStartedMsg struct {
+	generation uint64
+	ch         <-chan app.NodeTestEvent
+}
 
 type logStreamStartedMsg struct{ ch <-chan app.LogEvent }
 
@@ -180,9 +189,10 @@ type nodeTestMsg struct {
 }
 
 type switchNodeTestMsg struct {
-	ch    <-chan app.NodeTestEvent
-	event app.NodeTestEvent
-	ok    bool
+	generation uint64
+	ch         <-chan app.NodeTestEvent
+	event      app.NodeTestEvent
+	ok         bool
 }
 
 type logEventMsg struct {
@@ -209,7 +219,7 @@ func NewWithContext(ctx context.Context, client Capabilities) Model {
 	ti.Prompt = "> "
 	ti.CharLimit = 200
 	ti.Width = 70
-	return Model{client: client, ctx: ctx, page: mainMenu, returnPage: actionMenu, input: ti, mainItems: []string{"运行模式", "实时连接", "服务管理", "节点管理", "订阅管理", "白名单管理", "路由诊断", "配置管理", "退出"}}
+	return Model{client: client, ctx: ctx, page: mainMenu, returnPage: actionMenu, input: ti, now: time.Now, mainItems: []string{"运行模式", "实时连接", "服务管理", "节点管理", "订阅管理", "白名单管理", "路由诊断", "配置管理", "退出"}}
 }
 
 func (m Model) Init() tea.Cmd { return nil }
@@ -348,14 +358,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.currentNodeName = msg.node
-		m.switchNodeDelay = map[string]int{}
-		m.switchTestDone = 0
-		m.switchTestTotal = 0
-		ctx, cancel := context.WithCancel(m.ctx)
-		m.switchTestCancel = cancel
-		return m, startNodeTestCmd(ctx, m.client, m.currentGroupID)
+		for index := range m.groups {
+			if m.groups[index].ID.String() == m.currentGroupID {
+				m.groups[index].SelectedNodeID = domain.NodeID(msg.node)
+			}
+		}
+		m.switchTestMessage = "节点已切换"
+		return m, nil
 	case nodeTestStartedMsg:
-		return m, waitSwitchNodeTestMsg(msg.ch)
+		if msg.generation != m.switchTestGeneration || !m.nodeTestActive {
+			return m, nil
+		}
+		return m, waitSwitchNodeTestMsg(msg.ch, msg.generation)
 	case logStreamStartedMsg:
 		return m, waitLogEventMsg(msg.ch)
 	case connectionStreamStartedMsg:
@@ -409,24 +423,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, waitNodeTestMsg(msg.ch)
 	case switchNodeTestMsg:
-		if m.actionCtx != "switch_nodes" && m.actionCtx != "group_nodes" {
+		if msg.generation != m.switchTestGeneration || (m.actionCtx != "switch_nodes" && m.actionCtx != "group_nodes") {
 			return m, nil
 		}
 		if !msg.ok {
+			m.nodeTestActive = false
+			m.switchTestCancel = nil
+			return m, nil
+		}
+		if msg.event.Err != nil {
+			m.nodeTestActive = false
+			m.switchTestCancel = nil
+			if !errors.Is(msg.event.Err, context.Canceled) {
+				m.switchTestMessage = "测速失败: " + msg.event.Err.Error()
+			}
 			return m, nil
 		}
 		if msg.event.Result != nil {
-			if m.switchNodeDelay == nil {
-				m.switchNodeDelay = map[string]int{}
+			if m.nodeResults == nil {
+				m.nodeResults = map[string]app.NodeDelay{}
 			}
-			m.switchNodeDelay[msg.event.Result.NodeID.String()] = int(msg.event.Result.Delay.Milliseconds())
+			result := *msg.event.Result
+			if result.TestedAt.IsZero() {
+				result.TestedAt = m.clockNow()
+			}
+			m.nodeResults[result.NodeID.String()] = result
 		}
 		m.switchTestDone = msg.event.Done
 		m.switchTestTotal = msg.event.Total
 		if msg.event.Finished {
+			m.nodeTestActive = false
+			m.switchTestCancel = nil
+			m.switchTestMessage = fmt.Sprintf("测速完成 %d/%d", msg.event.Done, msg.event.Total)
 			return m, nil
 		}
-		return m, waitSwitchNodeTestMsg(msg.ch)
+		return m, waitSwitchNodeTestMsg(msg.ch, msg.generation)
 	case logEventMsg:
 		if m.actionCtx != "log_live" {
 			return m, nil
@@ -528,10 +559,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.page == actionMenu && (m.actionCtx == "switch_nodes" || m.actionCtx == "group_nodes") {
-				if m.switchTestCancel != nil {
-					m.switchTestCancel()
-					m.switchTestCancel = nil
+				if m.nodeTestActive {
+					m.cancelNodeTest("测速已取消")
+					return m, nil
 				}
+				m.cancelNodeTest("")
 				if m.actionCtx == "group_nodes" {
 					m.actionCtx = "group_list"
 					m.actionItems = formatGroupItems(m.groups)
@@ -540,7 +572,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.actionItems = menuActions("节点管理")
 				}
 				m.actionIndex = 0
-				m.switchNodeDelay = nil
+				m.nodeResults = nil
+				m.nodeTestable = nil
 				m.switchTestDone = 0
 				m.switchTestTotal = 0
 				return m, nil
@@ -733,6 +766,13 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch s {
 	case "a":
+		if m.actionCtx == "group_nodes" {
+			if m.testableNodeCount() == 0 {
+				m.switchTestMessage = "当前代理组没有可测速节点"
+				return m, nil
+			}
+			return m.beginNodeTest(app.NodeTestRequest{GroupID: domain.GroupID(m.currentGroupID), Concurrency: 5, Limit: 0})
+		}
 		if m.actionCtx == "whitelist_list" {
 			m.inputTitle = "新增白名单域名"
 			m.inputDo = func(v string) tea.Cmd {
@@ -742,6 +782,22 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input.Focus()
 			m.page = inputView
 			return m, textinput.Blink
+		}
+	case "t":
+		if m.actionCtx == "group_nodes" {
+			if len(m.actionItems) == 0 {
+				return m, nil
+			}
+			node := m.actionItems[m.actionIndex]
+			if node == "返回" {
+				m.switchTestMessage = "请先选择一个节点"
+				return m, nil
+			}
+			if !m.nodeTestable[node] {
+				m.switchTestMessage = "该节点不可测速"
+				return m, nil
+			}
+			return m.beginNodeTest(app.NodeTestRequest{GroupID: domain.GroupID(m.currentGroupID), NodeID: domain.NodeID(node)})
 		}
 	case "up":
 		if m.actionIndex > 0 {
@@ -763,26 +819,22 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		act := m.actionItems[m.actionIndex]
 		if m.actionCtx == "switch_nodes" {
 			if act == "返回" {
-				if m.switchTestCancel != nil {
-					m.switchTestCancel()
-					m.switchTestCancel = nil
-				}
+				m.cancelNodeTest("")
 				m.actionCtx = ""
 				m.actionItems = menuActions("节点管理")
 				m.actionIndex = 0
-				m.switchNodeDelay = nil
+				m.nodeResults = nil
+				m.nodeTestable = nil
 				m.switchTestDone = 0
 				m.switchTestTotal = 0
 				return m, nil
 			}
-			if m.switchTestCancel != nil {
-				m.switchTestCancel()
-				m.switchTestCancel = nil
-			}
+			m.cancelNodeTest("")
 			m.actionCtx = ""
 			m.actionItems = menuActions("节点管理")
 			m.actionIndex = 0
-			m.switchNodeDelay = nil
+			m.nodeResults = nil
+			m.nodeTestable = nil
 			m.switchTestDone = 0
 			m.switchTestTotal = 0
 			model, cmd := m.executeAction("节点切换选择", act)
@@ -812,21 +864,15 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.actionCtx == "group_nodes" {
 			if act == "返回" {
-				if m.switchTestCancel != nil {
-					m.switchTestCancel()
-					m.switchTestCancel = nil
-				}
+				m.cancelNodeTest("")
 				m.actionCtx = "group_list"
 				m.actionItems = formatGroupItems(m.groups)
 				m.actionIndex = 0
-				m.switchNodeDelay = nil
+				m.nodeResults = nil
+				m.nodeTestable = nil
 				m.switchTestDone = 0
 				m.switchTestTotal = 0
 				return m, nil
-			}
-			if m.switchTestCancel != nil {
-				m.switchTestCancel()
-				m.switchTestCancel = nil
 			}
 			m.busy = true
 			return m, selectNodeCmd(m.ctx, m.client, m.currentGroupID, act)
@@ -1228,9 +1274,9 @@ func selectNodeCmd(ctx context.Context, service Capabilities, groupID, nodeID st
 	}
 }
 
-func startNodeTestCmd(ctx context.Context, service Capabilities, groupID string) tea.Cmd {
+func startNodeTestCmd(ctx context.Context, service Capabilities, request app.NodeTestRequest, generation uint64) tea.Cmd {
 	return func() tea.Msg {
-		return nodeTestStartedMsg{ch: service.TestNodes(ctx, app.NodeTestRequest{GroupID: domain.GroupID(groupID), Concurrency: 5, Limit: 120})}
+		return nodeTestStartedMsg{generation: generation, ch: service.TestNodes(ctx, request)}
 	}
 }
 
@@ -1442,14 +1488,24 @@ func (m Model) View() string {
 		currentPage := (idx / pageSize) + 1
 		footer = fmt.Sprintf("↑/↓ 选择 Enter 进入 Esc 返回 q 退出 | 第 %d/%d 页", currentPage, max(1, totalPages))
 		if m.actionCtx == "group_nodes" {
-			footer = fmt.Sprintf("%s | ←/→ 翻页 | 进度 %d/%d", footer, m.switchTestDone, m.switchTestTotal)
+			navigation := fitFooter(fmt.Sprintf("↑/↓ 选择 Enter 切换 ←/→ 翻页 | 第 %d/%d 页", currentPage, max(1, totalPages)), m.width)
+			action := "t 单测 | a 批量 | Esc 返回"
+			if m.nodeTestActive {
+				action = fmt.Sprintf("t 单测 | a 批量 | 进度 %d/%d | Esc 取消", m.switchTestDone, m.switchTestTotal)
+			}
+			if m.switchTestMessage != "" && !m.nodeTestActive {
+				action += " | " + m.switchTestMessage
+			}
+			footer = navigation + "\n" + fitFooter(action, m.width)
 		} else if m.actionCtx == "group_list" {
 			footer = fmt.Sprintf("%s | ←/→ 翻页", footer)
 		} else if m.actionCtx == "whitelist_list" {
 			footer = fmt.Sprintf("%s | ←/→ 翻页 | a 新增", footer)
 		}
 	}
-	footer = fitFooter(footer, m.width)
+	if m.actionCtx != "group_nodes" {
+		footer = fitFooter(footer, m.width)
+	}
 	return fmt.Sprintf("%s\n\n%s\n%s\n\n%s", title, header, b.String(), footer)
 }
 
@@ -1526,10 +1582,10 @@ func waitNodeTestMsg(ch <-chan app.NodeTestEvent) tea.Cmd {
 	}
 }
 
-func waitSwitchNodeTestMsg(ch <-chan app.NodeTestEvent) tea.Cmd {
+func waitSwitchNodeTestMsg(ch <-chan app.NodeTestEvent, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-ch
-		return switchNodeTestMsg{ch: ch, event: ev, ok: ok}
+		return switchNodeTestMsg{generation: generation, ch: ch, event: ev, ok: ok}
 	}
 }
 
@@ -1565,13 +1621,51 @@ func (m Model) renderSwitchNodeItem(node string) string {
 	if strings.TrimSpace(node) == strings.TrimSpace(m.currentNodeName) {
 		suffix = " ✅"
 	}
-	if d, ok := m.switchNodeDelay[node]; ok {
-		if d > 0 {
-			return fmt.Sprintf("%s%s  [%dms]", node, suffix, d)
+	status := "未测速"
+	if result, ok := m.nodeResults[node]; ok {
+		age := relativeTestTime(m.clockNow(), result.TestedAt)
+		if result.Status == app.NodeTestStatusSuccess && result.Delay > 0 {
+			status = fmt.Sprintf("%dms · %s", result.Delay.Milliseconds(), age)
+		} else {
+			status = "失败 · " + age
 		}
-		return fmt.Sprintf("%s%s  [timeout]", node, suffix)
 	}
-	return fmt.Sprintf("%s%s  [...]", node, suffix)
+	label := node + suffix
+	if m.width <= 0 {
+		return fmt.Sprintf("%s  [%s]", label, status)
+	}
+	statusText := "[" + status + "]"
+	available := m.width - lipgloss.Width(statusText) - 6
+	if available < 1 {
+		available = 1
+	}
+	label = truncateDisplayWidth(label, available)
+	padding := strings.Repeat(" ", max(0, available-lipgloss.Width(label)))
+	return label + padding + "  " + statusText
+}
+
+func truncateDisplayWidth(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(value) <= width {
+		return value
+	}
+	ellipsis := "..."
+	budget := width - lipgloss.Width(ellipsis)
+	if budget <= 0 {
+		ellipsis = ""
+		budget = width
+	}
+	var result strings.Builder
+	for _, char := range value {
+		candidate := result.String() + string(char)
+		if lipgloss.Width(candidate) > budget {
+			break
+		}
+		result.WriteRune(char)
+	}
+	return result.String() + ellipsis
 }
 
 func fitFooter(s string, width int) string {
@@ -1636,14 +1730,94 @@ func (m Model) enterLoadedGroup(group app.Group) (tea.Model, tea.Cmd) {
 	m.currentGroupName = group.Name
 	m.currentNodeName = strings.TrimSpace(group.SelectedNodeID.String())
 	m.actionCtx = "group_nodes"
+	m.page = actionMenu
 	m.actionItems = append(nodes, "返回")
 	m.actionIndex = 0
-	m.switchNodeDelay = map[string]int{}
+	m.nodeResults = map[string]app.NodeDelay{}
+	m.nodeTestable = map[string]bool{}
+	if len(group.NodeStates) == 0 {
+		for _, node := range nodes {
+			m.nodeTestable[node] = likelyTestableNode(node)
+		}
+	} else {
+		for _, state := range group.NodeStates {
+			key := state.NodeID.String()
+			m.nodeTestable[key] = state.Testable
+			if state.Latest != nil {
+				m.nodeResults[key] = *state.Latest
+			}
+		}
+	}
+	m.nodeTestActive = false
 	m.switchTestDone = 0
 	m.switchTestTotal = 0
+	m.switchTestMessage = ""
+	return m, nil
+}
+
+func (m Model) beginNodeTest(request app.NodeTestRequest) (tea.Model, tea.Cmd) {
+	m.switchTestGeneration++
+	if m.switchTestCancel != nil {
+		m.switchTestCancel()
+	}
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.switchTestCancel = cancel
-	return m, startNodeTestCmd(ctx, m.client, group.ID.String())
+	m.nodeTestActive = true
+	m.switchTestDone = 0
+	m.switchTestTotal = 0
+	m.switchTestMessage = "测速中"
+	return m, startNodeTestCmd(ctx, m.client, request, m.switchTestGeneration)
+}
+
+func (m *Model) cancelNodeTest(message string) {
+	m.switchTestGeneration++
+	if m.switchTestCancel != nil {
+		m.switchTestCancel()
+	}
+	m.switchTestCancel = nil
+	m.nodeTestActive = false
+	m.switchTestMessage = message
+}
+
+func (m Model) testableNodeCount() int {
+	count := 0
+	for _, node := range m.actionItems {
+		if node != "返回" && m.nodeTestable[node] {
+			count++
+		}
+	}
+	return count
+}
+
+func (m Model) clockNow() time.Time {
+	if m.now == nil {
+		return time.Now()
+	}
+	return m.now()
+}
+
+func relativeTestTime(now, testedAt time.Time) string {
+	if testedAt.IsZero() || testedAt.After(now) {
+		return "刚刚"
+	}
+	age := now.Sub(testedAt)
+	switch {
+	case age < time.Minute:
+		return "刚刚"
+	case age < time.Hour:
+		return fmt.Sprintf("%d分钟前", int(age/time.Minute))
+	case age < 24*time.Hour:
+		return fmt.Sprintf("%d小时前", int(age/time.Hour))
+	case age < 30*24*time.Hour:
+		return fmt.Sprintf("%d天前", int(age/(24*time.Hour)))
+	default:
+		return testedAt.Local().Format("2006-01-02")
+	}
+}
+
+func likelyTestableNode(node string) bool {
+	value := strings.TrimSpace(node)
+	return value != "" && !strings.EqualFold(value, "DIRECT") && !strings.EqualFold(value, "REJECT") && !strings.HasPrefix(value, "官网") && !strings.HasPrefix(value, "有效期")
 }
 
 func (m Model) whitelistActionItems() []string {

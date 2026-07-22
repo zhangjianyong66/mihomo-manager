@@ -170,6 +170,16 @@ func (c *Compatibility) GroupNodes(ctx context.Context, id domain.RestorePointID
 	return nodes, selected, err
 }
 
+func (c *Compatibility) GroupDetail(ctx context.Context, id domain.RestorePointID, group string) (mihomo.ProxyGroup, error) {
+	var result mihomo.ProxyGroup
+	err := c.inspect(ctx, id, func(client *mihomo.Client) error {
+		var err error
+		result, err = client.GroupDetail(group)
+		return err
+	})
+	return result, err
+}
+
 func (c *Compatibility) GlobalNodes(ctx context.Context, id domain.RestorePointID) ([]string, error) {
 	var nodes []string
 	err := c.inspect(ctx, id, func(client *mihomo.Client) error {
@@ -195,6 +205,15 @@ func (c *Compatibility) TestNodes(ctx context.Context, id domain.RestorePointID,
 		} else {
 			stream = client.TestGroupNodesStreamWithStop(group, concurrency, limit, ctx.Done())
 		}
+		return nil
+	})
+	return stream, err
+}
+
+func (c *Compatibility) TestNode(ctx context.Context, id domain.RestorePointID, group, node string) (<-chan mihomo.NodeTestEvent, error) {
+	var stream <-chan mihomo.NodeTestEvent
+	err := c.inspect(ctx, id, func(client *mihomo.Client) error {
+		stream = client.TestNodeStreamWithStop(group, node, ctx.Done())
 		return nil
 	})
 	return stream, err

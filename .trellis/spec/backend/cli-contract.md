@@ -206,3 +206,73 @@ return m, func() tea.Msg {
     return actionDoneMsg{err: err}
 }
 ```
+
+## Scenario：节点历史与显式测速
+
+### 1. Scope / Trigger
+
+修改节点组 DTO、`mm node test`、`/v1/nodes/test*` 或 TUI 节点列表时适用。目标是让节点列表只读取 mihomo 运行时 history，测速必须由用户显式触发，并保证单测不会退化成整组测速。
+
+### 2. Signatures
+
+```text
+mm node test [--group <group>] [--concurrency 5] [--limit 120]
+mm node test --node <node> [--group <group>]
+POST /v1/nodes/test
+POST /v1/nodes/test-single
+```
+
+`app.NodeTestRequest` 以 `NodeID` 区分单测与批测；`Group.NodeStates` 按节点 ID 提供 `testable` 和可选的最新 `status/delay/testedAt`。旧 `nodes: []string` 字段保持不变。
+
+### 3. Contracts
+
+- TUI 进入节点列表只调用 group 查询并展示最新 history，不产生 `/delay` 请求；无 history 显示“未测速”。
+- TUI 使用 `t` 测试光标节点、`a` 测试当前组全部可测速 leaf；批测固定低并发且 `limit=0` 表示不截断。
+- 测速只更新结果，不自动切换节点；Enter 选择成功后不得清空 history 或启动测速。
+- 测速中 Esc 取消并留在列表，保留部分结果；空闲 Esc 才返回。每轮异步消息携带 generation，取消或替换后丢弃旧流事件。
+- 单测固定走 `/v1/nodes/test-single`，不得把 `nodeId` 仅加到旧批量 body；指定 group 时在请求 `/delay` 前验证成员关系和 leaf 可测速性。
+- NDJSON event 保留 `done/total/name/delayMs`，追加 `status=success|failed` 与 RFC3339Nano `testedAt`；旧响应缺字段时按正 delay 推导 success，不伪造测试时间。
+- history 归 mihomo 运行时所有，不写 SQLite，也不承诺跨 core 重启保留。
+
+### 4. Validation & Error Matrix
+
+| 条件 | daemon/stream code | CLI 行为 |
+|---|---|---|
+| `nodeId` 为空 | `INVALID_REQUEST` | 退出码 2，不发起 `/delay` |
+| 节点或 group 不存在 | `NOT_FOUND` | 退出码 3 |
+| 节点不属于显式 group，或不是可测速 leaf | `INVALID_REQUEST` | 退出码 2，不发起 `/delay` |
+| 单测显式混用 `--limit` 或 `--concurrency` | 客户端拒绝，不请求 daemon | 退出码 2 |
+| 单个探测失败或超时 | `status=failed` 节点 event，随后 `done` | 正常输出失败结果，不伪造正延迟 |
+| controller/IPC 系统错误 | terminal `error` | 映射对应 app 分类与退出码 |
+| context 取消 | 请求与 HTTP body/channel 关闭 | CLI 正常取消；TUI 留在节点列表 |
+
+### 5. Good / Base / Bad Cases
+
+- Good：进入列表立即看到最新 history；按 `t` 只产生一个节点请求，按 `a` 完整测试超过 120 个可测速 leaf，结果逐项刷新且当前选择不变。
+- Base：core history 为空或旧 daemon 未返回 additive 字段时显示“未测速”；旧批量 event 缺 `status/testedAt` 时只按正 delay 推导 success。
+- Bad：进入列表或 Enter 选择后隐式调用 `/delay`；把 `nodeId` 放进旧 `/v1/nodes/test` body 让旧 daemon 忽略后执行整组测速；两种行为都禁止发布。
+
+### 6. Tests Required
+
+- `internal/mihomo`：history 的 null/空/成功/失败、嵌套组过滤、单测恰好一次、成员拒绝、`limit=0` 超过 120 和取消。
+- `internal/daemon` / `internal/app`：additive group 字段、新旧路由、status/time 解码、旧 event 兼容和取消。
+- `internal/cli`：`--node`、可选 group、与显式批量参数冲突、text/NDJSON 成功失败及脱敏。
+- `internal/tui`：进入列表零测速、相对时间、`t/a`、两阶段 Esc、generation 丢弃迟到事件、Enter 不测速和窄终端稳定行宽。
+
+### 7. Wrong vs Correct
+
+错误：单测复用旧批量路由，或进入节点页立即启动测速。
+
+```go
+client.OpenStream(ctx, http.MethodPost, "/v1/nodes/test", requestWithNodeID)
+return m, startNodeTestCmd(ctx, service, groupID)
+```
+
+正确：`NodeID` 选择独立路由；group load 只把 history 投影到页面状态，返回空 command。
+
+```go
+if request.NodeID != "" {
+    path = "/v1/nodes/test-single"
+}
+return m, nil
+```

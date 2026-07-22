@@ -242,9 +242,13 @@ func (c *DaemonCapabilities) TestNodes(ctx context.Context, request NodeTestRequ
 	result := make(chan NodeTestEvent, 32)
 	go func() {
 		defer close(result)
-		body, err := c.client.OpenStream(ctx, http.MethodPost, "/v1/nodes/test", newRequestID("node-test"), map[string]any{
-			"profileId": request.ProfileID, "groupId": request.GroupID, "concurrency": request.Concurrency, "limit": request.Limit,
-		})
+		path := "/v1/nodes/test"
+		payload := map[string]any{"profileId": request.ProfileID, "groupId": request.GroupID, "concurrency": request.Concurrency, "limit": request.Limit}
+		if request.NodeID != "" {
+			path = "/v1/nodes/test-single"
+			payload = map[string]any{"profileId": request.ProfileID, "groupId": request.GroupID, "nodeId": request.NodeID}
+		}
+		body, err := c.client.OpenStream(ctx, http.MethodPost, path, newRequestID("node-test"), payload)
 		if err != nil {
 			sendNodeTestEvent(ctx, result, NodeTestEvent{Err: c.mapError(err), Finished: true})
 			return
@@ -264,16 +268,25 @@ func (c *DaemonCapabilities) TestNodes(ctx context.Context, request NodeTestRequ
 			switch event.Kind {
 			case "event":
 				var value struct {
-					Done  int    `json:"done"`
-					Total int    `json:"total"`
-					Name  string `json:"name"`
-					Delay int    `json:"delayMs"`
+					Done     int            `json:"done"`
+					Total    int            `json:"total"`
+					Name     string         `json:"name"`
+					Delay    int            `json:"delayMs"`
+					Status   NodeTestStatus `json:"status"`
+					TestedAt time.Time      `json:"testedAt"`
 				}
 				if err := json.Unmarshal(event.Data, &value); err != nil {
 					sendNodeTestEvent(ctx, result, NodeTestEvent{Err: err, Finished: true})
 					return
 				}
-				sendNodeTestEvent(ctx, result, NodeTestEvent{Done: value.Done, Total: value.Total, Result: &NodeDelay{NodeID: domain.NodeID(value.Name), Delay: time.Duration(value.Delay) * time.Millisecond}})
+				status := value.Status
+				if status == "" {
+					status = NodeTestStatusFailed
+					if value.Delay > 0 {
+						status = NodeTestStatusSuccess
+					}
+				}
+				sendNodeTestEvent(ctx, result, NodeTestEvent{Done: value.Done, Total: value.Total, Result: &NodeDelay{NodeID: domain.NodeID(value.Name), Status: status, Delay: time.Duration(value.Delay) * time.Millisecond, TestedAt: value.TestedAt}})
 			case "done":
 				var value struct{ Done, Total int }
 				_ = json.Unmarshal(event.Data, &value)
@@ -612,7 +625,15 @@ func convertGroup(value daemon.GroupInfo) Group {
 	for _, node := range value.Nodes {
 		nodes = append(nodes, domain.NodeID(node))
 	}
-	return Group{ID: value.ID, Name: value.Name, Type: value.Type, SelectedNodeID: domain.NodeID(value.SelectedNode), NodeIDs: nodes}
+	states := make([]GroupNodeState, 0, len(value.NodeStates))
+	for _, value := range value.NodeStates {
+		state := GroupNodeState{NodeID: value.NodeID, Testable: value.Testable}
+		if value.Latest != nil {
+			state.Latest = &NodeDelay{NodeID: value.NodeID, Status: NodeTestStatus(value.Latest.Status), Delay: time.Duration(value.Latest.DelayMS) * time.Millisecond, TestedAt: value.Latest.TestedAt}
+		}
+		states = append(states, state)
+	}
+	return Group{ID: value.ID, Name: value.Name, Type: value.Type, SelectedNodeID: domain.NodeID(value.SelectedNode), NodeIDs: nodes, NodeStates: states}
 }
 
 func (c *DaemonCapabilities) convertModeStatus(value daemon.ModeStatus) RoutingModeStatus {

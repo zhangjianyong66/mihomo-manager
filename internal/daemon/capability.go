@@ -30,11 +30,24 @@ type CapabilityStore interface {
 }
 
 type GroupInfo struct {
-	ID           domain.GroupID `json:"id"`
-	Name         string         `json:"name"`
-	Type         string         `json:"type"`
-	SelectedNode string         `json:"selectedNode"`
-	Nodes        []string       `json:"nodes"`
+	ID           domain.GroupID  `json:"id"`
+	Name         string          `json:"name"`
+	Type         string          `json:"type"`
+	SelectedNode string          `json:"selectedNode"`
+	Nodes        []string        `json:"nodes"`
+	NodeStates   []NodeStateInfo `json:"nodeStates,omitempty"`
+}
+
+type NodeStateInfo struct {
+	NodeID   domain.NodeID       `json:"nodeId"`
+	Testable bool                `json:"testable"`
+	Latest   *NodeTestResultInfo `json:"latest,omitempty"`
+}
+
+type NodeTestResultInfo struct {
+	Status   mihomo.NodeTestStatus `json:"status"`
+	DelayMS  int                   `json:"delayMs"`
+	TestedAt time.Time             `json:"testedAt"`
 }
 
 type NodeInfo struct {
@@ -374,11 +387,19 @@ func (s *CapabilityService) Group(ctx context.Context, profileID, groupID string
 	if err != nil {
 		return GroupInfo{}, err
 	}
-	nodes, selected, err := s.legacy.GroupNodes(ctx, restorePoint, groupID)
+	group, err := s.legacy.GroupDetail(ctx, restorePoint, groupID)
 	if err != nil {
 		return GroupInfo{}, err
 	}
-	return GroupInfo{ID: domain.GroupID(groupID), Name: groupID, SelectedNode: selected, Nodes: nodes}, nil
+	states := make([]NodeStateInfo, 0, len(group.NodeStates))
+	for _, state := range group.NodeStates {
+		item := NodeStateInfo{NodeID: domain.NodeID(state.Name), Testable: state.Testable}
+		if state.Latest != nil {
+			item.Latest = &NodeTestResultInfo{Status: state.Latest.Status, DelayMS: state.Latest.Delay, TestedAt: state.Latest.TestedAt}
+		}
+		states = append(states, item)
+	}
+	return GroupInfo{ID: domain.GroupID(group.Name), Name: group.Name, Type: group.Type, SelectedNode: group.Now, Nodes: group.All, NodeStates: states}, nil
 }
 
 func (s *CapabilityService) SelectGroupNode(ctx context.Context, profileID, groupID, nodeID string) error {
@@ -416,6 +437,14 @@ func (s *CapabilityService) TestNodes(ctx context.Context, profileID, groupID st
 		return nil, err
 	}
 	return s.legacy.TestNodes(ctx, restorePoint, groupID, concurrency, limit)
+}
+
+func (s *CapabilityService) TestNode(ctx context.Context, profileID, groupID, nodeID string) (<-chan mihomo.NodeTestEvent, error) {
+	_, restorePoint, err := s.profile(ctx, profileID)
+	if err != nil {
+		return nil, err
+	}
+	return s.legacy.TestNode(ctx, restorePoint, groupID, nodeID)
 }
 
 func (s *CapabilityService) Subscription(ctx context.Context, profileID string) (SubscriptionInfo, error) {

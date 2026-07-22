@@ -19,6 +19,7 @@ type fakeCapabilityAPI struct {
 	route            app.RouteDiagnosis
 	logs             []app.LogLine
 	stream           []app.NodeTestEvent
+	testRequest      app.NodeTestRequest
 	selectGroup      string
 	selectNode       string
 	replaced         []byte
@@ -73,7 +74,8 @@ func (f *fakeCapabilityAPI) SelectGroupNode(_ context.Context, _, group, node st
 func (f *fakeCapabilityAPI) Nodes(context.Context, string, string) ([]app.Node, error) {
 	return f.nodes, f.err
 }
-func (f *fakeCapabilityAPI) TestNodes(context.Context, app.NodeTestRequest) <-chan app.NodeTestEvent {
+func (f *fakeCapabilityAPI) TestNodes(_ context.Context, request app.NodeTestRequest) <-chan app.NodeTestEvent {
+	f.testRequest = request
 	result := make(chan app.NodeTestEvent, len(f.stream))
 	for _, event := range f.stream {
 		result <- event
@@ -159,8 +161,9 @@ func TestCapabilityCLISubscriptionRedactsURL(t *testing.T) {
 }
 
 func TestCapabilityCLINodeTestNDJSON(t *testing.T) {
+	testedAt := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	fake := &fakeCapabilityAPI{stream: []app.NodeTestEvent{
-		{Done: 1, Total: 1, Result: &app.NodeDelay{NodeID: "node-a", Delay: 123 * time.Millisecond}},
+		{Done: 1, Total: 1, Result: &app.NodeDelay{NodeID: "node-a", Status: app.NodeTestStatusSuccess, Delay: 123 * time.Millisecond, TestedAt: testedAt}},
 		{Done: 1, Total: 1, Finished: true},
 	}}
 	var stdout, stderr strings.Builder
@@ -169,8 +172,29 @@ func TestCapabilityCLINodeTestNDJSON(t *testing.T) {
 		t.Fatalf("unexpected result: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
-	if len(lines) != 2 || !strings.Contains(lines[0], `"kind":"NodeTestEvent"`) || !strings.Contains(lines[1], `"kind":"NodeTestComplete"`) {
+	if len(lines) != 2 || !strings.Contains(lines[0], `"kind":"NodeTestEvent"`) || !strings.Contains(lines[0], `"status":"success"`) || !strings.Contains(lines[0], `"testedAt":"2026-07-22T12:00:00Z"`) || !strings.Contains(lines[1], `"kind":"NodeTestComplete"`) {
 		t.Fatalf("unexpected NDJSON: %q", stdout.String())
+	}
+}
+
+func TestCapabilityCLINodeTestSingleUsesNodeAndOptionalGroup(t *testing.T) {
+	fake := &fakeCapabilityAPI{stream: []app.NodeTestEvent{
+		{Done: 1, Total: 1, Result: &app.NodeDelay{NodeID: "node-a", Status: app.NodeTestStatusFailed, TestedAt: time.Now()}},
+		{Done: 1, Total: 1, Finished: true},
+	}}
+	var stdout, stderr strings.Builder
+	code := Execute(context.Background(), Dependencies{Capabilities: fake}, []string{"node", "test", "--node", "node-a", "--group", "GLOBAL"}, nil, &stdout, &stderr)
+	if code != 0 || fake.testRequest.NodeID != "node-a" || fake.testRequest.GroupID != "GLOBAL" || !strings.Contains(stdout.String(), "失败") {
+		t.Fatalf("unexpected single test: code=%d request=%+v stdout=%q stderr=%q", code, fake.testRequest, stdout.String(), stderr.String())
+	}
+}
+
+func TestCapabilityCLINodeTestSingleRejectsBatchFlags(t *testing.T) {
+	fake := &fakeCapabilityAPI{}
+	var stdout, stderr strings.Builder
+	code := Execute(context.Background(), Dependencies{Capabilities: fake}, []string{"node", "test", "--node", "node-a", "--limit", "1"}, nil, &stdout, &stderr)
+	if code != ExitInvalidArgument || fake.testRequest.NodeID != "" || !strings.Contains(stderr.String(), "不能同时指定") {
+		t.Fatalf("unexpected conflict result: code=%d request=%+v stderr=%q", code, fake.testRequest, stderr.String())
 	}
 }
 
