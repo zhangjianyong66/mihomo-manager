@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 19
+- **Total Sessions**: 20
 - **Last Active**: 2026-07-22
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~636 | Active |
+| `journal-1.md` | ~669 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 20 | 2026-07-22 | TUI 组合重启 daemon 与 Core | `8818142` | `master` |
 | 19 | 2026-07-22 | 重设计节点测速交互 | `6f4232b` | `master` |
 | 18 | 2026-07-22 | 完成三模式路由父任务验收 | `2b387e2` | `master` |
 | 17 | 2026-07-22 | 修复 legacy 迁移重复备份 | `8ddb447` | `master` |

@@ -634,3 +634,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 20: TUI 组合重启 daemon 与 Core
+
+**Date**: 2026-07-22
+**Task**: TUI 组合重启 daemon 与 Core
+**Branch**: `master`
+
+### Summary
+
+新增客户端侧 daemon 组合重启事务、systemd 受管 unit 与身份校验、CLI restart 命令和 TUI 确认/进度/恢复结果；同步规范文档并通过全量 race、vet、双架构构建及 help 冒烟。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8818142` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
