@@ -168,8 +168,8 @@ daemon 提供 mihomo 监听端口和运行状态；只读 platform inspector 检
 
 ## 12. Milestone 设计
 
-1. [M1 安装 CN 规则集与用户 daemon](../07-21-m1-ruleset-install/design.md)
-2. [M2 构建 Rule 分流与订阅保留](../07-21-m2-rule-policy/design.md)
-3. [M3 实现模式事务与 daemon API](../07-21-m3-mode-transaction/design.md)
-4. [M4 提供模式 CLI 与 TUI](../07-21-m4-mode-surfaces/design.md)
-5. [M5 提供实时链路与入口诊断](../07-21-m5-route-observability/design.md)
+1. [M1 安装 CN 规则集与用户 daemon](../archive/2026-07/07-21-m1-ruleset-install/design.md)
+2. [M2 构建 Rule 分流与订阅保留](../archive/2026-07/07-21-m2-rule-policy/design.md)
+3. [M3 实现模式事务与 daemon API](../archive/2026-07/07-21-m3-mode-transaction/design.md)
+4. [M4 提供模式 CLI 与 TUI](../archive/2026-07/07-21-m4-mode-surfaces/design.md)
+5. [M5 提供实时链路与入口诊断](../archive/2026-07/07-21-m5-route-observability/design.md)

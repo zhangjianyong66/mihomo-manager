@@ -3,7 +3,7 @@
   "name": "routing-modes",
   "title": "新增三模式路由与实时链路",
   "description": "提供 global/rule/direct 三模式、CN 规则与 DNS 分流、事务切换、CLI/TUI 和真实连接链路，并完善安装与 daemon 接入。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

@@ -6,19 +6,19 @@
 
 ## Milestone 顺序
 
-1. [M1：安装 CN 规则集与用户 daemon](../07-21-m1-ruleset-install/implement.md)
+1. [M1：安装 CN 规则集与用户 daemon](../archive/2026-07/07-21-m1-ruleset-install/implement.md)
    - 固定并原子安装两份 CN `.mrs`，扩展 install-state/测试。
    - 安装启用 manager daemon，并区分新建配置自动迁移与已有配置显式迁移。
-2. [M2：构建 Rule 分流与订阅保留](../07-21-m2-rule-policy/implement.md)
+2. [M2：构建 Rule 分流与订阅保留](../archive/2026-07/07-21-m2-rule-policy/implement.md)
    - 建立唯一 RoutingPolicy 解析/合成器、DNS 模板和 native validation。
    - 让白名单、CN 预设和订阅更新共用策略并保持状态。
-3. [M3：实现模式事务与 daemon API](../07-21-m3-mode-transaction/implement.md)
+3. [M3：实现模式事务与 daemon API](../archive/2026-07/07-21-m3-mode-transaction/implement.md)
    - 增加 RoutingMode 领域/app/runtime 契约。
    - 实现 daemon 单写者事务、运行态核验、失败恢复和可选关闭连接。
-4. [M4：提供模式 CLI 与 TUI](../07-21-m4-mode-surfaces/implement.md)
+4. [M4：提供模式 CLI 与 TUI](../archive/2026-07/07-21-m4-mode-surfaces/implement.md)
    - 增加稳定 CLI 输出与错误。
    - 将 TUI 从 legacy 直连 client 迁移到 daemon app 能力，并增加运行模式页面。
-5. [M5：提供实时链路与入口诊断](../07-21-m5-route-observability/implement.md)
+5. [M5：提供实时链路与入口诊断](../archive/2026-07/07-21-m5-route-observability/implement.md)
    - 增加 connections snapshot/follow typed stream。
    - 增加只读系统代理入口检测、warnings 和 TUI 实时视图。
 
@@ -43,12 +43,14 @@
 
 ## 跨 Milestone 质量门
 
-- [ ] 每个 child PRD 的验收标准映射到父 PRD AC1-AC14，且没有未解决开放问题。
-- [ ] 新路径、环境变量和安装状态字段同步更新 `internal/config`、安装/卸载脚本、部署 spec 与根 `AGENTS.md`。
-- [ ] CLI/TUI/IPC/runtime 使用同一 typed DTO；原始 mihomo JSON 只在 adapter 边界解码。
-- [ ] 所有配置/资产变更使用临时文件、校验、原子替换和失败恢复；测试不访问真实 HOME/core/socket/systemd。
-- [ ] 最终执行 `go test ./...`、`GOTOOLCHAIN=go1.22.12 go test -race ./...`、`go vet ./...`、Shell 安装测试/语法检查和 Linux amd64/arm64 无 CGO 构建。
-- [ ] 完成端到端隔离验收：安装 -> daemon -> 新建配置注册/已有配置提示 -> 三模式 -> 订阅更新 -> 活动连接链路 -> 卸载保留。
+- [x] 每个 child PRD 的验收标准映射到父 PRD AC1-AC14，且没有未解决开放问题。
+- [x] 新路径、环境变量和安装状态字段同步更新 `internal/config`、安装/卸载脚本、部署 spec 与根 `AGENTS.md`。
+- [x] CLI/TUI/IPC/runtime 使用同一 typed DTO；原始 mihomo JSON 只在 adapter 边界解码。
+- [x] 所有配置/资产变更使用临时文件、校验、原子替换和失败恢复；测试不访问真实 HOME/core/socket/systemd。
+- [x] 最终执行 `go test ./...`、`GOTOOLCHAIN=go1.22.12 go test -race ./...`、`go vet ./...`、Shell 安装测试/语法检查和 Linux amd64/arm64 无 CGO 构建。
+- [x] 完成端到端隔离验收：安装 -> daemon -> 新建配置注册/已有配置提示 -> 三模式 -> 订阅更新 -> 活动连接链路 -> 卸载保留。
+
+父级验收证据和真实运行态复核记录在 [validation.md](./validation.md)。
 
 ## 全局停止条件
 
