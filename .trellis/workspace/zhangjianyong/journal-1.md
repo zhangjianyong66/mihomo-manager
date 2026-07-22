@@ -700,3 +700,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 22: 修复 TUI 批量测速初始进度
+
+**Date**: 2026-07-23
+**Task**: 修复 TUI 批量测速初始进度
+**Branch**: `master`
+
+### Summary
+
+修复节点列表按 a 后首个测速结果返回前显示 0/0 的问题：批测启动时按已加载 Testable 状态立即初始化为 0/N，流事件到达后继续以 daemon 进度为准；新增批测重启、context 取消和进度覆盖回归测试，并同步测速契约。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ef69f33` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

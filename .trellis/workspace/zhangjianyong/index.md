@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 21
-- **Last Active**: 2026-07-22
+- **Total Sessions**: 22
+- **Last Active**: 2026-07-23
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~702 | Active |
+| `journal-1.md` | ~735 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 22 | 2026-07-23 | 修复 TUI 批量测速初始进度 | `ef69f33` | `master` |
 | 21 | 2026-07-22 | 修复 TUI 连续与批量测速按键响应 | `8b5f5b5` | `master` |
 | 20 | 2026-07-22 | TUI 组合重启 daemon 与 Core | `8818142` | `master` |
 | 19 | 2026-07-22 | 重设计节点测速交互 | `6f4232b` | `master` |
