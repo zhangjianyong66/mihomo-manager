@@ -501,3 +501,37 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 16: 完成端口冲突检测与监听端口管理
+
+**Date**: 2026-07-22
+**Task**: 完成端口冲突检测与监听端口管理
+**Branch**: `master`
+
+### Summary
+
+将默认 mixed 端口改为 7890，新增六类端口启动预检、结构化 daemon/CLI/TUI 管理和安全重配置恢复；补齐跨层测试与规范，并在真实环境验证 PORT_CONFLICT、7890 恢复及 xray 10808 保持不变。另独立提交 legacy 备份候选去重修复。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8ddb447` | (see git log) |
+| `4ef2007` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
