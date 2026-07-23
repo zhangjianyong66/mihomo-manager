@@ -766,3 +766,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 24: 实现 GNOME 与 Bash 代理配置
+
+**Date**: 2026-07-23
+**Task**: 实现 GNOME 与 Bash 代理配置
+**Branch**: `master`
+
+### Summary
+
+新增 GNOME 系统代理与 Bash 环境代理的 daemon capability、CLI/TUI 入口、快照恢复、原子标记区块、NO_PROXY 合并及跨层测试。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0305d39` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
