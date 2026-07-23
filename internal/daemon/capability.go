@@ -133,17 +133,22 @@ type CapabilityService struct {
 	clock                  func() time.Time
 	connectionPollInterval time.Duration
 	proxyInspector         platform.ProxyInspector
+	managerPaths           config.ManagerPaths
+	gnomeConfigurator      gnomeProxyConfigurator
+	bashConfigurator       bashProxyConfigurator
 }
 
-func NewCapabilityService(store CapabilityStore, manager *CoreManager, compatibility *legacy.Compatibility, paths config.Paths) *CapabilityService {
+func NewCapabilityService(store CapabilityStore, manager *CoreManager, compatibility *legacy.Compatibility, paths config.Paths, managerPaths ...config.ManagerPaths) *CapabilityService {
 	coordinator := NewCoordinator()
 	if manager != nil && manager.coordinator != nil {
 		coordinator = manager.coordinator
 	}
-	return &CapabilityService{
+	service := &CapabilityService{
 		store: store, core: manager, legacy: compatibility, paths: paths, coordinator: coordinator,
 		newID: func(prefix string) string { return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano()) }, clock: time.Now,
 	}
+	service.initProxyConfig(managerPaths...)
+	return service
 }
 
 func (s *CapabilityService) profile(ctx context.Context, id string) (domain.Profile, domain.RestorePointID, error) {

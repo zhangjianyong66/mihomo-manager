@@ -45,6 +45,10 @@ type Capabilities interface {
 	ConfigRestore(context.Context, string) error
 	ListenerPorts(context.Context, string) (app.ListenerPortStatus, error)
 	SetListenerPort(context.Context, app.SetListenerPortRequest) (app.ListenerPortStatus, error)
+	ProxyStatus(context.Context, string, string) (app.ProxyConfigStatus, error)
+	SetProxy(context.Context, app.ProxyRequest) (app.ProxyConfigStatus, error)
+	RestoreProxy(context.Context, app.ProxyRequest) (app.ProxyConfigStatus, error)
+	DisableProxy(context.Context, app.ProxyRequest) (app.ProxyConfigStatus, error)
 	FollowLogs(context.Context, app.LogRequest) <-chan app.LogEvent
 	EditConfig(context.Context, string) error
 }
@@ -129,6 +133,11 @@ type Model struct {
 	listenerPortStatus     app.ListenerPortStatus
 	listenerPortField      string
 	listenerPortResult     string
+	proxyLayer             string
+	proxyStatus            app.ProxyConfigStatus
+	proxyTarget            string
+	proxyHost              string
+	proxyPort              int
 	daemonRestartProgress  app.DaemonRestartProgress
 	daemonRestartSeen      map[app.DaemonRestartPhase]bool
 }
@@ -146,6 +155,12 @@ type modeStatusMsg struct {
 
 type listenerPortsMsg struct {
 	status app.ListenerPortStatus
+	err    error
+	set    bool
+}
+
+type proxyStatusMsg struct {
+	status app.ProxyConfigStatus
 	err    error
 	set    bool
 }
@@ -317,6 +332,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.listenerPortResult = "端口已修改"
 			}
+		}
+		return m, nil
+	case proxyStatusMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.result, m.err, m.returnPage, m.page = "代理配置操作失败", msg.err, actionMenu, resultView
+			return m, nil
+		}
+		m.proxyStatus = msg.status
+		m.proxyLayer = msg.status.Layer
+		m.actionCtx = "proxy_" + msg.status.Layer
+		m.actionItems = proxyActionItems(msg.status.Layer)
+		m.actionIndex = 0
+		m.page = actionMenu
+		if msg.set {
+			m.result = "代理配置已更新"
+			if msg.status.Layer == "env" {
+				m.result += "\n新终端自动生效；当前终端请执行 source ~/.bashrc"
+			}
+			m.err, m.returnPage, m.page = nil, actionMenu, resultView
 		}
 		return m, nil
 	case groupsLoadedMsg:
@@ -666,11 +701,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.listenerPortResult = ""
 				return m, nil
 			}
+			if m.page == actionMenu && strings.HasPrefix(m.actionCtx, "proxy_") {
+				if m.actionCtx == "proxy_confirm" {
+					m.actionCtx = "proxy_" + m.proxyLayer
+					m.actionItems = proxyActionItems(m.proxyLayer)
+					m.actionIndex = 0
+					return m, nil
+				}
+				m.actionCtx = ""
+				m.actionItems = menuActions("配置管理")
+				m.actionIndex = 0
+				return m, nil
+			}
 			if m.page == actionMenu || m.page == resultView || m.page == inputView {
 				if m.page == inputView {
 					if m.actionCtx == "listener_port_input" {
 						m.input.Blur()
 						m.actionCtx = "listener_ports"
+						m.page = actionMenu
+						return m, nil
+					}
+					if m.actionCtx == "proxy_input" {
+						m.input.Blur()
+						m.actionCtx = "proxy_" + m.proxyLayer
+						m.actionItems = proxyActionItems(m.proxyLayer)
 						m.page = actionMenu
 						return m, nil
 					}
@@ -824,6 +878,9 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.actionCtx == "listener_ports" {
 		return m.updateListenerPorts(msg)
+	}
+	if m.actionCtx == "proxy_system" || m.actionCtx == "proxy_env" || m.actionCtx == "proxy_confirm" {
+		return m.updateProxy(msg)
 	}
 	switch s {
 	case "a":
@@ -1002,6 +1059,45 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	if msg.String() == "enter" && m.actionCtx == "proxy_input" {
+		parts := strings.Fields(strings.TrimSpace(m.input.Value()))
+		if len(parts) != 1 && len(parts) != 3 {
+			m.result = "请输入 target，或同时输入 target、IP 和端口"
+			m.err = nil
+			m.returnPage = actionMenu
+			m.page = resultView
+			m.input.Blur()
+			return m, nil
+		}
+		m.proxyTarget, m.proxyHost, m.proxyPort = strings.ToLower(parts[0]), "", 0
+		if len(parts) == 3 {
+			port, err := strconv.Atoi(parts[2])
+			if err != nil || net.ParseIP(strings.Trim(parts[1], "[]")) == nil || port < 1 || port > 65535 {
+				m.result = "IP 必须是 IPv4/IPv6 字面量，端口范围为 1-65535"
+				m.err = nil
+				m.returnPage = actionMenu
+				m.page = resultView
+				m.input.Blur()
+				return m, nil
+			}
+			m.proxyHost, m.proxyPort = strings.Trim(parts[1], "[]"), port
+		}
+		if m.proxyTarget != "http" && m.proxyTarget != "https" && m.proxyTarget != "socks" && m.proxyTarget != "all" {
+			m.result = "代理类型必须为 http、https、socks 或 all"
+			m.err = nil
+			m.returnPage = actionMenu
+			m.page = resultView
+			m.input.Blur()
+			return m, nil
+		}
+		m.input.SetValue("")
+		m.input.Blur()
+		m.actionCtx = "proxy_confirm"
+		m.actionItems = []string{"确认应用", "取消"}
+		m.actionIndex = 0
+		m.page = actionMenu
+		return m, nil
+	}
 	if msg.String() == "enter" && m.actionCtx == "listener_port_input" {
 		value := strings.TrimSpace(m.input.Value())
 		port, err := strconv.Atoi(value)
@@ -1117,6 +1213,70 @@ func (m Model) updateListenerPorts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateProxy(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if len(m.actionItems) == 0 {
+		return m, nil
+	}
+	switch msg.String() {
+	case "up":
+		if m.actionIndex > 0 {
+			m.actionIndex--
+		}
+	case "down":
+		if m.actionIndex < len(m.actionItems)-1 {
+			m.actionIndex++
+		}
+	case "enter":
+		act := m.actionItems[m.actionIndex]
+		if m.actionCtx == "proxy_confirm" {
+			if (m.proxyTarget == "restore" && act != "确认恢复") || (m.proxyTarget == "disable" && act != "确认禁用") || (m.proxyTarget != "restore" && m.proxyTarget != "disable" && act != "确认应用") {
+				m.actionCtx = "proxy_" + m.proxyLayer
+				m.actionItems = proxyActionItems(m.proxyLayer)
+				m.actionIndex = 0
+				return m, nil
+			}
+			m.busy = true
+			if m.proxyTarget == "restore" {
+				return m, restoreProxyCmd(m.ctx, m.client, m.proxyLayer)
+			}
+			if m.proxyTarget == "disable" {
+				return m, disableProxyCmd(m.ctx, m.client, m.proxyLayer)
+			}
+			return m, setProxyCmd(m.ctx, m.client, app.ProxyRequest{Layer: m.proxyLayer, Target: m.proxyTarget, Host: m.proxyHost, Port: m.proxyPort})
+		}
+		switch act {
+		case "查看状态":
+			m.busy = true
+			return m, loadProxyStatusCmd(m.ctx, m.client, m.proxyLayer)
+		case "设置代理":
+			m.inputTitle = "输入 target [IP 端口]（省略 IP/端口使用当前 listener）"
+			m.input.SetValue("")
+			m.input.Focus()
+			m.actionCtx = "proxy_input"
+			m.page = inputView
+			return m, textinput.Blink
+		case "恢复启用前设置":
+			m.actionCtx = "proxy_confirm"
+			m.actionItems = []string{"确认恢复", "取消"}
+			m.actionIndex = 0
+			m.proxyTarget = "restore"
+			return m, nil
+		case "禁用管理区块":
+			m.actionCtx = "proxy_confirm"
+			m.actionItems = []string{"确认禁用", "取消"}
+			m.actionIndex = 0
+			m.proxyTarget = "disable"
+			return m, nil
+		case "返回":
+			m.actionCtx = ""
+			m.actionItems = menuActions("配置管理")
+			m.actionIndex = 0
+			return m, nil
+		}
+	}
+	return m, nil
+}
+
 func (m Model) executeAction(cat, act string) (tea.Model, tea.Cmd) {
 	switch cat {
 	case "服务管理":
@@ -1200,6 +1360,16 @@ func (m Model) executeAction(cat, act string) (tea.Model, tea.Cmd) {
 			m.actionIndex = 0
 			m.listenerPortResult = ""
 			return m, loadListenerPortsCmd(m.ctx, m.client)
+		case "GNOME 系统代理", "Bash 环境代理":
+			m.proxyLayer = "system"
+			if act == "Bash 环境代理" {
+				m.proxyLayer = "env"
+			}
+			m.actionCtx = "proxy_" + m.proxyLayer
+			m.actionItems = proxyActionItems(m.proxyLayer)
+			m.actionIndex = 0
+			m.busy = true
+			return m, loadProxyStatusCmd(m.ctx, m.client, m.proxyLayer)
 		case "应用分流规则（大陆直连/其他走GLOBAL）":
 			m.busy = true
 			return m, actionCmd("分流规则已应用", func() error { return m.client.ApplyRoutePreset(m.ctx, "", "cn") })
@@ -1222,10 +1392,20 @@ func menuActions(main string) []string {
 	case "白名单管理":
 		return []string{"返回"}
 	case "配置管理":
-		return []string{"监听端口", "备份配置", "恢复配置", "编辑配置", "应用分流规则（大陆直连/其他走GLOBAL）", "返回"}
+		return []string{"监听端口", "GNOME 系统代理", "Bash 环境代理", "备份配置", "恢复配置", "编辑配置", "应用分流规则（大陆直连/其他走GLOBAL）", "返回"}
 	default:
 		return []string{"返回"}
 	}
+}
+
+func proxyActionItems(layer string) []string {
+	items := []string{"查看状态", "设置代理"}
+	if layer == "system" {
+		items = append(items, "恢复启用前设置")
+	} else {
+		items = append(items, "禁用管理区块")
+	}
+	return append(items, "返回")
 }
 
 func modeActionItems() []string {
@@ -1410,6 +1590,34 @@ func setListenerPortCmd(ctx context.Context, service Capabilities, request app.S
 	}
 }
 
+func loadProxyStatusCmd(ctx context.Context, service Capabilities, layer string) tea.Cmd {
+	return func() tea.Msg {
+		value, err := service.ProxyStatus(ctx, layer, "")
+		return proxyStatusMsg{status: value, err: err}
+	}
+}
+
+func setProxyCmd(ctx context.Context, service Capabilities, request app.ProxyRequest) tea.Cmd {
+	return func() tea.Msg {
+		value, err := service.SetProxy(ctx, request)
+		return proxyStatusMsg{status: value, err: err, set: true}
+	}
+}
+
+func restoreProxyCmd(ctx context.Context, service Capabilities, layer string) tea.Cmd {
+	return func() tea.Msg {
+		value, err := service.RestoreProxy(ctx, app.ProxyRequest{Layer: layer})
+		return proxyStatusMsg{status: value, err: err, set: true}
+	}
+}
+
+func disableProxyCmd(ctx context.Context, service Capabilities, layer string) tea.Cmd {
+	return func() tea.Msg {
+		value, err := service.DisableProxy(ctx, app.ProxyRequest{Layer: layer})
+		return proxyStatusMsg{status: value, err: err, set: true}
+	}
+}
+
 func startDaemonRestartCmd(ctx context.Context, service Capabilities) tea.Cmd {
 	return func() tea.Msg {
 		events := make(chan daemonRestartEvent, 16)
@@ -1566,6 +1774,9 @@ func (m Model) View() string {
 	}
 	if m.page == actionMenu && m.actionCtx == "listener_ports" {
 		return m.renderListenerPortsView(title)
+	}
+	if m.page == actionMenu && (m.actionCtx == "proxy_system" || m.actionCtx == "proxy_env" || m.actionCtx == "proxy_confirm") {
+		return m.renderProxyView(title)
 	}
 	if m.page == actionMenu && m.actionCtx == "daemon_restart_confirm" {
 		return m.renderDaemonRestartConfirm(title)
@@ -2345,6 +2556,55 @@ func (m Model) renderListenerPortsView(title string) string {
 	}
 	footer := fitFooter("↑/↓ 选择  Enter 修改  Esc 返回  q 退出", m.width)
 	return fmt.Sprintf("%s\n\n%s\n%s", title, body.String(), footer)
+}
+
+func (m Model) renderProxyView(title string) string {
+	var body strings.Builder
+	name := "GNOME 系统代理"
+	if m.proxyLayer == "env" {
+		name = "Bash 环境代理"
+	}
+	body.WriteString("配置管理 / " + name + "\n")
+	if m.actionCtx == "proxy_confirm" {
+		if m.proxyTarget == "restore" {
+			body.WriteString("即将恢复启用前保存的整层设置。\n")
+		} else if m.proxyTarget == "disable" {
+			body.WriteString("即将删除 ~/.bashrc 中 mihomo-manager 管理区块。\n")
+		} else {
+			if m.proxyHost == "" {
+				body.WriteString(fmt.Sprintf("即将按当前 mihomo listener 设置 %s。\n", m.proxyTarget))
+			} else {
+				body.WriteString(fmt.Sprintf("即将设置 %s 为 %s:%d。\n", m.proxyTarget, m.proxyHost, m.proxyPort))
+			}
+		}
+		for index, item := range m.actionItems {
+			cursor := "  "
+			if index == m.actionIndex {
+				cursor = "> "
+			}
+			body.WriteString(cursor + item + "\n")
+		}
+		return fmt.Sprintf("%s\n\n%s\n%s", title, body.String(), fitFooter("↑/↓ 选择  Enter 确认  Esc 取消  q 退出", m.width))
+	}
+	body.WriteString(fmt.Sprintf("档案：%s  Core：%s  manager 管理：%t  快照：%t\n", m.proxyStatus.ProfileID, coreStateLabel(m.proxyStatus.CoreState), m.proxyStatus.Managed, m.proxyStatus.SnapshotAvailable))
+	for _, item := range m.proxyStatus.Endpoints {
+		endpoint := "禁用"
+		if item.Host != "" && item.Port > 0 {
+			endpoint = item.Scheme + "://" + net.JoinHostPort(item.Host, strconv.Itoa(item.Port))
+		}
+		body.WriteString(fmt.Sprintf("%s: %s [%s]\n", item.Target, endpoint, item.State))
+	}
+	if m.busy {
+		body.WriteString("正在处理...\n")
+	}
+	for index, item := range m.actionItems {
+		cursor := "  "
+		if index == m.actionIndex {
+			cursor = "> "
+		}
+		body.WriteString(cursor + item + "\n")
+	}
+	return fmt.Sprintf("%s\n\n%s\n%s", title, body.String(), fitFooter("↑/↓ 选择  Enter 执行  Esc 返回  q 退出", m.width))
 }
 
 func (m Model) renderDaemonRestartConfirm(title string) string {

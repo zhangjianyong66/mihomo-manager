@@ -42,6 +42,12 @@ type platform.ProxyInspector interface {
 - 状态固定为 `matched|mismatched|disabled|unknown`。mismatch 产生“普通应用流量不会进入 mihomo”warning；unknown 不使 mode 查询/切换失败。诊断不得调用 `gsettings set`、探测 PID、停止 xray/其他进程或占用端口。
 - 连接快照、事件、目标地址和关闭提示不写 SQLite、operation recovery 或持久日志。
 
+### 代理配置写入边界
+
+- GNOME 写操作只能经 daemon `gsettings set` 适配器完成；CLI/TUI 通过 `/v1/proxy/system` 与 typed capability 调用。首次设置保存 `mode`、`use-same-proxy`、`ignore-hosts`、三类 host/port 的快照，重复设置不覆盖首次快照，恢复前必须核对 manager expected。
+- Bash 写操作只允许 manager 专属标记区块，使用同目录临时文件、`fsync` 和 rename 原子发布；区块重复、损坏或 hash 与状态文件不一致时拒绝操作。区块同时导出大小写 HTTP/HTTPS/ALL_PROXY、NO_PROXY/no_proxy，合并用户已有绕过项并补齐 `localhost`、`127.0.0.1`、`::1`。
+- 代理 endpoint 在进入 app/CLI/TUI DTO 前只保留 protocol、IPv4/IPv6 host 和 port；不接受域名、userinfo、path、query、fragment，也不读取或持久化 GNOME 认证用户名/密码。写入失败必须回滚已发布的 gsettings 或 `.bashrc` 内容。
+
 ### 4. Validation & Error Matrix
 
 | 条件 | 行为 |

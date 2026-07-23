@@ -70,6 +70,9 @@ func TestResolveManagerPaths_XDGAndFallback(t *testing.T) {
 			if paths.BackupsDir != filepath.Join(tt.data, "backups") {
 				t.Fatalf("unexpected backup path: %+v", paths)
 			}
+			if paths.ProxyState != filepath.Join(tt.state, "proxy.json") || paths.Bashrc != filepath.Join(home, ".bashrc") {
+				t.Fatalf("unexpected proxy paths: %+v", paths)
+			}
 			if paths.CoreLog != filepath.Join(tt.state, "core", "mihomo.log") || paths.RuntimeState != filepath.Join(tt.state, "core", "runtime.json") {
 				t.Fatalf("unexpected core files: %+v", paths)
 			}

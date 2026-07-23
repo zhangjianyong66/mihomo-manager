@@ -44,6 +44,8 @@ type ManagerPaths struct {
 	Socket         string
 	Lock           string
 	UserUnitDir    string
+	ProxyState     string
+	Bashrc         string
 }
 
 func LoadManagerPaths() (ManagerPaths, error) {
@@ -93,6 +95,8 @@ func ResolveManagerPaths(env ManagerEnvironment) (ManagerPaths, error) {
 		Socket:         filepath.Join(runtimeDir, "mm.sock"),
 		Lock:           filepath.Join(runtimeDir, "daemon.lock"),
 		UserUnitDir:    filepath.Join(configHome, "systemd", "user"),
+		ProxyState:     filepath.Join(stateDir, "proxy.json"),
+		Bashrc:         filepath.Join(env.HomeDir, ".bashrc"),
 	}, nil
 }
 

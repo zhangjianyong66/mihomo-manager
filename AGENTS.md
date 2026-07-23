@@ -66,6 +66,9 @@
 - 远程安装默认使用 `master`，可用 `MM_REF` 固定源码引用；下载源可通过 `MM_GITHUB_BASE_URL`、`MM_GITHUB_API_BASE_URL`、`MM_GO_DOWNLOAD_BASE_URL` 显式覆盖，脚本不会自动切换第三方镜像。
 - 节点列表从 mihomo `/proxies` 的运行时 `history` 读取最新测速状态，不写 SQLite；进入列表和节点选择成功后都不自动测速。TUI 空闲时用 `t` 单测光标节点，单测中 `t` 将其他节点有序去重入串行队列，批测中 `t` 抢占为光标单测；任意状态按 `a` 清队列并以并发 5、`limit=0` 重启整组批测，且在首个结果前按已加载的 `Testable` 状态立即显示 `0/N`，后续以 stream 进度为准。测速中 Esc 清队列、取消并保留部分结果，空闲 Esc 才返回；每项新流使用 generation 隔离迟到事件。
 - 单节点测速固定使用 `/v1/nodes/test-single`；`mm node test --node <id> [--group <group>]` 不得回退到旧 `/v1/nodes/test` 批量路由。节点测速 NDJSON 追加 `status` 与 `testedAt`，新客户端仍兼容旧事件缺少这两个字段。
+- 代理配置能力位于 `internal/platform/proxy_config.go`、`internal/daemon/proxy.go`、`internal/app/capabilities.go` 和 `internal/cli/proxy.go`；CLI 命令为 `mm proxy system|env status|set|restore|disable`，daemon 路由为 `/v1/proxy/system` 与 `/v1/proxy/env`。
+- GNOME 代理状态文件为 `${XDG_STATE_HOME:-~/.local/state}/mihomo-manager/proxy.json`（目录 `0700`、文件 `0600`），首次设置保存整层快照，恢复前核对 manager expected；Bash 只原子更新用户 `~/.bashrc` 中 `mihomo-manager proxy` 标记区块，写入大写/小写 HTTP、HTTPS、ALL_PROXY 与 NO_PROXY/no_proxy，并始终包含 `localhost,127.0.0.1,::1`。
+- 代理设置只接受 IPv4/IPv6 字面量和 `1-65535` 端口；省略端点时从活动 legacy 配置的 mixed/http/socks listener 推导。设置、恢复和禁用不启动或停止 mihomo，Bash 变更只对新 Bash 终端生效，当前终端需 `source ~/.bashrc`。
 
 # 协作约定
 

@@ -122,6 +122,45 @@ func TestCapabilityRoutesLegacyThroughUnixIPC(t *testing.T) {
 		cancel()
 		t.Fatalf("mode GET status=%+v err=%v", modeStatus, err)
 	}
+	var envStatus ProxyConfigStatus
+	if err := client.Do(context.Background(), http.MethodGet, "/v1/proxy/env", "", nil, &envStatus); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	if envStatus.Managed || len(envStatus.Endpoints) != 3 {
+		cancel()
+		t.Fatalf("unexpected initial env proxy status: %+v", envStatus)
+	}
+	envRequest := map[string]any{"action": "set", "target": "all", "host": "127.0.0.1", "port": 7890}
+	assertIPCCode(client.Do(context.Background(), http.MethodPut, "/v1/proxy/env", "", envRequest, &envStatus), "REQUEST_ID_REQUIRED")
+	if err := client.Do(context.Background(), http.MethodPut, "/v1/proxy/env", "proxy-env-set", envRequest, &envStatus); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	if !envStatus.Managed || !envStatus.SnapshotAvailable || len(envStatus.Endpoints) != 3 {
+		cancel()
+		t.Fatalf("unexpected env proxy set status: %+v", envStatus)
+	}
+	bashrc, err := os.ReadFile(paths.Bashrc)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"HTTP_PROXY='http://127.0.0.1:7890'", "ALL_PROXY='socks5://127.0.0.1:7890'", "_mm_proxy_item", "'localhost'", "'127.0.0.1'", "'::1'"} {
+		if !strings.Contains(string(bashrc), expected) {
+			cancel()
+			t.Fatalf("bashrc missing %q: %s", expected, bashrc)
+		}
+	}
+	assertIPCCode(client.Do(context.Background(), http.MethodPut, "/v1/proxy/env", "proxy-env-set", map[string]any{"action": "set", "target": "http", "host": "127.0.0.1", "port": 10808}, &envStatus), "REQUEST_ID_CONFLICT")
+	if err := client.Do(context.Background(), http.MethodPut, "/v1/proxy/env", "proxy-env-disable", map[string]any{"action": "disable"}, &envStatus); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	if envStatus.Managed {
+		cancel()
+		t.Fatalf("env proxy should be disabled: %+v", envStatus)
+	}
 	var portStatus ListenerPortStatus
 	if err := client.Do(context.Background(), http.MethodGet, "/v1/config/ports", "", nil, &portStatus); err != nil {
 		cancel()

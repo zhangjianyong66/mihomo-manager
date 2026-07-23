@@ -48,6 +48,10 @@ type CapabilityAPI interface {
 	ReplaceConfig(context.Context, string, string, []byte) error
 	ListenerPorts(context.Context, string) (ListenerPortStatus, error)
 	SetListenerPort(context.Context, SetListenerPortRequest) (ListenerPortStatus, error)
+	ProxyStatus(context.Context, string, string) (ProxyConfigStatus, error)
+	SetProxy(context.Context, ProxyRequest) (ProxyConfigStatus, error)
+	RestoreProxy(context.Context, ProxyRequest) (ProxyConfigStatus, error)
+	DisableProxy(context.Context, ProxyRequest) (ProxyConfigStatus, error)
 	TailLogs(context.Context, LogRequest) ([]LogLine, error)
 	FollowLogs(context.Context, LogRequest) <-chan LogEvent
 }
@@ -89,6 +93,37 @@ type ListenerPortStatus struct {
 type SetListenerPortRequest struct {
 	ProfileID string
 	Field     string
+	Port      int
+	RequestID string
+}
+
+type ProxyEndpointStatus struct {
+	Target  string
+	Scheme  string
+	Host    string
+	Port    int
+	State   string
+	Warning string
+}
+
+type ProxyConfigStatus struct {
+	Layer             string
+	ProfileID         domain.ProfileID
+	CoreState         domain.CoreState
+	Managed           bool
+	SnapshotAvailable bool
+	NextStart         bool
+	Endpoints         []ProxyEndpointStatus
+	Warnings          []string
+	UpdatedAt         time.Time
+}
+
+type ProxyRequest struct {
+	Layer     string
+	ProfileID string
+	Action    string
+	Target    string
+	Host      string
 	Port      int
 	RequestID string
 }
@@ -521,6 +556,82 @@ func convertListenerPortStatus(value daemon.ListenerPortStatus) ListenerPortStat
 	return ListenerPortStatus{
 		ProfileID: value.ProfileID, CoreState: value.CoreState, Restarted: value.Restarted, NextStart: value.NextStart,
 		Ports: ports, PortConflicts: convertPortConflicts(value.PortConflicts),
+	}
+}
+
+func (c *DaemonCapabilities) ProxyStatus(ctx context.Context, layer, profileID string) (ProxyConfigStatus, error) {
+	path, err := proxyCapabilityPath(layer)
+	if err != nil {
+		return ProxyConfigStatus{}, err
+	}
+	var value daemon.ProxyConfigStatus
+	if err := c.do(ctx, http.MethodGet, capabilityPath(path, profileID), "", nil, &value); err != nil {
+		return ProxyConfigStatus{}, err
+	}
+	return convertProxyConfigStatus(value), nil
+}
+
+func (c *DaemonCapabilities) SetProxy(ctx context.Context, request ProxyRequest) (ProxyConfigStatus, error) {
+	request.Action = "set"
+	return c.proxyMutation(ctx, request)
+}
+
+func (c *DaemonCapabilities) RestoreProxy(ctx context.Context, request ProxyRequest) (ProxyConfigStatus, error) {
+	request.Action = "restore"
+	return c.proxyMutation(ctx, request)
+}
+
+func (c *DaemonCapabilities) DisableProxy(ctx context.Context, request ProxyRequest) (ProxyConfigStatus, error) {
+	request.Action = "disable"
+	return c.proxyMutation(ctx, request)
+}
+
+func (c *DaemonCapabilities) proxyMutation(ctx context.Context, request ProxyRequest) (ProxyConfigStatus, error) {
+	if c == nil || c.client == nil {
+		return ProxyConfigStatus{}, &Error{Category: ErrorCategoryDaemonUnavailable, Code: ErrorCodeDaemonUnavailable, Message: "daemon 客户端未配置"}
+	}
+	path, err := proxyCapabilityPath(request.Layer)
+	if err != nil {
+		return ProxyConfigStatus{}, err
+	}
+	requestID := strings.TrimSpace(request.RequestID)
+	if requestID == "" {
+		requestID = newRequestID("proxy-" + request.Layer)
+	}
+	var value daemon.ProxyConfigStatus
+	err = c.client.Do(ctx, http.MethodPut, path, requestID, map[string]any{
+		"profileId": request.ProfileID, "action": request.Action, "target": request.Target,
+		"host": request.Host, "port": request.Port,
+	}, &value)
+	if err != nil {
+		return convertProxyConfigStatus(value), c.mapError(err)
+	}
+	return convertProxyConfigStatus(value), nil
+}
+
+func proxyCapabilityPath(layer string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(layer)) {
+	case "system":
+		return "/v1/proxy/system", nil
+	case "env":
+		return "/v1/proxy/env", nil
+	default:
+		return "", &Error{Category: ErrorCategoryInvalidArgument, Code: ErrorCodeInvalidArgument, Message: "代理层必须为 system 或 env"}
+	}
+}
+
+func convertProxyConfigStatus(value daemon.ProxyConfigStatus) ProxyConfigStatus {
+	endpoints := make([]ProxyEndpointStatus, 0, len(value.Endpoints))
+	for _, item := range value.Endpoints {
+		endpoints = append(endpoints, ProxyEndpointStatus{
+			Target: item.Target, Scheme: item.Scheme, Host: item.Host, Port: item.Port,
+			State: item.State, Warning: item.Warning,
+		})
+	}
+	return ProxyConfigStatus{
+		Layer: string(value.Layer), ProfileID: value.ProfileID, CoreState: value.CoreState,
+		Managed: value.Managed, SnapshotAvailable: value.SnapshotAvailable, NextStart: value.NextStart,
+		Endpoints: endpoints, Warnings: append([]string(nil), value.Warnings...), UpdatedAt: value.UpdatedAt,
 	}
 }
 

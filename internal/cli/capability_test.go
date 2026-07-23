@@ -29,6 +29,8 @@ type fakeCapabilityAPI struct {
 	setMode          app.SetRoutingModeRequest
 	portStatus       app.ListenerPortStatus
 	setPort          app.SetListenerPortRequest
+	proxyStatus      app.ProxyConfigStatus
+	proxyRequest     app.ProxyRequest
 	err              error
 }
 
@@ -115,6 +117,37 @@ func (f *fakeCapabilityAPI) ListenerPorts(context.Context, string) (app.Listener
 func (f *fakeCapabilityAPI) SetListenerPort(_ context.Context, request app.SetListenerPortRequest) (app.ListenerPortStatus, error) {
 	f.setPort = request
 	return f.portStatus, f.err
+}
+func (f *fakeCapabilityAPI) ProxyStatus(context.Context, string, string) (app.ProxyConfigStatus, error) {
+	return f.proxyStatus, f.err
+}
+func (f *fakeCapabilityAPI) SetProxy(_ context.Context, request app.ProxyRequest) (app.ProxyConfigStatus, error) {
+	f.proxyRequest = request
+	return f.proxyStatus, f.err
+}
+func (f *fakeCapabilityAPI) RestoreProxy(context.Context, app.ProxyRequest) (app.ProxyConfigStatus, error) {
+	return app.ProxyConfigStatus{}, f.err
+}
+
+func TestProxyCLISetUsesTypedCapabilityAndValidatesArguments(t *testing.T) {
+	fake := &fakeCapabilityAPI{proxyStatus: app.ProxyConfigStatus{Layer: "env", Managed: true, Endpoints: []app.ProxyEndpointStatus{{Target: "http", Scheme: "http", Host: "127.0.0.1", Port: 7890, State: "matched"}}}}
+	var stdout, stderr strings.Builder
+	code := Execute(context.Background(), Dependencies{Capabilities: fake}, []string{"proxy", "env", "set", "http", "127.0.0.1", "7890", "--output", "json"}, nil, &stdout, &stderr)
+	if code != 0 || fake.proxyRequest.Layer != "env" || fake.proxyRequest.Target != "http" || fake.proxyRequest.Port != 7890 {
+		t.Fatalf("exit=%d request=%+v stderr=%q", code, fake.proxyRequest, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"kind":"ProxyConfigSet"`) || !strings.Contains(stdout.String(), `"managed":true`) {
+		t.Fatalf("stdout=%q", stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = Execute(context.Background(), Dependencies{Capabilities: fake}, []string{"proxy", "system", "set", "all", "example.com", "7890"}, nil, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("domain input should fail: stdout=%q", stdout.String())
+	}
+}
+func (f *fakeCapabilityAPI) DisableProxy(context.Context, app.ProxyRequest) (app.ProxyConfigStatus, error) {
+	return app.ProxyConfigStatus{}, f.err
 }
 func (f *fakeCapabilityAPI) TailLogs(context.Context, app.LogRequest) ([]app.LogLine, error) {
 	return f.logs, f.err

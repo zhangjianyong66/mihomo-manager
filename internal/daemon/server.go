@@ -146,7 +146,7 @@ func (s *Server) Run(ctx context.Context) (finalErr error) {
 	s.capabilities = s.opts.Capabilities
 	if s.capabilities == nil && compatibility != nil {
 		if repository, ok := stateStore.(CapabilityStore); ok {
-			s.capabilities = NewCapabilityService(repository, s.core, compatibility, config.Load())
+			s.capabilities = NewCapabilityService(repository, s.core, compatibility, config.Load(), s.opts.Paths)
 			s.capabilities.proxyInspector = platform.NewGNOMEProxyInspector()
 		}
 	}

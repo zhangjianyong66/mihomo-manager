@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/zhangjianyong66/mihomo-manager/internal/ipc"
 	"github.com/zhangjianyong66/mihomo-manager/internal/legacy"
 	"github.com/zhangjianyong66/mihomo-manager/internal/mihomo"
+	"github.com/zhangjianyong66/mihomo-manager/internal/platform"
 	"github.com/zhangjianyong66/mihomo-manager/internal/store"
 )
 
@@ -25,6 +27,8 @@ func registerCapabilityRoutes(mux *http.ServeMux, service *CapabilityService) {
 	mux.HandleFunc("/v1/mode", handler.mode)
 	mux.HandleFunc("/v1/core/", handler.coreAction)
 	mux.HandleFunc("/v1/config/", handler.configAction)
+	mux.HandleFunc("/v1/proxy/system", handler.proxySystem)
+	mux.HandleFunc("/v1/proxy/env", handler.proxyEnv)
 	mux.HandleFunc("/v1/groups", handler.groups)
 	mux.HandleFunc("/v1/groups/", handler.group)
 	mux.HandleFunc("/v1/nodes", handler.nodes)
@@ -38,6 +42,72 @@ func registerCapabilityRoutes(mux *http.ServeMux, service *CapabilityService) {
 	mux.HandleFunc("/v1/connections/follow", handler.connectionFollow)
 	mux.HandleFunc("/v1/logs", handler.logs)
 	mux.HandleFunc("/v1/logs/follow", handler.logFollow)
+}
+
+func (h *capabilityHandler) proxySystem(w http.ResponseWriter, r *http.Request) {
+	h.proxy(w, r, ProxyLayerSystem)
+}
+
+func (h *capabilityHandler) proxyEnv(w http.ResponseWriter, r *http.Request) {
+	h.proxy(w, r, ProxyLayerEnv)
+}
+
+func (h *capabilityHandler) proxy(w http.ResponseWriter, r *http.Request, layer ProxyLayer) {
+	if r.Method == http.MethodGet {
+		value, err := h.service.ProxyStatus(r.Context(), string(layer), profileQuery(r))
+		writeProxyResult(w, value, err)
+		return
+	}
+	if !requireMethod(w, r, http.MethodPut) {
+		return
+	}
+	if strings.TrimSpace(r.Header.Get(ipc.RequestIDHeader)) == "" {
+		_ = ipc.WriteError(w, http.StatusBadRequest, "REQUEST_ID_REQUIRED", "代理修改必须提供 MM-Request-ID", false, nil)
+		return
+	}
+	var request ProxyRequest
+	if err := ipc.DecodeJSON(w, r, &request); err != nil {
+		return
+	}
+	request.Layer = string(layer)
+	var value ProxyConfigStatus
+	var err error
+	switch strings.ToLower(strings.TrimSpace(request.Action)) {
+	case "set":
+		value, err = h.service.SetProxy(r.Context(), request)
+	case "restore":
+		if layer != ProxyLayerSystem {
+			writeCapabilityError(w, fmt.Errorf("%w: 环境代理请使用 disable 操作", ErrProxyRequestInvalid))
+			return
+		}
+		value, err = h.service.RestoreProxy(r.Context(), request)
+	case "disable":
+		if layer != ProxyLayerEnv {
+			writeCapabilityError(w, fmt.Errorf("%w: GNOME 代理请使用 restore 操作", ErrProxyRequestInvalid))
+			return
+		}
+		value, err = h.service.DisableProxy(r.Context(), request)
+	default:
+		writeCapabilityError(w, fmt.Errorf("%w: 代理操作必须为 set、restore 或 disable", ErrProxyRequestInvalid))
+		return
+	}
+	writeProxyResult(w, value, err)
+}
+
+func writeProxyResult(w http.ResponseWriter, value ProxyConfigStatus, err error) {
+	if err == nil {
+		_ = ipc.WriteJSONWarnings(w, http.StatusOK, "ProxyConfigStatus", value, value.Warnings)
+		return
+	}
+	status, code, message, retryable := classifyCapabilityError(err)
+	details := capabilityErrorDetails(err)
+	if value.Layer != "" {
+		if details == nil {
+			details = map[string]any{}
+		}
+		details["status"] = value
+	}
+	_ = ipc.WriteError(w, status, code, message, retryable, details)
 }
 
 func (h *capabilityHandler) mode(w http.ResponseWriter, r *http.Request) {
@@ -611,8 +681,22 @@ func classifyCapabilityError(err error) (int, string, string, bool) {
 		return http.StatusBadGateway, "MODE_RUNTIME_MISMATCH", "mihomo 运行模式核验失败", true
 	case errors.Is(err, legacy.ErrValidation), errors.Is(err, core.ErrInvalidConfig), errors.Is(err, core.ErrConfigChanged):
 		return http.StatusUnprocessableEntity, "VALIDATION_FAILED", "配置校验失败", false
+	case errors.Is(err, platform.ErrProxyAuthUnsupported):
+		return http.StatusConflict, "PROXY_AUTH_UNSUPPORTED", "GNOME 代理已启用认证，首版不接管认证代理", false
+	case errors.Is(err, platform.ErrProxySnapshotNotFound), errors.Is(err, ErrProxySnapshotMissing):
+		return http.StatusNotFound, "PROXY_SNAPSHOT_NOT_FOUND", "没有可恢复的代理快照", false
+	case errors.Is(err, platform.ErrProxyConflict):
+		return http.StatusConflict, "CONFLICT", "代理配置已被外部修改", false
+	case errors.Is(err, platform.ErrProxyRestoreFailed):
+		return http.StatusInternalServerError, "RESTORE_FAILED", "代理配置回滚失败", false
+	case errors.Is(err, platform.ErrProxyEndpointInvalid), errors.Is(err, ErrProxyEndpointMissing), errors.Is(err, ErrProxyRequestInvalid):
+		return http.StatusBadRequest, "INVALID_REQUEST", "代理 IP、端口或 listener 参数无效", false
 	case errors.Is(err, legacy.ErrUnsafePath), errors.Is(err, store.ErrPermission):
 		return http.StatusForbidden, "PERMISSION_DENIED", "路径或权限不安全", false
+	case errors.Is(err, os.ErrPermission):
+		return http.StatusForbidden, "PERMISSION_DENIED", "代理配置文件路径或权限不安全", false
+	case errors.Is(err, ErrProxyStateCorrupt):
+		return http.StatusInternalServerError, "INTERNAL", "代理状态文件损坏", false
 	case errors.Is(err, store.ErrClosed), errors.Is(err, store.ErrCorrupt), errors.Is(err, store.ErrSchemaTooNew), errors.Is(err, store.ErrMigrationDrift):
 		return http.StatusInternalServerError, "INTERNAL", "daemon 状态存储不可用", false
 	}
