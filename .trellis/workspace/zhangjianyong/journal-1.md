@@ -799,3 +799,24 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 25: 完成 macOS 一键安装支持
+
+**Date**: 2026-07-29
+**Task**: 完成 macOS 一键安装支持
+**Branch**: `master`
+
+### Summary
+
+支持 macOS 12+ amd64/arm64 安装、launchd daemon、Darwin IPC/进程控制、安全卸载与跨平台验证。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `63d220b` | (see git log) |
+
+### Status
+
+[OK] **Completed**

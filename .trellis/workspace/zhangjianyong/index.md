@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 24
-- **Last Active**: 2026-07-23
+- **Total Sessions**: 25
+- **Last Active**: 2026-07-29
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~801 | Active |
+| `journal-1.md` | ~822 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 25 | 2026-07-29 | 完成 macOS 一键安装支持 | `63d220b` | `master` |
 | 24 | 2026-07-23 | 实现 GNOME 与 Bash 代理配置 | `0305d39` | `master` |
 | 23 | 2026-07-23 | 修复 daemon 测速流缓冲 | `1207761` | `master` |
 | 22 | 2026-07-23 | 修复 TUI 批量测速初始进度 | `ef69f33` | `master` |
