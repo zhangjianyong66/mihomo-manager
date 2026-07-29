@@ -32,6 +32,7 @@ type ManagerEnvironment struct {
 }
 
 type ManagerPaths struct {
+	MMBinary       string
 	DataDir        string
 	Database       string
 	BackupsDir     string
@@ -44,6 +45,10 @@ type ManagerPaths struct {
 	Socket         string
 	Lock           string
 	UserUnitDir    string
+	LaunchAgentDir string
+	LaunchAgent    string
+	DaemonStdout   string
+	DaemonStderr   string
 	ProxyState     string
 	Bashrc         string
 }
@@ -83,6 +88,7 @@ func ResolveManagerPaths(env ManagerEnvironment) (ManagerPaths, error) {
 		runtimeDir = filepath.Join(filepath.Clean(env.RuntimeDir), "mihomo-manager")
 	}
 	return ManagerPaths{
+		MMBinary:       filepath.Join(env.HomeDir, ".local", "bin", "mm"),
 		DataDir:        dataDir,
 		Database:       filepath.Join(dataDir, "state.db"),
 		BackupsDir:     filepath.Join(dataDir, "backups"),
@@ -95,6 +101,10 @@ func ResolveManagerPaths(env ManagerEnvironment) (ManagerPaths, error) {
 		Socket:         filepath.Join(runtimeDir, "mm.sock"),
 		Lock:           filepath.Join(runtimeDir, "daemon.lock"),
 		UserUnitDir:    filepath.Join(configHome, "systemd", "user"),
+		LaunchAgentDir: filepath.Join(env.HomeDir, "Library", "LaunchAgents"),
+		LaunchAgent:    filepath.Join(env.HomeDir, "Library", "LaunchAgents", "com.zhangjianyong.mihomo-manager.daemon.plist"),
+		DaemonStdout:   filepath.Join(stateDir, "daemon.stdout.log"),
+		DaemonStderr:   filepath.Join(stateDir, "daemon.stderr.log"),
 		ProxyState:     filepath.Join(stateDir, "proxy.json"),
 		Bashrc:         filepath.Join(env.HomeDir, ".bashrc"),
 	}, nil

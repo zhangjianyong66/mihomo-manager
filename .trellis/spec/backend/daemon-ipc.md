@@ -1,8 +1,8 @@
-# daemon、Unix IPC 与 systemd user 契约
+# daemon、Unix IPC 与用户级服务管理契约
 
 ## 1. Scope / Trigger
 
-修改 `internal/config.ManagerPaths`、`internal/ipc`、`internal/daemon`、`internal/platform`、daemon CLI 或 systemd user unit 时必须遵守本规范。目标是保持 daemon 单写者、同用户 IPC、无 TCP/root/sudo/linger，以及 systemd 不可用时的可诊断降级。
+修改 `internal/config.ManagerPaths`、`internal/ipc`、`internal/daemon`、`internal/platform`、daemon CLI、systemd user unit 或 launchd LaunchAgent 时必须遵守本规范。目标是保持 daemon 单写者、同用户 IPC、无 TCP/root/sudo/system-domain，以及后台服务管理器不可用时的可诊断降级。
 
 ## 2. Signatures
 
@@ -19,20 +19,23 @@ func (*daemon.Server) Run(context.Context) error
 
 func systemd.New(unitDir string) *systemd.Controller
 func (*systemd.Controller) Enable|Disable|Start|Stop|Restart|Status(context.Context) (systemd.Result, error)
+func launchd.New(plistPath, mmBinary, stdoutPath, stderrPath string) *launchd.Controller
+func (*launchd.Controller) Enable|Disable|Start|Stop|Restart|Status(context.Context) (launchd.Result, error)
 ```
 
 CLI 签名：`mm daemon run|status|start|stop|restart|enable|disable`；除 `run` 外均支持 `--output table|json`。
 
 ## 3. Contracts
 
-- XDG：data 为 `${XDG_DATA_HOME:-$HOME/.local/share}/mihomo-manager`，state 为 `${XDG_STATE_HOME:-$HOME/.local/state}/mihomo-manager`，runtime 优先 `$XDG_RUNTIME_DIR/mihomo-manager`、否则 `<state>/run`，unit 为 `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user`。所有注入路径必须是绝对路径。
+- XDG：data 为 `${XDG_DATA_HOME:-$HOME/.local/share}/mihomo-manager`，state 为 `${XDG_STATE_HOME:-$HOME/.local/state}/mihomo-manager`，runtime 优先 `$XDG_RUNTIME_DIR/mihomo-manager`、否则 `<state>/run`；Linux unit 为 `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user`，Darwin plist 为 `$HOME/Library/LaunchAgents/com.zhangjianyong.mihomo-manager.daemon.plist`。所有注入路径必须是绝对路径。
 - 权限：runtime/data/state 相关创建目录收紧为 `0700`；database/lock/socket/unit 为 `0600`；拒绝已有符号链接、非预期文件类型和非当前用户目录。lock 使用 `O_NOFOLLOW` 和非阻塞 `flock`。
 - IPC：只监听 Unix stream，路径以 `/v1/` 开头；请求头 `MM-Protocol-Min`、`MM-Protocol-Max` 是严格正整数范围，响应返回 `MM-Protocol-Version`，修改请求可带 `MM-Request-ID`。当前协议版本为 `1`，JSON/NDJSON 单体上限 1 MiB。
 - 状态 DTO：`protocolVersion`、`state`、`pid`、`startedAt`、`schemaVersion`、类型化 `core` 状态；daemon 初始 core 为真实 `stopped`，不得伪造 running。
 - NDJSON：`seq` 从 1 单调递增，`kind` 只能是 `event|done|error`，且必须以 `done` 或 `error` 终止；终止后禁止继续写。
-- 安全：Linux listener 在 HTTP 前以 `SO_PEERCRED` 校验 peer UID；root daemon 拒绝启动；daemon 不监听 TCP、不调用 sudo、不启用 linger。启动 daemon 不自动启动 mihomo core，显式 CoreManager 操作才可托管。
+- 安全：Linux listener 在 HTTP 前以 `SO_PEERCRED`、Darwin 以 `LOCAL_PEERCRED` 校验 peer UID；两者都使用同 UID 归属与非阻塞 `flock`，credential 获取失败即拒绝。root daemon 拒绝启动；daemon 不监听 TCP、不调用 sudo、不启用 linger/system domain。启动 daemon 不自动启动 mihomo core。
 - 幂等：完成且非 5xx/非流式的 JSON 响应按 request ID 缓存 5 分钟、最多 1024 条；同 ID 不同 method/path/body 返回 `REQUEST_ID_CONFLICT`。带 request ID 的 handler 一旦调用 `Flush()`，缓存 writer 必须立即提交已写 header/status/body 并切换为直通，后续内容逐次 flush；该响应不得写入 RequestCache，相同 ID 再次请求时重新执行 handler。
 - systemd：`mm.socket` 使用 `%t/mihomo-manager/mm.sock`、`0600/0700`、`Accept=no`、`RemoveOnStop=yes`；service 只执行 `%h/.local/bin/mm daemon run`，设置 `Restart=on-failure`、退避、`NoNewPrivileges=yes`、`UMask=0077`。unit 模板版本为 2，带 owner/version/content checksum marker，以临时文件 fsync+rename 安装。
+- launchd：固定 label 的 plist 使用绝对 `mm` 路径、`RunAtLoad/KeepAlive`、`Umask=63`、日志路径和内容摘要，以 `0600` 临时文件 fsync+rename 安装；controller 只调用 `gui/<uid>` 域的固定 target。
 - 显式执行 `CONFIG_DIR=... MIHOMO_BIN=... MIHOMO_API_PORT=... mm daemon enable` 时，controller 将三个白名单变量校验、转义并写入受管 `Environment=` 块；后续未显式传环境的重复 enable 保留该块，确保 systemd 重启后 legacy 迁移与兼容操作仍使用同一路径。环境值不得包含凭据或控制字符，两个路径必须绝对，端口必须为 1-65535。
 - 监听端口 IPC 为 `GET /v1/config/ports?profileId=...` 与 `PUT /v1/config/ports`；PUT body 固定为 `profileId`、`field`、`port` 且必须带 `MM-Request-ID`。响应包含六项 typed ports、core state、`restarted`、`nextStart` 和最近 `portConflicts`，错误 details 保留 `conflicts` 及可用的 partial `status`。
 
@@ -46,6 +49,8 @@ CLI 签名：`mm daemon run|status|start|stop|restart|enable|disable`；除 `run
 | 非 `/v1/`、非法版本范围、超大/非法 JSON | `invalid_argument` | 2 |
 | systemd user 不可用的 `enable` | 成功安装但 `enabled=false`，附前台提示 | 0 |
 | systemd user 不可用的 `start/stop` | `daemon_unavailable` | 5 |
+| launchd GUI 域不可用的 `enable` | 成功安装 plist，`enabled=false/ready=false` 并附前台提示 | 0 |
+| launchd GUI 域不可用的 `start/stop` | `daemon_unavailable` | 5 |
 | daemon-reload/enable 失败 | 恢复原 unit，`internal` | 1 |
 | 监听字段/范围非法或 PUT 缺 request ID | `INVALID_REQUEST` / `REQUEST_ID_REQUIRED` | 2 |
 | listener bind 冲突 | HTTP 409 `PORT_CONFLICT`，details 含全部 conflicts | 4 |
@@ -67,7 +72,8 @@ CLI 签名：`mm daemon run|status|start|stop|restart|enable|disable`；除 `run
 - `internal/daemon`：真实临时 Unix socket、两个 client、schema status、operation conflict、幂等重放/冲突/过期、POST NDJSON 首条事件在 handler 完成前可读且流响应不缓存、graceful cleanup；不得启动真实 core。
 - `internal/daemon` 端口路由：GET 六字段、PUT request ID/非法字段、stopped `nextStart`、running `restarted`、配置内容/权限和多冲突 details。
 - `internal/platform/systemd`：模板结构/checksum、受管环境 round-trip/转义/保留、无 systemd 降级、fake systemctl 调用范围、失败恢复和未知 unit 备份。
-- 完成门：`go test ./...`、`go test -race ./...`、`go vet ./...`、Linux amd64/arm64 `CGO_ENABLED=0` 构建、隔离 XDG 前台 daemon/status/SIGTERM 冒烟。
+- `internal/platform/launchd`：plist 结构/checksum、环境 round-trip、fresh/幂等 enable、已加载升级不重启、GUI 域降级、固定 target、失败恢复和修改备份。
+- 完成门：`go test ./...`、`go test -race ./...`、`go vet ./...`、Linux/Darwin amd64/arm64 `CGO_ENABLED=0` 构建、隔离 XDG 前台 daemon/status/SIGTERM 冒烟。
 
 ## 7. Wrong vs Correct
 
@@ -220,7 +226,7 @@ IPC 为 `GET /v1/mode?profileId=...` 与 `PUT /v1/mode`；PUT body 固定为 `pr
 
 ### 1. Scope / Trigger
 
-修改 `app.DaemonService.Restart`、`systemd.Controller.Restart/Status`、`mm daemon restart` 或 TUI“重启全部”时适用。目标是让已安装的新 `mm` 在用户明确触发后安全替换旧 daemon，同时保持 Core 的目标状态；daemon 不得通过新 IPC 重启自身。
+修改 `app.DaemonService.Restart`、systemd/launchd controller、`mm daemon restart` 或 TUI“重启全部”时适用。目标是让已安装的新 `mm` 在用户明确触发后安全替换旧 daemon，同时保持 Core 的目标状态；daemon 不得通过新 IPC 重启自身。
 
 ### 2. Signatures
 
@@ -248,7 +254,7 @@ CLI 为 `mm daemon restart [--output table|json]`；TUI“服务管理”分别�
 ### 3. Contracts
 
 - 事务由仍存活的 CLI/TUI 客户端执行：旧 daemon capability 负责 Core stop，新旧 daemon 都只通过现有 `/v1/status` 与 `/v1/core/*` 握手；systemd adapter 只执行 `systemctl --user restart mm.service`，保持 `mm.socket` active。
-- 任何副作用前必须确认 systemd user 可用、两个 unit 文件摘要有效且均为受管文件、`mm.service`/`mm.socket` 都 active；不得通过 PID 信号、进程名扫描、sudo、linger 或 system service 接管前台 daemon。
+- 任何副作用前必须确认 controller 的 `backend`、`ready`、`managed` 有效：systemd 要求两个 unit active，launchd 要求固定 job 已加载且 running；不得通过 PID 信号、进程名扫描、sudo、linger 或 system service 接管前台 daemon。
 - Core 目标矩阵：running -> running，stopped -> stopped，degraded/failed -> 尝试干净 running，starting/stopping -> 冲突且零副作用。需停止时必须通过 capability stop 并再次读取 `/v1/status` 确认 stopped。
 - 新 daemon 只有在协议握手成功，且 PID 与 startedAt 都不同于旧实例后才算更换成功；随后恢复 Core 并再次验证 daemon 身份、Core 目标状态及 systemd service/socket 状态。
 - 默认前向事务 40 秒、新 daemon ready 10 秒、轮询 200ms；发生副作用后的失败使用独立 15 秒 context 启动 socket、等待兼容 daemon 并恢复 Core。恢复成功仍返回原失败，partial result 固定放入 `app.Error.Details["restart"]`。

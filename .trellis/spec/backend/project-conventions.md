@@ -63,7 +63,7 @@
 
 ## 系统与运行约定
 
-- manager daemon 的默认 data/state/runtime/socket/lock/systemd user unit，以及 `generations`、core log/runtime metadata 路径均由 `config.ResolveManagerPaths` 集中计算，优先使用 XDG 环境变量；测试通过 `ManagerEnvironment` 注入临时绝对路径。
+- manager daemon 的默认 data/state/runtime/socket/lock、systemd user unit、launchd plist/日志，以及 `generations`、core log/runtime metadata 路径均由 `config.ResolveManagerPaths` 集中计算，优先使用 XDG 环境变量；测试通过 `ManagerEnvironment` 注入临时绝对路径。
 - daemon 是 manager 状态写入和 2.x core 进程的唯一所有者，IPC 仅限同 UID Unix socket；无 daemon 时 CLI/TUI 不得回退直接写 SQLite、配置或控制 core。daemon 启动只装配 CoreManager，core 初始状态为 `stopped`。
 
 - `internal/mihomo/client.go` 仍保留 1.x 的 `pgrep/pkill` 兼容逻辑，但不接入当前 CLI/TUI 产品入口；2.x daemon 严禁复用该逻辑，只停止 adapter 返回并由 supervisor 持有的 `Process`。

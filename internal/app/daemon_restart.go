@@ -74,7 +74,7 @@ func (s *DaemonService) Restart(ctx context.Context, progress DaemonRestartProgr
 	operationCtx, cancel := context.WithTimeout(ctx, s.duration(s.restartTimeout, defaultDaemonRestartTimeout))
 	defer cancel()
 
-	emitDaemonRestartProgress(progress, DaemonRestartPhasePreflight, "检查 daemon、systemd 与 Core 状态")
+	emitDaemonRestartProgress(progress, DaemonRestartPhasePreflight, "检查 daemon、后台服务管理器与 Core 状态")
 	previous, err := s.Client.Status(operationCtx)
 	if err != nil {
 		return result, daemonRestartFailure(DaemonRestartPhasePreflight, result, err, false, nil)
@@ -86,15 +86,15 @@ func (s *DaemonService) Restart(ctx context.Context, progress DaemonRestartProgr
 		return result, daemonRestartFailure(DaemonRestartPhasePreflight, result, err, false, nil)
 	}
 	if !control.Available {
-		err = &Error{Category: ErrorCategoryDaemonUnavailable, Code: ErrorCodeDaemonRestartPreflight, Message: "systemd user 会话不可用，不能组合重启前台 daemon"}
+		err = &Error{Category: ErrorCategoryDaemonUnavailable, Code: ErrorCodeDaemonRestartPreflight, Message: "后台服务管理器不可用，不能组合重启前台 daemon"}
 		return result, daemonRestartFailure(DaemonRestartPhasePreflight, result, err, false, nil)
 	}
 	if !control.Installed || !control.Managed {
-		err = &Error{Category: ErrorCategoryConflict, Code: ErrorCodeDaemonRestartPreflight, Message: "mm.service/mm.socket 不是完整的受管 unit，已拒绝组合重启"}
+		err = &Error{Category: ErrorCategoryConflict, Code: ErrorCodeDaemonRestartPreflight, Message: "daemon 后台服务不是完整的受管资产，已拒绝组合重启"}
 		return result, daemonRestartFailure(DaemonRestartPhasePreflight, result, err, false, nil)
 	}
-	if !control.ServiceActive || !control.SocketActive {
-		err = &Error{Category: ErrorCategoryDaemonUnavailable, Code: ErrorCodeDaemonRestartPreflight, Message: "受管 mm.service 与 mm.socket 必须都处于运行状态"}
+	if !daemonControlReady(control) {
+		err = &Error{Category: ErrorCategoryDaemonUnavailable, Code: ErrorCodeDaemonRestartPreflight, Message: "受管 daemon 后台服务必须处于就绪状态"}
 		return result, daemonRestartFailure(DaemonRestartPhasePreflight, result, err, false, nil)
 	}
 
@@ -133,7 +133,7 @@ func (s *DaemonService) Restart(ctx context.Context, progress DaemonRestartProgr
 		return s.failAndRecover(operationCtx, progress, DaemonRestartPhaseStopCore, result, profileID, targetRunning, sideEffects, err)
 	}
 
-	emitDaemonRestartProgress(progress, DaemonRestartPhaseRestartDaemon, "重启 mm.service")
+	emitDaemonRestartProgress(progress, DaemonRestartPhaseRestartDaemon, "重启受管 daemon 后台服务")
 	sideEffects = true
 	if _, err := s.Controller.Restart(operationCtx); err != nil {
 		return s.failAndRecover(operationCtx, progress, DaemonRestartPhaseRestartDaemon, result, profileID, targetRunning, sideEffects, err)
@@ -168,9 +168,9 @@ func (s *DaemonService) Restart(ctx context.Context, progress DaemonRestartProgr
 		return s.failAndRecover(operationCtx, progress, DaemonRestartPhaseVerify, result, profileID, targetRunning, sideEffects, err)
 	}
 	finalControl, err := s.Controller.Status(operationCtx)
-	if err != nil || !finalControl.Available || !finalControl.Managed || !finalControl.ServiceActive || !finalControl.SocketActive {
+	if err != nil || !finalControl.Available || !finalControl.Managed || !daemonControlReady(finalControl) || !sameDaemonBackend(control, finalControl) {
 		if err == nil {
-			err = &Error{Category: ErrorCategoryDaemonUnavailable, Code: ErrorCodeDaemonUnavailable, Message: "systemd 最终状态验证失败"}
+			err = &Error{Category: ErrorCategoryDaemonUnavailable, Code: ErrorCodeDaemonUnavailable, Message: "后台服务管理器最终状态验证失败"}
 		}
 		return s.failAndRecover(operationCtx, progress, DaemonRestartPhaseVerify, result, profileID, targetRunning, sideEffects, err)
 	}
@@ -226,11 +226,24 @@ func (s *DaemonService) recover(ctx context.Context, result DaemonRestartResult,
 	if err != nil {
 		return result, err
 	}
-	if !control.Available || !control.Managed || !control.ServiceActive || !control.SocketActive {
-		return result, &Error{Category: ErrorCategoryDaemonUnavailable, Code: ErrorCodeDaemonUnavailable, Message: "自动恢复后 systemd 状态仍不完整"}
+	if !control.Available || !control.Managed || !daemonControlReady(control) {
+		return result, &Error{Category: ErrorCategoryDaemonUnavailable, Code: ErrorCodeDaemonUnavailable, Message: "自动恢复后后台服务状态仍不完整"}
 	}
 	result.CoreRestored = targetRunning && result.CoreState == domain.CoreStateRunning
 	return result, nil
+}
+
+func daemonControlReady(control DaemonControlResult) bool {
+	switch control.Backend {
+	case "systemd", "launchd":
+		return control.Ready
+	default:
+		return false
+	}
+}
+
+func sameDaemonBackend(left, right DaemonControlResult) bool {
+	return left.Backend != "" && left.Backend == right.Backend
 }
 
 func (s *DaemonService) waitForDaemon(ctx context.Context, previous *DaemonStatus, requireChanged bool, timeout time.Duration) (DaemonStatus, error) {

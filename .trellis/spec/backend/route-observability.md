@@ -38,6 +38,7 @@ type platform.ProxyInspector interface {
 - follow 每秒轮询，以 ID 比较有界上一快照：新增为 `open`，可见字段改变为 `update`，消失为 `closed` 并携带最后快照。事件按 ID 排序；IPC writer 唯一分配从 1 递增的 seq，并以 `done|error` 终止。
 - TUI 只保留当前活动 map 和最多 20 条关闭提示；进入页面创建派生 context，Esc 必须 cancel。`Update` 通过单一 reducer 处理三种 action，`View` 只排序和渲染。
 - mihomo listener 从活动 legacy 配置读取 mixed/http/socks port；GNOME 由 daemon 受控执行 `gsettings get`，CLI env 由客户端进程读取 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 及小写形式。
+- Darwin 不实现系统代理读写，system proxy inspector/configurator 返回 typed `platform.ErrUnsupported`，状态展示“macOS 系统代理暂不支持”，且不得执行 `gsettings` 或 `networksetup`；Bash 环境代理能力不扩展到 Zsh。
 - endpoint 在 `internal/platform` 投影为 scheme/host/port 后才进入 DTO；userinfo、path、query、fragment 永不保留。HTTP/HTTPS source 只匹配 http/mixed，SOCKS/ALL_PROXY 只匹配 socks/mixed，host 必须为等价 loopback 且端口相同。
 - 状态固定为 `matched|mismatched|disabled|unknown`。mismatch 产生“普通应用流量不会进入 mihomo”warning；unknown 不使 mode 查询/切换失败。诊断不得调用 `gsettings set`、探测 PID、停止 xray/其他进程或占用端口。
 - 连接快照、事件、目标地址和关闭提示不写 SQLite、operation recovery 或持久日志。

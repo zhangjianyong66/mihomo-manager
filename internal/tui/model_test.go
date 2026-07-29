@@ -973,7 +973,7 @@ func TestModeViewShowsProxyEntrypointSummary(t *testing.T) {
 		EnvironmentProxy: []app.ProxySourceStatus{{Source: "env.HTTP_PROXY", State: "matched"}},
 	}
 	view := model.View()
-	for _, expected := range []string{"监听入口：mixed 127.0.0.1:7890", "GNOME 代理：gnome.http=mismatched", "CLI 环境代理：env.HTTP_PROXY=matched"} {
+	for _, expected := range []string{"监听入口：mixed 127.0.0.1:7890", "系统代理：gnome.http=mismatched", "CLI 环境代理：env.HTTP_PROXY=matched"} {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("mode view missing %q: %s", expected, view)
 		}

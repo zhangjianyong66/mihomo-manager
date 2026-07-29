@@ -52,7 +52,7 @@ write_fake_mm() {
         '[[ -z "${MM_FAKE_ENV_LOG:-}" ]] || printf "%s|%s|%s\n" "$CONFIG_DIR" "$MIHOMO_BIN" "$MIHOMO_API_PORT" >>"$MM_FAKE_ENV_LOG"' \
         '[[ "${MM_FAKE_FAIL_ACTION:-}" != "$1 $2" ]] || exit 9' \
         'case "$1 $2" in' \
-        '  "daemon enable") printf '\''{"apiVersion":"mm/v1","kind":"DaemonControl","data":{"installed":true,"enabled":%s,"active":%s,"message":"fixture","hint":"运行 mm daemon run"},"warnings":[]}\n'\'' "$MM_FAKE_ENABLED" "$MM_FAKE_ENABLED" ;;' \
+	        '  "daemon enable") printf '\''{"apiVersion":"mm/v1","kind":"DaemonControl","data":{"backend":"%s","installed":true,"enabled":%s,"active":%s,"message":"fixture","hint":"运行 mm daemon run"},"warnings":[]}\n'\'' "${MM_FAKE_BACKEND:-}" "$MM_FAKE_ENABLED" "$MM_FAKE_ENABLED" ;;' \
         '  "daemon start"|"daemon stop") printf '\''{"apiVersion":"mm/v1","kind":"DaemonControl","data":{"installed":true,"enabled":true,"active":true,"message":"fixture"},"warnings":[]}\n'\'' ;;' \
         '  "daemon status") printf '\''{"apiVersion":"mm/v1","kind":"DaemonStatus","data":{"state":"running","core":{"state":"%s"}},"warnings":[]}\n'\'' "$MM_FAKE_CORE_STATE" ;;' \
         '  "migrate apply") printf '\''{"apiVersion":"mm/v1","kind":"MigrationApply","data":{"migration":{"state":"succeeded"}},"warnings":[]}\n'\'' ;;' \
@@ -112,6 +112,64 @@ test_preflight_rejections_are_clean() {
     pass "root、平台和架构预检无持久化变更"
 }
 
+test_macos_preflight_matrix() {
+	local arch
+	for arch in amd64 arm64; do
+		(
+			export HOME="$TEST_ROOT/macos-preflight-$arch-home"
+			export MM_EUID_OVERRIDE=1000
+			export MM_OS_OVERRIDE=Darwin
+			export MM_MACOS_VERSION_OVERRIDE=12.0
+			export MM_ARCH="$arch"
+			export MM_INSTALL_LIB_ONLY=1
+			source "$PROJECT_DIR/scripts/install.sh"
+			preflight
+			[[ "$TARGET_OS" == "darwin" && "$TARGET_ARCH" == "$arch" ]]
+		) >/dev/null
+	done
+
+    local old_home="$TEST_ROOT/macos-old-home"
+    mkdir -p "$old_home"
+    if HOME="$old_home" MM_EUID_OVERRIDE=1000 MM_OS_OVERRIDE=Darwin MM_MACOS_VERSION_OVERRIDE=11.7 MM_ARCH=arm64 \
+        bash "$PROJECT_DIR/scripts/install.sh" --yes >/dev/null 2>&1; then
+        fail "macOS 12 以下版本预检应失败"
+    fi
+    assert_not_exists "$old_home/.local"
+
+    local arch_home="$TEST_ROOT/macos-arch-home"
+    mkdir -p "$arch_home"
+    if HOME="$arch_home" MM_EUID_OVERRIDE=1000 MM_OS_OVERRIDE=Darwin MM_MACOS_VERSION_OVERRIDE=14.0 MM_ARCH=riscv64 \
+        bash "$PROJECT_DIR/scripts/install.sh" --yes >/dev/null 2>&1; then
+        fail "Darwin 非 amd64/arm64 架构预检应失败"
+    fi
+    assert_not_exists "$arch_home/.local"
+    pass "macOS 12+ 双架构预检且失败无持久化变更"
+}
+
+test_macos_homebrew_installs_only_missing_packages() {
+    local log="$TEST_ROOT/brew.log"
+    (
+        export HOME="$TEST_ROOT/macos-brew-home"
+        export MM_INSTALL_LIB_ONLY=1
+        source "$PROJECT_DIR/scripts/install.sh"
+        TARGET_OS=darwin
+        ASSUME_YES=1
+        command() {
+            if [[ "$1" == "-v" && "$2" == "jq" ]]; then
+                return 1
+            fi
+            if [[ "$1" == "-v" && "$2" == "brew" ]]; then
+                return 0
+            fi
+            builtin command "$@"
+        }
+        brew() { printf '%s\n' "$*" >>"$log"; }
+        install_macos_dependencies
+    ) >/dev/null
+    [[ "$(cat "$log")" == "install jq" ]]
+    pass "macOS 仅通过现有 Homebrew 补齐缺失依赖"
+}
+
 test_path_is_idempotent() {
     local home="$TEST_ROOT/path-home"
     mkdir -p "$home"
@@ -127,6 +185,81 @@ test_path_is_idempotent() {
         [[ "$PATH_RC_MODIFIED" == "$HOME/.bashrc" ]]
     )
     pass "Bash PATH 配置幂等"
+}
+
+test_macos_path_uses_zshrc_idempotently() {
+    local home="$TEST_ROOT/macos-path-home"
+    mkdir -p "$home"
+    (
+        export HOME="$home"
+        export SHELL=/bin/bash
+        export PATH=/usr/bin:/bin
+        export MM_INSTALL_LIB_ONLY=1
+        source "$PROJECT_DIR/scripts/install.sh"
+        TARGET_OS=darwin
+        configure_path
+        configure_path
+        [[ "$(grep -c '^# >>> mihomo-manager PATH >>>$' "$HOME/.zshrc")" == "1" ]]
+        [[ "$PATH_RC_MODIFIED" == "$HOME/.zshrc" ]]
+        [[ ! -e "$HOME/.bashrc" ]]
+    )
+    pass "macOS Zsh PATH 配置幂等"
+}
+
+test_platform_asset_matrix() {
+    (
+        export MM_INSTALL_LIB_ONLY=1
+        source "$PROJECT_DIR/scripts/install.sh"
+        TARGET_OS=darwin
+        TARGET_ARCH=amd64
+        [[ "$(go_archive_sha256)" == "05dc9b5f9997744520aaebb3d5deaa7c755371aebbfb7f97c2511a9f3367538d" ]]
+        [[ "$(core_asset_name v1.19.28)" == "mihomo-darwin-amd64-v1-v1.19.28.gz" ]]
+        TARGET_ARCH=arm64
+        [[ "$(go_archive_sha256)" == "b62ad2b6d7d2464f12a5bcad7ff47f19d08325773b5efd21610e445a05a9bf53" ]]
+        [[ "$(core_asset_name v1.19.28)" == "mihomo-darwin-arm64-v1.19.28.gz" ]]
+        TARGET_OS=linux
+        [[ "$(core_asset_name v1.19.28)" == "mihomo-linux-arm64-v1.19.28.gz" ]]
+    )
+    pass "Go 与 mihomo 资产按 Linux/macOS 双架构选择"
+}
+
+test_macos_daemon_and_state_round_trip() {
+	local home="$TEST_ROOT/macos-state-home"
+	local state_dir="$home/.local/share/mihomo-manager"
+	local mm="$home/.local/bin/mm"
+	local plist="$home/Library/LaunchAgents/com.zhangjianyong.mihomo-manager.daemon.plist"
+	local log="$home/mm.log"
+	mkdir -p "$(dirname "$plist")" "$state_dir"
+	write_fake_mm "$mm"
+	printf '%s\n' '<string>com.zhangjianyong.mihomo-manager.daemon</string>' >"$plist"
+	chmod 0600 "$plist"
+
+	(
+		export HOME="$home"
+		export MM_STATE_DIR="$state_dir"
+		export MM_INSTALL_DIR="$home/.local/bin"
+		export CONFIG_DIR="$home/.config/mihomo"
+		export MIHOMO_BIN="$home/.local/bin/mihomo"
+		export MM_FAKE_LOG="$log"
+		export MM_FAKE_ENABLED=true
+		export MM_FAKE_CORE_STATE=stopped
+		export MM_FAKE_BACKEND=launchd
+		export MM_INSTALL_LIB_ONLY=1
+		source "$PROJECT_DIR/scripts/install.sh"
+		TARGET_OS=darwin
+		CONFIG_CREATED=0
+		CORE_VERSION=v1.19.28
+		configure_daemon_and_migration
+		write_state
+	) >/dev/null
+
+	grep -Fxq 'platform=darwin' "$state_dir/install-state"
+	grep -Fxq 'daemon_backend=launchd' "$state_dir/install-state"
+	grep -Fxq "daemon_config_path=$plist" "$state_dir/install-state"
+	grep -Fxq "daemon_config_sha256=$(sha256sum "$plist" | awk '{print $1}')" "$state_dir/install-state"
+	[[ "$(stat -c '%a' "$state_dir/install-state")" == "600" ]]
+	[[ "$(cat "$log")" == $'daemon enable --output json\ndaemon start --output json\ndaemon status --output json' ]]
+	pass "macOS launchd 编排与 install-state v3 往返"
 }
 
 test_default_config_preserves_existing_file() {
@@ -236,15 +369,24 @@ test_force_core_replaces_after_validation_and_keeps_backup() {
 
 test_sha_failure_is_detected() {
     local file="$TEST_ROOT/checksum.txt"
+    local expected
     printf 'fixture\n' >"$file"
+	expected="$(shasum -a 256 "$file" | awk '{print $1}')"
     (
         MM_INSTALL_LIB_ONLY=1 source "$PROJECT_DIR/scripts/install.sh"
         if verify_sha256 "$file" "0000000000000000000000000000000000000000000000000000000000000000"; then
             exit 1
         fi
+		command() {
+			if [[ "$1" == "-v" && "$2" == "sha256sum" ]]; then
+				return 1
+			fi
+			builtin command "$@"
+		}
+		verify_sha256 "$file" "$expected"
         true
     )
-    pass "错误 SHA-256 被拒绝"
+    pass "错误 SHA-256 被拒绝且兼容 shasum"
 }
 
 test_ruleset_override_requires_trusted_digests() {
@@ -354,7 +496,7 @@ test_ruleset_install_and_state_round_trip() {
         CORE_VERSION=v1.19.28
         CORE_MANAGED=1
         write_state
-        [[ "$(state_value installer_version)" == "2" ]]
+        [[ "$(state_value installer_version)" == "3" ]]
         [[ "$(state_value ruleset_ref)" == "$ref" ]]
         [[ "$(state_value ruleset_domain_path)" == "$RULESET_DOMAIN_PATH" ]]
         [[ "$(state_value ruleset_ip_sha256)" == "$MM_RULESET_IP_SHA256" ]]
@@ -731,9 +873,62 @@ test_malformed_path_block_is_not_truncated() {
     pass "不完整 PATH 标记块不会导致 shell 配置被截断"
 }
 
+test_macos_uninstall_removes_only_verified_manager_plist() {
+    local home="$TEST_ROOT/macos-uninstall-home"
+    local state_dir="$home/.local/share/mihomo-manager"
+    local plist="$home/Library/LaunchAgents/com.zhangjianyong.mihomo-manager.daemon.plist"
+    local mm="$home/.local/bin/mm"
+    local disable_log="$home/disable.log"
+    mkdir -p "$(dirname "$plist")" "$(dirname "$mm")" "$state_dir"
+    printf '%s\n' \
+        '<?xml version="1.0" encoding="UTF-8"?>' \
+        '<plist><dict><key>Label</key><string>com.zhangjianyong.mihomo-manager.daemon</string></dict></plist>' >"$plist"
+    printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*" >>"$MM_DISABLE_LOG"' >"$mm"
+    chmod +x "$mm"
+    local digest
+    digest="$(sha256sum "$plist" | awk '{print $1}')"
+    printf '%s\n' \
+        'installer_version=3' \
+        'platform=darwin' \
+        'daemon_backend=launchd' \
+        "daemon_config_path=$plist" \
+        "daemon_config_sha256=$digest" \
+        "mm_path=$mm" \
+        'core_managed=0' >"$state_dir/install-state"
+
+    HOME="$home" MM_DISABLE_LOG="$disable_log" bash "$PROJECT_DIR/scripts/uninstall.sh" >/dev/null
+    assert_not_exists "$plist"
+    assert_not_exists "$mm"
+    [[ "$(cat "$disable_log")" == "daemon disable --output json" ]]
+
+    local changed_home="$TEST_ROOT/macos-uninstall-modified-home"
+    local changed_state="$changed_home/.local/share/mihomo-manager"
+    local changed_plist="$changed_home/Library/LaunchAgents/com.zhangjianyong.mihomo-manager.daemon.plist"
+    mkdir -p "$(dirname "$changed_plist")" "$changed_state"
+    printf '%s\n' '<string>com.zhangjianyong.mihomo-manager.daemon</string>' >"$changed_plist"
+    digest="$(sha256sum "$changed_plist" | awk '{print $1}')"
+    printf '# external edit\n' >>"$changed_plist"
+    printf '%s\n' \
+        'installer_version=3' \
+        'platform=darwin' \
+        'daemon_backend=launchd' \
+        "daemon_config_path=$changed_plist" \
+        "daemon_config_sha256=$digest" \
+        "mm_path=$changed_home/.local/bin/mm" \
+        'core_managed=0' >"$changed_state/install-state"
+    HOME="$changed_home" bash "$PROJECT_DIR/scripts/uninstall.sh" >/dev/null 2>&1
+    assert_file_exists "$changed_plist"
+    pass "macOS 卸载仅删除 install-state 可验证的受管 LaunchAgent"
+}
+
 test_pure_helpers
 test_preflight_rejections_are_clean
+test_macos_preflight_matrix
+test_macos_homebrew_installs_only_missing_packages
 test_path_is_idempotent
+test_macos_path_uses_zshrc_idempotently
+test_platform_asset_matrix
+test_macos_daemon_and_state_round_trip
 test_default_config_preserves_existing_file
 test_go_selection_prefers_valid_system_then_managed
 test_newer_core_is_not_downgraded
@@ -754,5 +949,6 @@ test_default_uninstall_preserves_core_and_config
 test_purge_core_requires_ownership
 test_rejected_purge_keeps_ownership_state
 test_malformed_path_block_is_not_truncated
+test_macos_uninstall_removes_only_verified_manager_plist
 
 printf '\n全部安装测试通过，共 %d 项。\n' "$PASSED"

@@ -80,7 +80,10 @@ func (f *fakeRestartController) Restart(context.Context) (DaemonControlResult, e
 }
 
 func managedActiveControl() DaemonControlResult {
-	return DaemonControlResult{Installed: true, Managed: true, Available: true, Active: true, ServiceActive: true, SocketActive: true}
+	return DaemonControlResult{
+		Backend: "systemd", Ready: true, Installed: true, Managed: true, Available: true,
+		Active: true, ServiceActive: true, SocketActive: true,
+	}
 }
 
 func daemonStatus(pid int, startedAt time.Time, state domain.CoreState) DaemonStatus {
@@ -164,14 +167,17 @@ func TestDaemonRestart_TransitionalStatesHaveNoSideEffects(t *testing.T) {
 	}
 }
 
-func TestDaemonRestart_PreflightRejectsUnavailableOrUnmanagedSystemd(t *testing.T) {
+func TestDaemonRestart_PreflightRejectsUnavailableOrUnmanagedBackend(t *testing.T) {
 	tests := []struct {
 		name   string
 		result DaemonControlResult
 	}{
-		{name: "unavailable", result: DaemonControlResult{Installed: true, Managed: true}},
-		{name: "unmanaged", result: DaemonControlResult{Installed: true, Available: true, ServiceActive: true, SocketActive: true}},
-		{name: "service inactive", result: DaemonControlResult{Installed: true, Managed: true, Available: true, SocketActive: true}},
+		{name: "unavailable", result: DaemonControlResult{Backend: "systemd", Installed: true, Managed: true}},
+		{name: "unmanaged", result: DaemonControlResult{Backend: "systemd", Ready: true, Installed: true, Available: true, ServiceActive: true, SocketActive: true}},
+		{name: "backend missing", result: DaemonControlResult{Ready: true, Installed: true, Managed: true, Available: true, ServiceActive: true, SocketActive: true}},
+		{name: "backend unsupported", result: DaemonControlResult{Backend: "other", Ready: true, Installed: true, Managed: true, Available: true}},
+		{name: "systemd not ready", result: DaemonControlResult{Backend: "systemd", Installed: true, Managed: true, Available: true, SocketActive: true}},
+		{name: "launchd not ready", result: DaemonControlResult{Backend: "launchd", Installed: true, Managed: true, Available: true, ServiceActive: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -186,6 +192,28 @@ func TestDaemonRestart_PreflightRejectsUnavailableOrUnmanagedSystemd(t *testing.
 				t.Fatalf("preflight changed state: core=%v controller=%+v", core.actions, controller)
 			}
 		})
+	}
+}
+
+func TestDaemonRestart_AcceptsReadyLaunchd(t *testing.T) {
+	oldTime := time.Date(2026, 7, 29, 1, 0, 0, 0, time.UTC)
+	newTime := oldTime.Add(time.Minute)
+	client := &fakeRestartStatusClient{responses: []restartStatusResponse{
+		{status: daemonStatus(100, oldTime, domain.CoreStateStopped)},
+		{status: daemonStatus(100, oldTime, domain.CoreStateStopped)},
+		{status: daemonStatus(200, newTime, domain.CoreStateStopped)},
+		{status: daemonStatus(200, newTime, domain.CoreStateStopped)},
+	}}
+	controller := &fakeRestartController{result: DaemonControlResult{
+		Backend: "launchd", Ready: true, Installed: true, Managed: true, Available: true,
+		Enabled: true, Active: true, ServiceActive: true,
+	}}
+	result, err := newRestartService(client, &fakeRestartCore{}, controller).Restart(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.DaemonRestarted || result.CoreState != domain.CoreStateStopped || controller.restartCalls != 1 {
+		t.Fatalf("unexpected launchd restart: result=%+v controller=%+v", result, controller)
 	}
 }
 

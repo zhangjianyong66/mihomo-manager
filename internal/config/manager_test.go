@@ -76,6 +76,15 @@ func TestResolveManagerPaths_XDGAndFallback(t *testing.T) {
 			if paths.CoreLog != filepath.Join(tt.state, "core", "mihomo.log") || paths.RuntimeState != filepath.Join(tt.state, "core", "runtime.json") {
 				t.Fatalf("unexpected core files: %+v", paths)
 			}
+			if paths.MMBinary != filepath.Join(home, ".local", "bin", "mm") || paths.LaunchAgentDir != filepath.Join(home, "Library", "LaunchAgents") {
+				t.Fatalf("unexpected launchd paths: %+v", paths)
+			}
+			if paths.LaunchAgent != filepath.Join(paths.LaunchAgentDir, "com.zhangjianyong.mihomo-manager.daemon.plist") {
+				t.Fatalf("unexpected launch agent path: %+v", paths)
+			}
+			if paths.DaemonStdout != filepath.Join(tt.state, "daemon.stdout.log") || paths.DaemonStderr != filepath.Join(tt.state, "daemon.stderr.log") {
+				t.Fatalf("unexpected daemon log paths: %+v", paths)
+			}
 		})
 	}
 }

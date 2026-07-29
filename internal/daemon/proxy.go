@@ -101,7 +101,7 @@ func (s *CapabilityService) initProxyConfig(managerPaths ...config.ManagerPaths)
 		}
 	}
 	if s.gnomeConfigurator == nil {
-		s.gnomeConfigurator = platform.NewGNOMEProxyConfigurator()
+		s.gnomeConfigurator = platform.NewSystemProxyConfigurator()
 	}
 	if s.bashConfigurator == nil {
 		s.bashConfigurator = platform.NewBashProxyConfigurator()
@@ -218,7 +218,11 @@ func (s *CapabilityService) ProxyStatus(ctx context.Context, layer, profileID st
 				{Target: "https", State: string(platform.ProxyStateUnknown)},
 				{Target: "socks", State: string(platform.ProxyStateUnknown)},
 			}
-			result.Warnings = append(result.Warnings, "无法读取 GNOME 系统代理，入口状态未知")
+			if errors.Is(readErr, platform.ErrUnsupported) {
+				result.Warnings = append(result.Warnings, "macOS 系统代理暂不支持")
+			} else {
+				result.Warnings = append(result.Warnings, "无法读取 GNOME 系统代理，入口状态未知")
+			}
 			if state.GNOME != nil {
 				result.Managed = true
 				result.SnapshotAvailable = true

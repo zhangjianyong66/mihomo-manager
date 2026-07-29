@@ -2,9 +2,9 @@
 
 ## 支持范围
 
-- 一键安装首版仅支持 Ubuntu/Debian 的 `amd64` 与 `arm64`。
-- 安装器必须由普通用户运行；只在安装缺失 apt 包时局部使用 sudo。
-- macOS launchd 不再属于受支持的安装流程；卸载器仅保留旧 plist 的兼容清理。
+- 一键安装支持 Ubuntu/Debian 与 macOS 12+ 的 `amd64` 与 `arm64`。
+- 安装器必须由普通用户运行；Linux 只在安装缺失 apt 包时局部使用 sudo，macOS 只使用已有 Homebrew 且不调用 sudo。
+- Linux 使用 systemd user service/socket，macOS 使用当前用户 `gui/<uid>` 域的 launchd LaunchAgent；均不使用系统级 daemon。
 
 ## 安装入口
 
@@ -26,7 +26,7 @@ make install
 
 ## 依赖与 Go
 
-- 安装器检查并按需安装 `ca-certificates`、`curl`、`tar`、`gzip`、`procps`、`jq`、`coreutils`。
+- Linux 安装器通过 apt 检查并按需安装 `ca-certificates`、`curl`、`tar`、`gzip`、`procps`、`jq`、`coreutils`；macOS 优先系统工具，仅用已存在的 Homebrew 补齐缺失包。
 - `procps` 提供 Go 版运行时使用的 `pgrep`/`pkill`。
 - 系统 Go 版本不低于 1.22 时直接复用。
 - 否则下载并校验官方 Go 1.26.4 到 `~/.local/share/mihomo-manager/toolchains/go1.26.4`，不覆盖系统 Go。
@@ -37,7 +37,7 @@ make install
 - `mm` 从当前源码构建，经 `--help` 冒烟后原子替换为 `~/.local/bin/mm` 普通文件。
 - 安装产物不得软链接到仓库 `bin/mm`；移动或删除仓库不应影响已安装命令。
 - mihomo core 默认固定为 `v1.19.28`，默认路径 `~/.local/bin/mihomo`，可用 `MIHOMO_VERSION`/`MIHOMO_BIN` 覆盖。
-- amd64 使用 `mihomo-linux-amd64-v1-<version>.gz`，arm64 使用 `mihomo-linux-arm64-<version>.gz`。
+- mihomo 资产按 `linux|darwin` 和 `amd64|arm64` 显式映射；Darwin amd64 使用 v1 资产，四种组合都必须经 Release API digest 校验。
 - 必须从 MetaCubeX/mihomo Release API 读取资产 URL 与 SHA-256 digest，校验、版本冒烟通过后才能替换。
 - 已有 core 版本不低于目标版本时不降级；替换旧版或无法识别的 core 前写入 `mihomo.bak`。
 
@@ -52,21 +52,23 @@ make install
 - Bash/Zsh 缺少等效 PATH 配置时，安装器使用稳定标记块写入 `~/.bashrc` 或 `~/.zshrc`；重复安装不得重复追加。
 - 脚本不能修改父 shell，安装结束后应提示重开终端或临时 export PATH。
 
-## daemon 与 systemd user service
+## daemon 与用户级服务管理器
 
 - `mm daemon run` 以普通用户前台运行 manager daemon；只打开 XDG manager database、Unix socket 和单实例锁，不启动 mihomo core。
 - IPC socket 默认位于 `$XDG_RUNTIME_DIR/mihomo-manager/mm.sock`，缺失时回退到 `${XDG_STATE_HOME:-$HOME/.local/state}/mihomo-manager/run/mm.sock`；父目录 `0700`，socket/lock `0600`。
 - systemd unit 模板 v2 由 Go 二进制嵌入并写入 `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/mm.socket` 与 `mm.service`。`mm.socket` 使用 `%t`、`Accept=no`、`RemoveOnStop=yes`，service 设置 `NoNewPrivileges=yes`、`UMask=0077`、失败退避，且只启动 `mm daemon run`。
-- 安装器调用正式 daemon CLI 时显式传入 `CONFIG_DIR`、`MIHOMO_BIN`、`MIHOMO_API_PORT`；controller 将其写入受校验的 service `Environment=` 块，未显式带环境的后续 enable 保留已有块，避免 systemd 重启后回落到默认 legacy 路径。
+- macOS LaunchAgent label 固定为 `com.zhangjianyong.mihomo-manager.daemon`，写入 `~/Library/LaunchAgents/<label>.plist`，只执行绝对路径 `mm daemon run`，并设置 `RunAtLoad`、`KeepAlive`、`Umask=0077`、状态目录日志与有界节流。
+- 安装器调用正式 daemon CLI 时显式传入 `CONFIG_DIR`、`MIHOMO_BIN`、`MIHOMO_API_PORT`；controller 将其写入受校验的 systemd `Environment=` 块或 launchd `EnvironmentVariables`，未显式带环境的后续 enable 保留已有值，避免后台服务重启后回落到默认 legacy 路径。
 - `mm daemon enable` 原子写入并保存未知/本地修改 unit 的备份；daemon-reload 或 enable 失败会恢复原文件。systemd 用户会话不可用时保留已校验 unit，返回“已安装未启用”和 `mm daemon run` 提示，不启用 linger 或 sudo。
+- launchd controller 只操作固定 `gui/<uid>/<label>`；GUI 登录域不可用时保留已校验 plist 并提示前台运行，不切换到 system domain。已加载升级只更新磁盘 plist，不自动重启运行中的 job。
 - 一键安装在正式 `mm` 发布后调用 `daemon enable/start/status`。本次新建配置且 daemon 可用时自动执行 `migrate apply`；已有配置只提示 `migrate plan/apply`。
 - 升级前通过旧 `mm daemon status --output json` 探测 core，并在 stop 前再次核对：只有 core stopped 才允许重启 daemon 加载新二进制，running/starting/degraded/未知状态均保持现有进程。
-- 用户可在升级后显式执行 `mm daemon restart` 或使用 TUI“重启全部”加载新 daemon。该手动事务只接受摘要有效的受管 `mm.service/mm.socket`，会按原 Core 状态停止、重启 service、握手和恢复；前台 daemon 或 systemd user 不可用时拒绝接管。
+- 用户可在升级后显式执行 `mm daemon restart` 或使用 TUI“重启全部”加载新 daemon。该手动事务只接受 backend 明确为 `systemd|launchd`、摘要有效且 `ready=true` 的受管后台资产，会按原 Core 状态停止、重启 daemon、握手和恢复；前台 daemon、未知 backend 或后台服务管理器不可用时均在副作用前拒绝。
 - 手动组合重启不改变安装器的无人值守策略：安装器仍不得为了加载新二进制而中断 running/degraded/未知 Core，也不得自动调用组合重启。
 
 ## 状态与卸载
 
-安装状态位于 `~/.local/share/mihomo-manager/install-state`，只记录路径、版本和归属等非敏感信息，用于安全卸载。
+安装状态位于 `~/.local/share/mihomo-manager/install-state`；v3 记录平台、daemon backend/config 路径与可用摘要，以及路径、版本和归属等非敏感信息，用于安全卸载。
 
 ```bash
 make uninstall
@@ -75,6 +77,7 @@ make uninstall
 ```
 
 - 默认删除 `mm`、隔离 Go 和安装器 PATH 块，保留 core 与配置。
+- 卸载先通过仍存在的正式 CLI 停用 daemon；manager plist 只有在固定路径、label、当前 UID 与 install-state 摘要都匹配时删除，未知或外部修改文件必须保留。
 - `--purge` 仅删除状态确认由安装器管理且位于默认路径的 core。
 - `--purge-config` 才删除配置目录，并需交互确认或 `--yes`。
 - 卸载器兼容删除旧版 `~/.local/bin/mm` 软链接。
@@ -128,7 +131,7 @@ scripts/uninstall.sh [--purge] [--purge-config] [--yes]
 | `MM_RULESET_DOMAIN_SHA256` | 条件必填 | 自定义来源的 domain `.mrs` 64 位十六进制 SHA-256 |
 | `MM_RULESET_IP_SHA256` | 条件必填 | 自定义来源的 IP `.mrs` 64 位十六进制 SHA-256 |
 | `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` | 是 | 由 curl/Go 自然继承，不自动改写 |
-| `install-state` | 内部 | 只允许非敏感 `key=value`；记录 mm、Go、PATH、core 归属、配置路径，以及两份规则集的来源、引用、路径和摘要 |
+| `install-state` | 内部 | 只允许非敏感 `key=value`；v3 记录平台、daemon backend/config 路径及摘要，并记录 mm、Go、PATH、core 归属、配置路径和两份规则集的来源、引用、路径与摘要 |
 
 状态字段发生增删时，安装写入和卸载读取必须在同一变更中更新，并补回归测试。
 
@@ -137,8 +140,9 @@ scripts/uninstall.sh [--purge] [--purge-config] [--yes]
 | 条件 | 必须行为 |
 |------|----------|
 | EUID 为 0 | 在持久化变更前失败，提示普通用户运行 |
-| 非 Ubuntu/Debian 或非 amd64/arm64 | 无变更失败 |
+| 非 Ubuntu/Debian、低于 macOS 12，或非 amd64/arm64 | 无变更失败 |
 | 缺失 apt 包且未确认 | 不调用 sudo，失败或由用户取消 |
+| macOS 缺失依赖且 Homebrew 不存在或未确认 | 不安装 Homebrew、不调用 sudo，安装失败或由用户取消 |
 | Go 下载摘要不匹配 | 不替换隔离工具链，不构建 mm |
 | core 资产缺少 SHA-256 | 不下载或替换 core |
 | core 校验/版本冒烟失败 | 保留已有 core，不生成备份替换 |
@@ -151,13 +155,14 @@ scripts/uninstall.sh [--purge] [--purge-config] [--yes]
 
 ### 5. Good / Base / Bad 用例
 
-- Good：Ubuntu amd64、系统 Go 1.22+、无既有 core；安装器校验并安装 core，构建独立 mm，创建 DIRECT 配置。
+- Good：Ubuntu amd64 或 macOS arm64、系统 Go 1.22+、无既有 core；安装器按平台校验并安装 core，构建独立 mm，创建 DIRECT 配置并启用用户级 daemon。
 - Base：已有更高版本 core 和有效配置；安装器保留二者，只更新 mm 和必要 PATH。
 - Bad：Release API 返回的 digest 与下载文件不一致；安装器非零退出，旧 mm/core/config 保持原样。
 
 ### 6. 必需测试与断言点
 
-- `bash scripts/tests/test_install.sh`：断言预检无变更、Go 选择、core 不降级/强制备份、规则集来源/摘要/事务回滚/缓存降级、daemon 分支、fresh migrate、PATH 幂等与卸载归属。
+- `bash scripts/tests/test_install.sh`：断言 Linux/macOS 预检无变更、Homebrew 补缺、Go/core 平台资产、core 不降级/强制备份、规则集事务、daemon 分支、install-state v3、fresh migrate、PATH 幂等与卸载归属。
+- Darwin 交叉门禁：对 amd64/arm64 构建 `cmd/mm`，并编译 `internal/platform` 与 `internal/platform/launchd` 测试二进制；真实 `launchctl`、`plutil` 和 `LOCAL_PEERCRED` 仍需 macOS runner 验证。
 - 隔离 HOME 端到端：断言 `mm --help`、`mihomo -t` 成功；默认卸载后 mm 消失、core/config 保留、core 归属状态仍在。
 - `bash -n ...`：覆盖所有 Shell 脚本。
 - `go test ./...` 与临时路径 `go build`：保证安装改动不影响 Go 产品。

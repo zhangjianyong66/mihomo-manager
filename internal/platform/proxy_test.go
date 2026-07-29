@@ -38,6 +38,25 @@ func TestGNOMEProxyInspectorManualAndDisabled(t *testing.T) {
 	}
 }
 
+func TestUnsupportedSystemProxyNeverRunsPlatformCommands(t *testing.T) {
+	proxy := unsupportedSystemProxy{warning: "macOS 系统代理暂不支持"}
+	sources := proxy.Inspect(context.Background())
+	if len(sources) != 3 {
+		t.Fatalf("unexpected sources: %+v", sources)
+	}
+	for _, source := range sources {
+		if source.State != ProxyStateUnknown || source.Warning != "macOS 系统代理暂不支持" || source.Endpoint != nil {
+			t.Fatalf("unexpected unsupported source: %+v", source)
+		}
+	}
+	if _, err := proxy.Read(context.Background()); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("unexpected read error: %v", err)
+	}
+	if _, err := proxy.Apply(context.Background(), GNOMEProxySnapshot{}, nil); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("unexpected apply error: %v", err)
+	}
+}
+
 func TestGNOMEProxyConfiguratorApplyRestoreAndConflict(t *testing.T) {
 	values := defaultGNOMEProxyValues()
 	runner := func(_ context.Context, _ string, args ...string) ([]byte, error) {

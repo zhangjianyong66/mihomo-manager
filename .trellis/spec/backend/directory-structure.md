@@ -13,7 +13,7 @@
 ├── internal/store/         # SQLite 仓储、嵌入式迁移、权限和恢复点
 ├── internal/daemon/        # 用户级 daemon 生命周期、状态、操作锁和幂等缓存
 ├── internal/ipc/           # 版本化 HTTP/JSON Unix transport 与 NDJSON 编解码
-├── internal/platform/      # 文件锁、Unix peer credential、systemd unit 平台适配
+├── internal/platform/      # 文件锁、Unix peer credential、systemd/launchd 平台适配
 ├── internal/mihomo/        # mihomo 进程、API、配置和订阅核心逻辑
 ├── internal/tui/           # Bubble Tea 状态机、输入处理和界面渲染
 ├── scripts/                # 安装/卸载脚本及遗留 Shell 实现
@@ -36,7 +36,7 @@
 - `internal/core`：定义不依赖 mihomo DTO 的 adapter/process/runtime 契约，并负责 managed generation 和 external 只读引用；不得导入 SQLite、CLI、TUI 或 `internal/mihomo`。
 - `internal/daemon`：拥有 daemon 生命周期、状态快照、store 装配、health/status、operation coordinator、CoreManager 和 request ID 缓存；启动 daemon 不自动启动 mihomo，后续显式操作才托管单实例 core。
 - `internal/ipc`：只负责 `/v1/` HTTP/JSON over Unix socket、版本范围协商、请求取消、结构化错误和 NDJSON stream；不导入 store/mihomo/CLI。
-- `internal/platform`：隔离 Linux `SO_PEERCRED`、`O_NOFOLLOW` 文件锁、Unix listener、socket activation 和 systemd user unit 控制；协议层不得依赖 Linux syscall。
+- `internal/platform`：隔离 Linux `SO_PEERCRED`、Darwin `LOCAL_PEERCRED`、文件锁、Unix listener、socket activation，以及 systemd/launchd 用户级控制；协议层不得直接依赖平台 syscall。
 - `internal/config/config.go`：统一生成 `config.Paths`。新增运行路径或环境变量时，应在这里提供默认值并由调用方注入，避免在业务包重复拼接 `$HOME` 路径。
 - `internal/mihomo/adapter.go`、`render.go`、`process.go`、`runtime.go`：2.x adapter 的渲染/验证、精确进程句柄和类型化 runtime API；`client.go` 只保留未接入产品入口的 1.x 兼容业务。
 - `internal/tui/model.go`：Bubble Tea `Model`、消息类型、按键处理和视图渲染。它只调用注入的 app/daemon capability，不导入 `internal/mihomo`、不解析订阅或改写 YAML。
@@ -50,7 +50,7 @@
 - 新增 mihomo API、配置变换、订阅解析或系统进程操作：放在 `internal/mihomo`。
 - 新增页面状态、按键、异步消息或渲染：放在 `internal/tui`，通过窄接口注入 `internal/app` capability；所有业务调用封装为 `tea.Cmd`，不得放进 `View`。
 - 新增 Go 测试：与被测代码同包放置为 `*_test.go`。现有示例是 `internal/mihomo/client_route_test.go` 和 `client_start_test.go`。
-- 远程引导、安装和卸载分别维护 `scripts/bootstrap.sh`、`scripts/install.sh`、`scripts/uninstall.sh`；`launchd/` 仅保留旧 macOS 兼容资产。
+- 远程引导、安装和卸载分别维护 `scripts/bootstrap.sh`、`scripts/install.sh`、`scripts/uninstall.sh`；正式 LaunchAgent 由 `internal/platform/launchd` 渲染，`launchd/` 只保留旧监控兼容资产。
 
 ## 命名与组织
 

@@ -2,6 +2,7 @@
 
 help:
 	@echo "Mihomo Manager - Mihomo 代理管理工具"
+	@echo "支持 Ubuntu/Debian 与 macOS 12+（amd64/arm64）"
 	@echo ""
 	@echo "使用方法:"
 	@echo "  make install       安装依赖、规则集、mihomo core、mm 和用户 daemon"

@@ -22,7 +22,7 @@
 | 格式检查 | `test -z "$(gofmt -l cmd internal)"` | 有输出表示存在未格式化的 Go 文件 |
 | 单元测试 | `go test ./...` | 当前主要且必须执行的自动化测试 |
 | 存储 race 测试 | `GOTOOLCHAIN=go1.22.12 go test -race ./internal/store` | 验证单连接、关闭和并发仓储行为 |
-| 无 CGO 构建 | `GOTOOLCHAIN=go1.22.12 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/mm ./cmd/mm` | 最低 Go 版本和目标架构门禁；arm64 需另以 `GOARCH=arm64` 构建 |
+| 无 CGO 构建 | `GOTOOLCHAIN=go1.22.12 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/mm ./cmd/mm` | 最低 Go 版本门禁；Linux/Darwin 的 amd64/arm64 四种组合都需构建 |
 | 安装 | `make install` | 安装依赖、校验后的 mihomo core 和独立 `~/.local/bin/mm` |
 | 卸载 | `make uninstall` | 删除 mm/隔离 Go/PATH 块，保留 core 和用户配置 |
 | 安装测试 | `bash scripts/tests/test_install.sh` | 临时 HOME 驱动，不触碰真实配置、apt 或运行态 |
@@ -42,4 +42,4 @@
 - `tests/test.sh` 依赖本机端口、launchd 和已运行服务，还调用已不再支持的 `mm status`，不能作为通用 CI 或当前 CLI 的必过测试。
 - `scripts/tests/test_manager.sh` 主要验证遗留 `bin/mihomo-manager` 和 `scripts/lib`，仅在维护旧 Shell 实现时运行。
 - 单元测试不得依赖真实的 `~/.config/mihomo`、真实订阅或正在运行的 mihomo；使用 `t.TempDir()`、`httptest.NewServer()` 和 `/usr/bin/true`/`false` 等可控替身。
-- daemon/IPC/systemd 测试必须使用 `t.TempDir()` 或隔离 HOME/XDG；不得连接真实用户 socket、systemd unit、mihomo core 或 TCP 端口。完整门禁还应运行 `go test -race ./...`、`go vet ./...` 和 Linux amd64/arm64 `CGO_ENABLED=0` 构建。
+- daemon/IPC/systemd/launchd 测试必须使用 `t.TempDir()`、fake runner 或隔离 HOME/XDG；不得连接真实用户 socket、服务管理器、mihomo core 或 TCP 端口。完整门禁还应运行 `go test -race ./...`、`go vet ./...` 和 Linux/Darwin amd64/arm64 `CGO_ENABLED=0` 构建。

@@ -4,7 +4,7 @@
 
 ## 一键安装
 
-首版安装器支持 Ubuntu/Debian 的 `amd64` 和 `arm64`，请以普通用户执行，不要对整个脚本使用 `sudo`。
+安装器支持 Ubuntu/Debian 与 macOS 12 Monterey 及以上版本的 `amd64`、`arm64`，请以普通用户执行，不要对整个脚本使用 `sudo`。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zhangjianyong66/mihomo-manager/master/scripts/bootstrap.sh | bash
@@ -12,13 +12,13 @@ curl -fsSL https://raw.githubusercontent.com/zhangjianyong66/mihomo-manager/mast
 
 安装器会：
 
-- 检查并按需通过 `apt` 安装 `curl`、`tar`、`gzip`、`procps`、`jq` 等依赖；
+- 检查系统依赖；Ubuntu/Debian 通过 `apt` 补齐，macOS 只使用已安装的 Homebrew 补齐缺失包；
 - 复用 Go 1.22+，或安装隔离的官方 Go 1.26.4；
 - 从源码构建独立的 `$HOME/.local/bin/mm`；
 - 下载并校验官方 mihomo core，默认固定为 `v1.19.28`；
 - 下载并校验固定版本的 CN domain/IP `.mrs` 到 `$CONFIG_DIR/rulesets`；
 - 在缺少配置时创建最小 `DIRECT` 配置；
-- 安装并启用 systemd user manager daemon，但保持 mihomo core 为停止状态；
+- 通过 Linux systemd user 或 macOS launchd LaunchAgent 安装并启用 manager daemon，但保持 mihomo core 为停止状态；
 - 仅对本次新建的配置自动执行 legacy 注册，已有配置只给出迁移提示；
 - 为 Bash/Zsh 幂等配置 `$HOME/.local/bin`。
 
@@ -60,7 +60,7 @@ make install
 ./scripts/install.sh --help
 ```
 
-- `--yes`：跳过 apt 安装确认。
+- `--yes`：跳过 apt/Homebrew 安装确认。
 - `--force-core`：强制重新安装目标 mihomo core。
 - `MM_REF`：远程安装使用的源码分支、标签或提交，默认 `master`。
 - `MIHOMO_VERSION`：指定 core 版本，默认 `v1.19.28`。
@@ -119,13 +119,13 @@ mm tui --help
 mm daemon --help
 ```
 
-`mm daemon run` 是不依赖 systemd 的前台 manager daemon。daemon 会装配 mihomo adapter 和单实例 supervisor，但不会自动启动 mihomo；CLI 在 daemon 不可用时不会回退为直接写 SQLite、配置或控制 core。managed generation 默认写入 `${XDG_DATA_HOME:-~/.local/share}/mihomo-manager/generations`，core 日志与 runtime metadata 写入 `${XDG_STATE_HOME:-~/.local/state}/mihomo-manager/core`。可用 `XDG_DATA_HOME`、`XDG_STATE_HOME`、`XDG_RUNTIME_DIR`、`XDG_CONFIG_HOME` 隔离测试环境。
+`mm daemon run` 是不依赖 systemd/launchd 的前台 manager daemon。daemon 会装配 mihomo adapter 和单实例 supervisor，但不会自动启动 mihomo；CLI 在 daemon 不可用时不会回退为直接写 SQLite、配置或控制 core。managed generation 默认写入 `${XDG_DATA_HOME:-~/.local/share}/mihomo-manager/generations`，core 日志与 runtime metadata 写入 `${XDG_STATE_HOME:-~/.local/state}/mihomo-manager/core`。可用 `XDG_DATA_HOME`、`XDG_STATE_HOME`、`XDG_RUNTIME_DIR`、`XDG_CONFIG_HOME` 隔离测试环境。
 
-安装升级只有在受管 core 明确为 `stopped` 且 stop 前复核仍为 `stopped` 时才重启 daemon；其他状态不会停止现有 daemon，新二进制在后续 daemon 重启时生效。systemd user 会话不可用时只保留已安装 unit，并提示使用 `mm daemon run`，不会启用 linger 或创建临时后台进程。
+安装升级只有在受管 core 明确为 `stopped` 且 stop 前复核仍为 `stopped` 时才重启 daemon；其他状态不会停止现有 daemon，新二进制在后续 daemon 重启时生效。systemd user 或 launchd GUI 登录域不可用时只保留已安装的后台配置，并提示使用 `mm daemon run`，不会切换到系统级服务或创建临时后台进程。
 
-安装新 `mm` 后如需立即加载新 daemon，可在 TUI“服务管理”中选择“重启全部”，或执行 `mm daemon restart`。该操作只支持校验通过的 systemd user `mm.service/mm.socket`：它会先停止并复核 Core，只重启 `mm.service`，等待新 daemon 身份和协议握手成功，再按原状态恢复 Core。前台 daemon、systemd 不可用或 unit 被修改时会在任何启停前拒绝；执行期间代理会短暂中断，Core 内存中的测速历史和实时连接不会保留。
+安装新 `mm` 后如需立即加载新 daemon，可在 TUI“服务管理”中选择“重启全部”，或执行 `mm daemon restart`。该操作只接受摘要有效且处于就绪状态的 systemd user unit 或 launchd LaunchAgent：它会先停止并复核 Core，重启受管 daemon，等待新身份和协议握手成功，再按原状态恢复 Core。前台 daemon、后台服务管理器不可用或受管资产被修改时会在任何启停前拒绝；执行期间代理会短暂中断，Core 内存中的测速历史和实时连接不会保留。
 
-通过安装器设置的 `CONFIG_DIR`、`MIHOMO_BIN` 和 `MIHOMO_API_PORT` 会写入受管 systemd service 环境，并在后续未显式覆盖的 `mm daemon enable` 中保留，确保 daemon 重启后继续使用同一 legacy 配置和 core 路径。
+通过安装器设置的 `CONFIG_DIR`、`MIHOMO_BIN` 和 `MIHOMO_API_PORT` 会写入受管 systemd service 或 launchd plist 环境，并在后续未显式覆盖的 `mm daemon enable` 中保留，确保 daemon 重启后继续使用同一 legacy 配置和 core 路径。
 
 2.0 Alpha 的业务 CLI 默认作用于唯一活动 legacy 档案，也可用 `--profile <id>` 显式指定。查询命令使用 `--output table|json`；`node test`、`core logs --follow` 和 `route connections --follow` 使用 `--output text|ndjson`。订阅地址、节点 URI、UUID、密码和日志凭据默认脱敏，只有显式 `--show-secrets` 才显示完整值。
 
@@ -162,7 +162,7 @@ mm daemon --help
 - `migrate plan|apply|status|rollback` 负责注册活动 legacy 档案；所有迁移和 A6 业务写入均经 daemon，`rollback` 必须显式指定恢复点，旧 YAML 不会自动转换。
 - 新建配置默认使用 `mixed-port: 7890`。daemon 每次启动或重启 core 前检查 `mixed-port`、`port`、`socks-port`、`redir-port`、`tproxy-port` 和 `external-controller` 的 TCP/UDP 监听冲突；冲突会一次列出并以 `PORT_CONFLICT`/退出码 `4` 阻止启动，不会自动换端口或停止其他代理进程。
 - 五类代理端口可通过 `mm config port set <field> 0` 禁用，`external-controller` 必须为 `1-65535` 且只修改端口、保留 loopback 主机。core running 时修改会受控重启，失败时恢复旧配置和旧 core；core stopped 时只保存到下次启动。
-- `mode status` 同时展示 mihomo listener、GNOME 系统代理和当前 CLI 环境代理的只读匹配结果；诊断不会执行 `gsettings set`、占用端口或控制其他代理进程，代理 URL 的凭据、path 和 query 不进入输出。
+- `mode status` 同时展示 mihomo listener、系统代理和当前 CLI 环境代理的只读匹配结果；Linux GNOME 使用 `gsettings`，macOS 系统代理目前明确返回不支持且不会执行 `gsettings` 或 `networksetup`。诊断不会占用端口或控制其他代理进程，代理 URL 的凭据、path 和 query 不进入输出。
 - 活动连接只保留在 daemon/TUI 有界内存中，不写 SQLite 或持久日志；快照和 follow 均要求 mihomo core 已运行。
 - 2.0 的领域模型、SQLite schema/迁移和事务仓储底座已接入 daemon；legacy profile 仅由迁移创建，无法确认归属的文件不会猜测为 managed。
 - 2.0 的 mihomo adapter 已支持原生验证、loopback controller 就绪检查、精确进程停止和失败恢复；A6 已接入 legacy core/config/node/subscription/route/log 命令，多档案、多订阅和完整 managed 配置仍属于 Beta。

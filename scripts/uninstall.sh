@@ -87,6 +87,51 @@ state_value() {
     awk -F= -v wanted="$key" '$1 == wanted { print substr($0, index($0, "=") + 1); exit }' "$STATE_FILE"
 }
 
+sha256_file() {
+    local file="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | awk '{print $1}'
+    else
+        shasum -a 256 "$file" | awk '{print $1}'
+    fi
+}
+
+lowercase() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+file_mode() {
+    local file="$1"
+    if stat -c '%a' "$file" >/dev/null 2>&1; then
+        stat -c '%a' "$file"
+    else
+        stat -f '%Lp' "$file"
+    fi
+}
+
+file_uid() {
+    local file="$1"
+    if stat -c '%u' "$file" >/dev/null 2>&1; then
+        stat -c '%u' "$file"
+    else
+        stat -f '%u' "$file"
+    fi
+}
+
+disable_manager_daemon() {
+    local recorded target
+    recorded="$(state_value mm_path 2>/dev/null || true)"
+    target="${recorded:-$INSTALL_DIR/mm}"
+    if [[ "$target" != "$INSTALL_DIR/mm" || ! -x "$target" ]]; then
+        return 0
+    fi
+    if "$target" daemon disable --output json >/dev/null 2>&1; then
+        info "已停用用户级 manager daemon。"
+    else
+        warn "无法通过 mm 停用 manager daemon；将仅清理可确认归属的后台配置。"
+    fi
+}
+
 remove_mm() {
     local recorded target
     recorded="$(state_value mm_path 2>/dev/null || true)"
@@ -107,7 +152,7 @@ remove_mm() {
 
 remove_path_block() {
     local file="$1"
-    local temp_file
+    local temp_file mode
     [[ -f "$file" ]] || return 0
     grep -q '^# >>> mihomo-manager PATH >>>$' "$file" || return 0
 
@@ -131,7 +176,12 @@ remove_path_block() {
         warn "PATH 标记块不完整，已保留并请手动检查: $file"
         return 0
     fi
-    chmod --reference="$file" "$temp_file"
+	mode="$(file_mode "$file")" || {
+		rm -f -- "$temp_file"
+		warn "无法读取 shell 配置权限，已保留: $file"
+		return 0
+	}
+	chmod "$mode" "$temp_file"
     mv -f -- "$temp_file" "$file"
     success "已移除 PATH 配置: $file"
 }
@@ -261,6 +311,38 @@ cleanup_legacy_launchd() {
     done
 }
 
+cleanup_manager_launchd() {
+    local expected="$HOME/Library/LaunchAgents/com.zhangjianyong.mihomo-manager.daemon.plist"
+    local platform backend recorded digest current owner
+    platform="$(state_value platform 2>/dev/null || true)"
+    backend="$(state_value daemon_backend 2>/dev/null || true)"
+    recorded="$(state_value daemon_config_path 2>/dev/null || true)"
+    digest="$(state_value daemon_config_sha256 2>/dev/null || true)"
+
+    [[ "$platform" == "darwin" || "$backend" == "launchd" || -n "$recorded" ]] || return 0
+    if [[ "$platform" != "darwin" || "$backend" != "launchd" || "$recorded" != "$expected" ]]; then
+        [[ -e "${recorded:-$expected}" ]] && warn "launchd 配置归属信息不完整，已保留: ${recorded:-$expected}"
+        return 0
+    fi
+    [[ -e "$expected" || -L "$expected" ]] || return 0
+    if [[ -L "$expected" || ! -f "$expected" || ! "$digest" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        warn "manager launchd 配置类型或摘要记录不安全，已保留: $expected"
+        return 0
+    fi
+    owner="$(file_uid "$expected" 2>/dev/null || true)"
+    if [[ "$owner" != "$(id -u)" ]]; then
+        warn "manager launchd 配置不属于当前用户，已保留: $expected"
+        return 0
+    fi
+    current="$(sha256_file "$expected" 2>/dev/null || true)"
+    if [[ "$(lowercase "$current")" != "$(lowercase "$digest")" ]] || ! grep -Fq '<string>com.zhangjianyong.mihomo-manager.daemon</string>' "$expected"; then
+        warn "manager launchd 配置已被外部修改，已保留: $expected"
+        return 0
+    fi
+    rm -f -- "$expected"
+    success "已删除受管 launchd 配置: $expected"
+}
+
 cleanup_state() {
     local managed="0"
     managed="$(state_value core_managed 2>/dev/null || printf '0')"
@@ -278,6 +360,8 @@ main() {
     local effective_uid="${MM_EUID_OVERRIDE:-$EUID}"
     [[ "$effective_uid" != "0" ]] || die "请以普通用户运行卸载器，不要使用 sudo 执行整个脚本。"
 
+	disable_manager_daemon
+	cleanup_manager_launchd
     remove_mm
     remove_path_configuration
     remove_toolchain

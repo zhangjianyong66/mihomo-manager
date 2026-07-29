@@ -196,7 +196,7 @@ func TestDaemonRestartTableAndJSONUseSharedResult(t *testing.T) {
 			client := &sequenceDaemonClient{statuses: []app.DaemonStatus{status(100, oldTime), status(100, oldTime), status(200, newTime), status(200, newTime)}}
 			service := &app.DaemonService{
 				Client: client, Core: &fakeDaemonCore{},
-				Controller: fakeDaemonController{result: app.DaemonControlResult{Installed: true, Managed: true, Available: true, Active: true, ServiceActive: true, SocketActive: true}},
+				Controller: fakeDaemonController{result: app.DaemonControlResult{Backend: "systemd", Ready: true, Installed: true, Managed: true, Available: true, Active: true, ServiceActive: true, SocketActive: true}},
 			}
 			var stdout, stderr bytes.Buffer
 			code := Execute(context.Background(), Dependencies{Daemon: service}, []string{"daemon", "restart", "--output", format}, nil, &stdout, &stderr)
@@ -222,7 +222,7 @@ func TestDaemonRestartBusyUsesConflictExitAndPartialJSON(t *testing.T) {
 		Client: fakeDaemonClient{status: app.DaemonStatus{PID: 100, StartedAt: started, Core: app.DaemonCoreStatus{State: domain.CoreStateStarting.String()}}},
 		Core:   &fakeDaemonCore{},
 		Controller: fakeDaemonController{result: app.DaemonControlResult{
-			Installed: true, Managed: true, Available: true, ServiceActive: true, SocketActive: true,
+			Backend: "systemd", Ready: true, Installed: true, Managed: true, Available: true, ServiceActive: true, SocketActive: true,
 		}},
 	}
 	var stdout, stderr bytes.Buffer
@@ -237,7 +237,7 @@ func TestDaemonRestartUnavailableUsesExitFiveAndPartialJSON(t *testing.T) {
 		Client: &fakeDaemonClient{err: &app.Error{Category: app.ErrorCategoryDaemonUnavailable, Code: app.ErrorCodeDaemonUnavailable, Message: "daemon 协议不兼容"}},
 		Core:   &fakeDaemonCore{},
 		Controller: fakeDaemonController{result: app.DaemonControlResult{
-			Installed: true, Managed: true, Available: true, ServiceActive: true, SocketActive: true,
+			Backend: "systemd", Ready: true, Installed: true, Managed: true, Available: true, ServiceActive: true, SocketActive: true,
 		}},
 	}
 	var stdout, stderr bytes.Buffer

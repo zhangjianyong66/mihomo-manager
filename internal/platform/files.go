@@ -18,7 +18,7 @@ func EnsurePrivateDir(path string) error {
 		return fmt.Errorf("secure directory: %w", ErrUnsafePath)
 	}
 	path = filepath.Clean(path)
-	if err := rejectExistingSymlinkComponents(path); err != nil {
+	if err := RejectExistingSymlinkComponents(path); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(path, 0o700); err != nil {
@@ -40,7 +40,11 @@ func EnsurePrivateDir(path string) error {
 	return nil
 }
 
-func rejectExistingSymlinkComponents(path string) error {
+// RejectExistingSymlinkComponents rejects absolute paths whose existing prefix contains a symlink.
+func RejectExistingSymlinkComponents(path string) error {
+	if path == "" || !filepath.IsAbs(path) {
+		return fmt.Errorf("inspect path component: %w", ErrUnsafePath)
+	}
 	volume := filepath.VolumeName(path)
 	current := string(os.PathSeparator)
 	if volume != "" {

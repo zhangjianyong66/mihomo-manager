@@ -21,6 +21,7 @@ DEFAULT_RULESET_IP_SHA256="206ad4cc22005976e8bfb50a869e5483cb81cc174a56c9a79c8a1
 
 ASSUME_YES=0
 FORCE_CORE=0
+TARGET_OS=""
 TARGET_ARCH=""
 GO_BIN=""
 MM_BUILD_PATH=""
@@ -44,6 +45,9 @@ DAEMON_CORE_RUNNING=0
 DAEMON_AVAILABLE=0
 DAEMON_PREEXISTING=0
 DAEMON_PREVIOUS_CORE_STATE=""
+DAEMON_BACKEND=""
+DAEMON_CONFIG_PATH=""
+DAEMON_CONFIG_SHA256=""
 
 TEMP_PATHS=()
 
@@ -96,7 +100,7 @@ Mihomo Manager 安装器
   ./scripts/install.sh [选项]
 
 选项：
-  --yes          跳过 apt 安装确认
+  --yes          跳过 apt/Homebrew 安装确认
   --force-core   强制重新安装目标 mihomo core 版本
   -h, --help     显示帮助
 
@@ -150,7 +154,7 @@ os_release_value() {
     ' "$OS_RELEASE_FILE"
 }
 
-platform_supported() {
+linux_platform_supported() {
     [[ -r "$OS_RELEASE_FILE" ]] || return 1
 
     local id id_like
@@ -177,7 +181,7 @@ normalize_arch() {
 
 detect_arch() {
     local raw="${MM_ARCH:-}"
-    if [[ -z "$raw" ]] && command -v dpkg >/dev/null 2>&1; then
+    if [[ -z "$raw" && "$TARGET_OS" == "linux" ]] && command -v dpkg >/dev/null 2>&1; then
         raw="$(dpkg --print-architecture 2>/dev/null || true)"
     fi
     if [[ -z "$raw" ]]; then
@@ -186,14 +190,40 @@ detect_arch() {
     normalize_arch "$raw"
 }
 
+detect_os() {
+    local raw="${MM_OS_OVERRIDE:-}"
+    [[ -n "$raw" ]] || raw="$(uname -s)"
+    case "$raw" in
+        Linux|linux) printf 'linux\n' ;;
+        Darwin|darwin) printf 'darwin\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+macos_supported() {
+    local version="${MM_MACOS_VERSION_OVERRIDE:-}" major
+    [[ -n "$version" ]] || version="$(sw_vers -productVersion 2>/dev/null || true)"
+    [[ "$version" =~ ^[0-9]+([.][0-9]+){0,2}$ ]] || return 1
+    major="${version%%.*}"
+    ((major >= 12))
+}
+
 preflight() {
     local effective_uid="${MM_EUID_OVERRIDE:-$EUID}"
     [[ "$effective_uid" != "0" ]] || die "请以普通用户运行安装器，不要使用 sudo 执行整个脚本。"
-    platform_supported || die "首版仅支持 Ubuntu/Debian。当前系统不受支持，未执行任何安装变更。"
-    command -v apt-get >/dev/null 2>&1 || die "未找到 apt-get，首版仅支持 apt 包管理器。"
+    TARGET_OS="$(detect_os)" || die "仅支持 Ubuntu/Debian 和 macOS 12 及以上版本，未执行任何安装变更。"
+    case "$TARGET_OS" in
+        linux)
+            linux_platform_supported || die "Linux 一键安装仅支持 Ubuntu/Debian，未执行任何安装变更。"
+            command -v apt-get >/dev/null 2>&1 || die "未找到 apt-get，Ubuntu/Debian 安装需要 apt。"
+            ;;
+        darwin)
+            macos_supported || die "macOS 一键安装要求 macOS 12 Monterey 或更高版本，未执行任何安装变更。"
+            ;;
+    esac
 
     TARGET_ARCH="$(detect_arch)" || die "不支持当前 CPU 架构，仅支持 amd64 和 arm64。"
-    info "检测到受支持环境: $TARGET_ARCH"
+    info "检测到受支持环境: $TARGET_OS/$TARGET_ARCH"
 }
 
 package_installed() {
@@ -215,7 +245,22 @@ confirm_apt_install() {
     esac
 }
 
-install_system_dependencies() {
+confirm_brew_install() {
+    local packages="$1"
+    ((ASSUME_YES == 1)) && return 0
+
+    printf '将通过 Homebrew 安装缺失包: %s\n' "$packages" >&2
+    local answer=""
+    if ! read -r -p "是否继续？[y/N] " answer </dev/tty; then
+        die "当前环境无法交互确认。请使用 --yes 或 MM_ASSUME_YES=1。"
+    fi
+    case "$answer" in
+        y|Y|yes|YES) ;;
+        *) die "用户取消安装。" ;;
+    esac
+}
+
+install_linux_dependencies() {
     local required=(ca-certificates curl tar gzip procps jq coreutils)
     local missing=()
     local package
@@ -239,9 +284,47 @@ install_system_dependencies() {
     sudo apt-get install -y "${missing[@]}"
 }
 
+install_macos_dependencies() {
+    local required=(curl tar gzip jq shasum awk sed grep head mktemp mv cp chmod mkdir dirname basename cat touch rm tr)
+    local command_name missing=() packages=()
+    for command_name in "${required[@]}"; do
+        command -v "$command_name" >/dev/null 2>&1 || missing+=("$command_name")
+    done
+    ((${#missing[@]} > 0)) || {
+        info "macOS 系统依赖已满足，无需 Homebrew 操作。"
+        return 0
+    }
+
+    for command_name in "${missing[@]}"; do
+        case "$command_name" in
+            jq) packages+=(jq) ;;
+            curl) packages+=(curl) ;;
+            gzip) packages+=(gzip) ;;
+            tar) packages+=(gnu-tar) ;;
+            *) die "macOS 缺少系统命令 $command_name，安装器不会自动替换系统基础工具。" ;;
+        esac
+    done
+    command -v brew >/dev/null 2>&1 || die "缺少 ${missing[*]} 且未安装 Homebrew；请先安装 Homebrew 后重试。"
+    confirm_brew_install "${packages[*]}"
+    brew install "${packages[@]}"
+}
+
+install_system_dependencies() {
+    case "$TARGET_OS" in
+        linux) install_linux_dependencies ;;
+        darwin) install_macos_dependencies ;;
+        *) die "内部目标平台无效: $TARGET_OS" ;;
+    esac
+}
+
 verify_required_commands() {
-    local required=(curl tar gzip jq sha256sum pgrep pkill awk sed grep head mktemp mv cp chmod mkdir dirname basename cat touch rm)
+    local required=(curl tar gzip jq awk sed grep head mktemp mv cp chmod mkdir dirname basename cat touch rm tr)
     local command_name missing=()
+	if [[ "$TARGET_OS" == "linux" ]]; then
+		required+=(sha256sum pgrep pkill)
+	else
+		required+=(shasum)
+	fi
     for command_name in "${required[@]}"; do
         command -v "$command_name" >/dev/null 2>&1 || missing+=("$command_name")
     done
@@ -264,7 +347,28 @@ download_file() {
 verify_sha256() {
     local file="$1"
     local expected="$2"
-    printf '%s  %s\n' "$expected" "$file" | sha256sum --check --status
+    local actual
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual="$(sha256sum "$file" | awk '{print $1}')" || return 1
+    elif command -v shasum >/dev/null 2>&1; then
+        actual="$(shasum -a 256 "$file" | awk '{print $1}')" || return 1
+    else
+        return 1
+    fi
+    [[ "$(lowercase "$actual")" == "$(lowercase "$expected")" ]]
+}
+
+sha256_file() {
+    local file="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | awk '{print $1}'
+    else
+        shasum -a 256 "$file" | awk '{print $1}'
+    fi
+}
+
+lowercase() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
 
 single_line_value() {
@@ -305,8 +409,8 @@ validate_ruleset_settings() {
         [[ -n "${MM_RULESET_DOMAIN_SHA256:-}" && -n "${MM_RULESET_IP_SHA256:-}" ]] \
             || die "规则集摘要必须成对覆盖。"
     fi
-    RULESET_REQUESTED_DOMAIN_SHA256="${RULESET_REQUESTED_DOMAIN_SHA256,,}"
-    RULESET_REQUESTED_IP_SHA256="${RULESET_REQUESTED_IP_SHA256,,}"
+    RULESET_REQUESTED_DOMAIN_SHA256="$(lowercase "$RULESET_REQUESTED_DOMAIN_SHA256")"
+    RULESET_REQUESTED_IP_SHA256="$(lowercase "$RULESET_REQUESTED_IP_SHA256")"
     [[ "$RULESET_REQUESTED_DOMAIN_SHA256" =~ ^[0-9a-f]{64}$ ]] \
         || die "MM_RULESET_DOMAIN_SHA256 必须是 64 位十六进制。"
     [[ "$RULESET_REQUESTED_IP_SHA256" =~ ^[0-9a-f]{64}$ ]] \
@@ -430,8 +534,8 @@ load_valid_ruleset_cache() {
 
     RULESET_INSTALLED_BASE_URL="$recorded_base"
     RULESET_INSTALLED_REF="$recorded_ref"
-    RULESET_INSTALLED_DOMAIN_SHA256="${recorded_domain_sha,,}"
-    RULESET_INSTALLED_IP_SHA256="${recorded_ip_sha,,}"
+    RULESET_INSTALLED_DOMAIN_SHA256="$(lowercase "$recorded_domain_sha")"
+    RULESET_INSTALLED_IP_SHA256="$(lowercase "$recorded_ip_sha")"
 }
 
 ruleset_publish_file() {
@@ -537,16 +641,18 @@ go_meets_minimum() {
 }
 
 go_archive_sha256() {
-    case "$TARGET_ARCH" in
-        amd64) printf '%s\n' '1153d3d50e0ac764b447adfe05c2bcf08e889d42a02e0fe0259bd47f6733ad7f' ;;
-        arm64) printf '%s\n' 'ef758ae7c6cf9267c9c0ef080b8965f453d89ab2d25d9eb22de4405925238768' ;;
+    case "${TARGET_OS:-linux}/$TARGET_ARCH" in
+        linux/amd64) printf '%s\n' '1153d3d50e0ac764b447adfe05c2bcf08e889d42a02e0fe0259bd47f6733ad7f' ;;
+        linux/arm64) printf '%s\n' 'ef758ae7c6cf9267c9c0ef080b8965f453d89ab2d25d9eb22de4405925238768' ;;
+        darwin/amd64) printf '%s\n' '05dc9b5f9997744520aaebb3d5deaa7c755371aebbfb7f97c2511a9f3367538d' ;;
+        darwin/arm64) printf '%s\n' 'b62ad2b6d7d2464f12a5bcad7ff47f19d08325773b5efd21610e445a05a9bf53' ;;
         *) return 1 ;;
     esac
 }
 
 install_go_toolchain() {
     local base_url="${MM_GO_DOWNLOAD_BASE_URL:-https://go.dev/dl}"
-    local filename="go${GO_VERSION}.linux-${TARGET_ARCH}.tar.gz"
+    local filename="go${GO_VERSION}.${TARGET_OS:-linux}-${TARGET_ARCH}.tar.gz"
     local expected target archive extract_dir old_target
     base_url="${base_url%/}"
     expected="$(go_archive_sha256)"
@@ -557,7 +663,7 @@ install_go_toolchain() {
     extract_dir="$(mktemp -d "$STATE_DIR/.go-extract.XXXXXX")"
     TEMP_PATHS+=("$archive" "$extract_dir")
 
-    info "下载官方 Go ${GO_VERSION} ($TARGET_ARCH)..."
+    info "下载官方 Go ${GO_VERSION} (${TARGET_OS:-linux}/$TARGET_ARCH)..."
     download_file "$base_url/$filename" "$archive" || die "无法下载 Go 工具链。"
     verify_sha256 "$archive" "$expected" || die "Go 工具链 SHA-256 校验失败。"
     tar -xzf "$archive" -C "$extract_dir"
@@ -635,9 +741,11 @@ existing_core_version() {
 
 core_asset_name() {
     local version="$1"
-    case "$TARGET_ARCH" in
-        amd64) printf 'mihomo-linux-amd64-v1-%s.gz\n' "$version" ;;
-        arm64) printf 'mihomo-linux-arm64-%s.gz\n' "$version" ;;
+    case "${TARGET_OS:-linux}/$TARGET_ARCH" in
+        linux/amd64) printf 'mihomo-linux-amd64-v1-%s.gz\n' "$version" ;;
+        linux/arm64) printf 'mihomo-linux-arm64-%s.gz\n' "$version" ;;
+        darwin/amd64) printf 'mihomo-darwin-amd64-v1-%s.gz\n' "$version" ;;
+        darwin/arm64) printf 'mihomo-darwin-arm64-%s.gz\n' "$version" ;;
         *) return 1 ;;
     esac
 }
@@ -702,7 +810,7 @@ install_mihomo_core() {
     temp_bin="$(mktemp "$target_dir/.mihomo-new.XXXXXX")"
     TEMP_PATHS+=("$archive" "$temp_bin")
 
-    info "下载 mihomo core $requested ($TARGET_ARCH)..."
+    info "下载 mihomo core $requested (${TARGET_OS:-linux}/$TARGET_ARCH)..."
     download_file "$CORE_ASSET_URL" "$archive" || die "无法下载 mihomo core。"
     verify_sha256 "$archive" "$CORE_ASSET_SHA256" || die "mihomo core SHA-256 校验失败。"
     gzip -dc "$archive" >"$temp_bin"
@@ -842,12 +950,16 @@ configure_daemon_and_migration() {
     status_file="$(mktemp "$STATE_DIR/.daemon-status.XXXXXX.json")"
     TEMP_PATHS+=("$enable_file" "$start_file" "$stop_file" "$status_file")
 
-    info "安装并启用 systemd user manager daemon..."
+    info "安装并启用用户级 manager daemon..."
     run_installed_mm_json "$enable_file" "DaemonControl" daemon enable \
-        || die "mm 与规则集已安装，但 daemon unit 安装或启用失败；请运行 mm daemon enable 检查。"
+        || die "mm 与规则集已安装，但 daemon 后台服务安装或启用失败；请运行 mm daemon enable 检查。"
     enabled="$(jq -er '.data.enabled' "$enable_file" 2>/dev/null || true)"
     [[ "$enabled" == "true" || "$enabled" == "false" ]] \
         || die "daemon enable 返回了无效 enabled 状态。"
+	DAEMON_BACKEND="$(jq -r '.data.backend // empty' "$enable_file" 2>/dev/null || true)"
+	if [[ -z "$DAEMON_BACKEND" ]]; then
+		[[ "${TARGET_OS:-linux}" == "darwin" ]] && DAEMON_BACKEND="launchd" || DAEMON_BACKEND="systemd"
+	fi
 
     if ((DAEMON_PREEXISTING == 1)) && [[ "$DAEMON_PREVIOUS_CORE_STATE" != "stopped" ]]; then
         preserve_existing=1
@@ -876,11 +988,11 @@ configure_daemon_and_migration() {
         DAEMON_AVAILABLE=1
     elif ((DAEMON_PREEXISTING == 1)); then
         DAEMON_AVAILABLE=1
-        warn "systemd user 会话不可用，现有 daemon 保持运行且未自动重启。"
+        warn "用户级后台服务管理器不可用，现有 daemon 保持运行且未自动重启。"
     else
         DAEMON_AVAILABLE=0
         hint="$(jq -r '.data.hint // empty' "$enable_file")"
-        warn "systemd user unit 已安装但未启用。"
+        warn "用户级 daemon 配置已安装但未启用。"
         [[ -z "$hint" ]] || warn "$hint"
         printf -v hint 'CONFIG_DIR=%q MIHOMO_BIN=%q MIHOMO_API_PORT=%q mm daemon run' \
             "$CONFIG_DIR" "$MIHOMO_BIN" "${MIHOMO_API_PORT:-9090}"
@@ -939,16 +1051,20 @@ configure_path() {
             ;;
     esac
 
-    shell_name="$(basename "${SHELL:-}")"
-    case "$shell_name" in
-        bash) rc_file="$HOME/.bashrc" ;;
-        zsh) rc_file="$HOME/.zshrc" ;;
-        *)
-            warn "未识别当前 shell，未自动修改 PATH。"
-            warn "请手动执行: export PATH=\"$INSTALL_DIR:\$PATH\""
-            return 0
-            ;;
-    esac
+    if [[ "${TARGET_OS:-linux}" == "darwin" ]]; then
+        rc_file="$HOME/.zshrc"
+    else
+        shell_name="$(basename "${SHELL:-}")"
+        case "$shell_name" in
+            bash) rc_file="$HOME/.bashrc" ;;
+            zsh) rc_file="$HOME/.zshrc" ;;
+            *)
+                warn "未识别当前 shell，未自动修改 PATH。"
+                warn "请手动执行: export PATH=\"$INSTALL_DIR:\$PATH\""
+                return 0
+                ;;
+        esac
+    fi
 
     if path_block_exists "$rc_file"; then
         PATH_RC_MODIFIED="$rc_file"
@@ -980,10 +1096,26 @@ write_state() {
         go_toolchain_path="$STATE_DIR/toolchains/go${GO_VERSION}"
     fi
 
+	if [[ "${TARGET_OS:-linux}" == "darwin" ]]; then
+		DAEMON_BACKEND="${DAEMON_BACKEND:-launchd}"
+		DAEMON_CONFIG_PATH="$HOME/Library/LaunchAgents/com.zhangjianyong.mihomo-manager.daemon.plist"
+		if [[ -f "$DAEMON_CONFIG_PATH" ]]; then
+			DAEMON_CONFIG_SHA256="$(sha256_file "$DAEMON_CONFIG_PATH")"
+		fi
+	else
+		DAEMON_BACKEND="${DAEMON_BACKEND:-systemd}"
+		DAEMON_CONFIG_PATH="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+		DAEMON_CONFIG_SHA256=""
+	fi
+
     temp_state="$(mktemp "$STATE_DIR/.install-state.XXXXXX")"
     TEMP_PATHS+=("$temp_state")
     {
-        printf 'installer_version=2\n'
+		printf 'installer_version=3\n'
+		printf 'platform=%s\n' "${TARGET_OS:-linux}"
+		printf 'daemon_backend=%s\n' "$DAEMON_BACKEND"
+		printf 'daemon_config_path=%s\n' "$DAEMON_CONFIG_PATH"
+		printf 'daemon_config_sha256=%s\n' "$DAEMON_CONFIG_SHA256"
         printf 'mm_path=%s\n' "$INSTALL_DIR/mm"
         printf 'go_toolchain_path=%s\n' "$go_toolchain_path"
         printf 'path_rc=%s\n' "$PATH_RC_MODIFIED"

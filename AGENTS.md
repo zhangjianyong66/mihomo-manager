@@ -3,8 +3,8 @@
 - 本项目是 Go CLI 项目，模块名为 `github.com/zhangjianyong66/mihomo-manager`。
 - 当前开发机为 Ubuntu 26.04 LTS x86_64。
 - Go 版本要求见 `go.mod`：`go 1.22`；当前本机用户目录安装了 Go `1.26.4`，入口为 `~/.local/bin/go`。
-- 一键安装首版支持 Ubuntu/Debian amd64/arm64；远程入口为 `curl -fsSL https://raw.githubusercontent.com/zhangjianyong66/mihomo-manager/master/scripts/bootstrap.sh | bash`，本地入口为 `make install`。
-- 安装器需以普通用户运行，只在安装缺失 apt 包时局部使用 sudo；支持 `--yes`/`MM_ASSUME_YES=1` 无交互确认。
+- 一键安装支持 Ubuntu/Debian 与 macOS 12+ 的 amd64/arm64；远程入口为 `curl -fsSL https://raw.githubusercontent.com/zhangjianyong66/mihomo-manager/master/scripts/bootstrap.sh | bash`，本地入口为 `make install`。
+- 安装器需以普通用户运行；Linux 只在安装缺失 apt 包时局部使用 sudo，macOS 只通过已存在的 Homebrew 补缺且不使用 sudo；支持 `--yes`/`MM_ASSUME_YES=1` 无交互确认。
 - 安装产物是独立的 `~/.local/bin/mm` 普通文件，不再软链接仓库 `bin/mm`；移动或删除仓库不会影响已安装命令。
 - 安装器会自动安装并校验 mihomo core，默认固定 `v1.19.28`，支持 `MIHOMO_VERSION` 覆盖；默认 core 路径为 `~/.local/bin/mihomo`，可用 `MIHOMO_BIN` 覆盖。
 - 安装器会把固定 commit `32ae0e8658ca541374b721efcee84955e8a59755` 的 CN domain/IP `.mrs` 安装到 `<CONFIG_DIR>/rulesets/{cn-domain,cn-ip}.mrs`，目录/文件权限为 `0700/0600`；支持 `MM_RULESET_BASE_URL`、`MM_RULESET_REF` 覆盖，但必须成对提供 `MM_RULESET_DOMAIN_SHA256`、`MM_RULESET_IP_SHA256`。
@@ -16,7 +16,7 @@
 - 稳定 ID、`RoutingMode(global|rule|direct)`、mihomo core、档案、订阅、节点、操作和设置领域模型位于 `internal/domain`；按 core/profile/node/group/subscription/route/mode/connection/config/log 拆分的应用 ports 位于 `internal/app`，CLI 与 TUI 共用同一个 daemon-backed `CapabilityAPI`。
 - `internal/store` 使用 `database/sql` 与固定的 `modernc.org/sqlite v1.36.1`（无 CGO），提供 profile/subscription/node/operation/settings/legacy migration 仓储和三条嵌入式迁移；store 只接收显式数据库路径，默认用户路径由 daemon/config 装配。
 - `internal/core` 定义类型化 adapter/process/runtime 契约并负责 generation 发布；managed generation 位于 `${XDG_DATA_HOME:-~/.local/share}/mihomo-manager/generations`，core 日志和 runtime metadata 位于 `${XDG_STATE_HOME:-~/.local/state}/mihomo-manager/core`，目录/文件权限为 `0700/0600`。
-- 2.x mihomo adapter 位于 `internal/mihomo/adapter.go`、`render.go`、`validation.go`、`process.go`、`runtime.go`；只接受 loopback external-controller，原生验证参数为 `-t -d <dir> -f <file>`，Linux 进程使用 `Setsid`，停止只作用于 daemon 持有的精确进程句柄。
+- 2.x mihomo adapter 位于 `internal/mihomo/adapter.go`、`render.go`、`validation.go`、`process.go`、`runtime.go`；只接受 loopback external-controller，原生验证参数为 `-t -d <dir> -f <file>`，Linux/Darwin 进程使用 `Setsid`，停止只作用于 daemon 持有的精确进程句柄。
 - daemon 托管的每次 core 启动都会在创建进程前检查 `mixed-port`、`port`、`socks-port`、`redir-port`、`tproxy-port` 和 `external-controller`；mixed/socks/tproxy 检查 TCP+UDP，HTTP/redir/controller 检查 TCP，冲突一次返回全部字段/网络/主机/端口并以 `PORT_CONFLICT` 阻止启动，不识别或停止占用进程。
 - external/legacy 配置在 2.x adapter 中只读，validate 与 start 前核对 SHA-256；managed 配置写入独立 generation，绝不覆盖 `~/.config/mihomo/config.yaml`。
 - SQLite store 使用单连接、rollback journal、`foreign_keys=ON`、`synchronous=FULL`；状态目录/数据库权限分别收紧为 `0700`/`0600`，迁移历史以 SHA-256 防改写，已有 schema 升级前创建同目录恢复点。
@@ -27,7 +27,7 @@
 - CLI/TUI 配置编辑都在客户端本地以 `0600` 临时文件启动 `EDITOR`，再携带 expected SHA-256 回传 daemon；daemon 核对摘要、原子写入并验证，systemd daemon 不直接占用终端。
 - legacy capability 从活动配置动态读取 `external-controller`，不把 systemd 中初始 `MIHOMO_API_PORT` 当作端口修改后的运行时事实来源。
 - daemon 前台入口为 `mm daemon run`，状态/控制入口为 `mm daemon status|start|stop|restart|enable|disable`；默认使用 XDG 下的 `~/.local/share/mihomo-manager/state.db`、`~/.local/state/mihomo-manager/run/mm.sock`，有 `XDG_RUNTIME_DIR` 时运行目录改为 `$XDG_RUNTIME_DIR/mihomo-manager`。
-- `mm daemon restart` 与 TUI“重启全部”由客户端侧 `app.DaemonService` 编排，只支持摘要有效且 service/socket 均 active 的 systemd user `mm.service/mm.socket`；按 running/stopped/degraded/failed 状态停止并复核 Core、只重启 `mm.service`、验证新 PID/startedAt 与协议握手后恢复 Core，失败执行有界尽力恢复。前台 daemon、过渡态 Core 或非受管 unit 均在副作用前拒绝。
+- `mm daemon restart` 与 TUI“重启全部”由客户端侧 `app.DaemonService` 编排，只支持摘要有效且 ready 的 systemd user unit 或 launchd LaunchAgent；按 running/stopped/degraded/failed 状态停止并复核 Core、重启受管 daemon、验证新 PID/startedAt 与协议握手后恢复 Core，失败执行有界尽力恢复。前台 daemon、过渡态 Core 或非受管后台资产均在副作用前拒绝。
 - TUI“服务管理”明确区分“重启 Core”和“重启全部”；组合重启确认后 Esc/q/Ctrl+C 不会取消，执行期间代理短暂中断且 Core 内存中的测速 history、实时连接不保留。此手动能力不改变安装器仅在 Core 明确 stopped 时自动重启 daemon 的无人值守策略。
 - 一键安装会通过正式 CLI 安装/启用/启动 manager daemon，但保持 core stopped；仅本次新建配置自动 `migrate apply`，已有配置只提示显式迁移。升级只有在 core 明确为 stopped 且 stop 前复核仍为 stopped 时才重启 daemon，其他状态均保持现有进程。
 - daemon 启动会装配 CoreManager，但 core 初始状态始终为 `stopped`，不会自动启动代理；后续显式切换使用 operation 阶段记录，失败时恢复旧 RuntimeSpec，恢复失败进入明确 `failed`。
@@ -35,14 +35,15 @@
 - 模式、core、subscription、config 和 route 写操作共享 daemon Coordinator；运行中模式发布失败会恢复旧配置、权限、expected 摘要和 runtime mode，恢复失败返回 `RESTORE_FAILED` 并标记 core failed。默认不关闭连接，显式关闭失败不回滚已生效模式。
 - M4 提供 `mm mode status` 与 `mm mode set global|rule|direct [--close-connections]` 的 table/json 输出；TUI 增加“运行模式”页面，显示配置/runtime 模式、有效路径、规则集、连接数和 warnings。TUI 的 core/group/node/subscription/route/config/log 写操作均经注入的 daemon capability，Bubble Tea `Update`/`View` 不直接执行业务副作用。
 - M5 提供 `mm route connections [--follow]` 和 TUI“实时连接”页；mihomo `/connections` 在 `internal/mihomo` 一次性类型化，`connections:null` 视为空列表，单响应仍限 1 MiB，活动/follow map 最多 4096 条。follow 每秒轮询并输出 `open|update|closed` 与 NDJSON terminal event，连接详情和短关闭提示仅驻留有界内存，不写 SQLite 或持久日志。
-- M5 的 mode 状态还展示配置中的 mixed/http/socks listener、daemon 只读采集的 GNOME system proxy，以及 CLI/TUI 进程本地的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`。只按协议、等价 loopback 和端口匹配；userinfo/path/query 在进入 DTO 前丢弃，检测只调用 `gsettings get`，不会设置系统代理、探测/停止 xray 或占用端口。
-- daemon 只监听 Unix socket，不监听 TCP；socket 父目录为 `0700`、socket/锁为 `0600`，Linux 通过 `SO_PEERCRED` 限制为当前 UID，root daemon 被拒绝。IPC 使用 `/v1/`、`MM-Protocol-Min/Max` 和 `MM-Request-ID`，流式扩展采用 NDJSON。
+- M5 的 mode 状态还展示配置中的 mixed/http/socks listener、daemon 只读采集的系统代理，以及 CLI/TUI 进程本地的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`。Linux GNOME 检测只调用 `gsettings get`；macOS 系统代理明确返回不支持且不调用 `gsettings`/`networksetup`。只按协议、等价 loopback 和端口匹配；userinfo/path/query 在进入 DTO 前丢弃，不会探测/停止 xray 或占用端口。
+- daemon 只监听 Unix socket，不监听 TCP；socket 父目录为 `0700`、socket/锁为 `0600`，Linux 通过 `SO_PEERCRED`、Darwin 通过 `LOCAL_PEERCRED` 限制为当前 UID，root daemon 被拒绝。IPC 使用 `/v1/`、`MM-Protocol-Min/Max` 和 `MM-Request-ID`，流式扩展采用 NDJSON。
 - daemon 请求幂等缓存只保存完成且非 5xx/非流式的写响应；带 `MM-Request-ID` 的 handler 首次调用 `Flush()` 时必须立即把已缓冲响应下沉并切换直通，逐条发送 NDJSON，且该流响应不得缓存或按相同 request ID 重放。
 - A5 legacy 恢复点位于 `${XDG_DATA_HOME:-~/.local/share}/mihomo-manager/backups/<restore-point-id>/files`，目录/快照文件权限为 `0700/0600`；`migrate rollback` 必须显式指定 `--restore-point`，daemon 会核对 expected SHA-256 后才恢复。
 - legacy 文件发现会合并固定允许列表与动态 `config.yaml.*.bak` 候选，按相对路径统一去重并稳定排序；标准备份和时间戳备份必须分别且仅纳入一次。
 - systemd user unit 模板位于 `internal/platform/systemd/units`；`mm daemon enable` 在无 systemd 用户会话时只安装并报告“已安装未启用”，不会启用 linger、sudo 或启动 mihomo core。
 - systemd user unit 模板版本为 2；安装器把 `CONFIG_DIR`、`MIHOMO_BIN`、`MIHOMO_API_PORT` 作为受校验的 `Environment=` 写入 service，未显式带环境的后续 `mm daemon enable` 会保留已有受管环境块，保证 daemon 重启后继续使用同一 legacy 路径。
-- 测试命令：`go test ./...`；存储/领域变更还需执行 `GOTOOLCHAIN=go1.22.12 go test -race ./...`、`go vet ./...` 和 Linux amd64/arm64 的 `CGO_ENABLED=0` 构建；安装流程测试为 `bash scripts/tests/test_install.sh`；Shell 语法检查为 `bash -n scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh tests/*.sh`。
+- macOS 使用 label `com.zhangjianyong.mihomo-manager.daemon` 的用户 LaunchAgent，路径为 `~/Library/LaunchAgents/<label>.plist`；plist 带内容摘要并原子安装，launchctl 只操作 `gui/<uid>`，无 GUI 登录域时仅安装并提示前台运行。
+- 测试命令：`go test ./...`；存储/领域变更还需执行 `GOTOOLCHAIN=go1.22.12 go test -race ./...`、`go vet ./...` 和 Linux/Darwin amd64/arm64 的 `CGO_ENABLED=0` 构建；安装流程测试为 `bash scripts/tests/test_install.sh`；Shell 语法检查为 `bash -n scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh tests/*.sh`。
 - Go 版路径和端口可通过环境变量覆盖：`CONFIG_DIR` 修改配置目录，`MIHOMO_API_PORT` 修改 external-controller 端口，`EDITOR` 修改配置编辑器；`MIHOMO_BIN` 修改 core 路径。
 - `tests/test.sh` 与 `scripts/tests/test_manager.sh` 面向旧非交互式 Shell 实现或依赖本机运行状态，不作为当前 Go TUI 的默认验收命令。
 - 安装脚本会创建 `~/.config/mihomo`，仅在 `config.yaml` 缺失时生成最小 `DIRECT` 配置并校验，已有配置不会覆盖。当前本机 `config.yaml` 是包含 256 个代理的订阅配置。
@@ -60,7 +61,7 @@
 - `~/.config/mihomo/config.yaml` 与 mihomo runtime 当前均为 `mode: rule`，`mm-cn-domain`/`mm-cn-ip` 已加载，活动连接为 0；GNOME 与当前 CLI 代理环境仍指向 xray 的 `127.0.0.1:10808`，未随 mihomo mixed 端口修改。
 - mihomo 的 `global` 模式会绕过 `rules`；当前本机配置仍是迁移前的 `rule + MATCH,GLOBAL` 形态，M2 只交付合成器并未自动改写真实用户配置，后续显式模式事务由 M3 接入。
 - Go 版服务启动逻辑位于 `internal/mihomo/client.go`，启动 mihomo 时会设置新 session，避免父进程退出时清理 mihomo 子进程。
-- 仓库仍包含旧 macOS `launchd` 配置，但首版一键安装不支持 macOS，也不会安装 LaunchAgent；卸载器仅保留旧 plist 的兼容清理。
+- 仓库 `launchd/` 仍包含旧监控配置，但正式 manager LaunchAgent 由 `internal/platform/launchd` 渲染，不复用旧 label；卸载器分别处理受管 manager plist 与旧 monitor plist。
 - 卸载命令：`make uninstall`，默认删除 `mm`、隔离 Go 和安装器 PATH 块，保留 core 与配置；`scripts/uninstall.sh --purge` 删除可确认归属的 core，`--purge-config` 显式删除配置。
 - 安装状态记录在 `~/.local/share/mihomo-manager/install-state`，只保存路径、版本和归属等非敏感信息。
 - 远程安装默认使用 `master`，可用 `MM_REF` 固定源码引用；下载源可通过 `MM_GITHUB_BASE_URL`、`MM_GITHUB_API_BASE_URL`、`MM_GO_DOWNLOAD_BASE_URL` 显式覆盖，脚本不会自动切换第三方镜像。

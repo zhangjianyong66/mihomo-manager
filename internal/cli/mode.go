@@ -223,7 +223,7 @@ func writeModeTable(w io.Writer, value app.RoutingModeStatus) error {
 			return err
 		}
 	}
-	if err := writeProxySources(w, "GNOME 系统代理", value.SystemProxy); err != nil {
+	if err := writeProxySources(w, "系统代理", value.SystemProxy); err != nil {
 		return err
 	}
 	if err := writeProxySources(w, "当前 CLI 环境代理", value.EnvironmentProxy); err != nil {

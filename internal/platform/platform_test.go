@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || darwin
 
 package platform
 
@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestEnsurePrivateDir_SecuresAndRejectsSymlink(t *testing.T) {
@@ -52,6 +54,16 @@ func TestAcquireFileLock_ExclusiveAndNoFollow(t *testing.T) {
 	}
 	if _, err := AcquireFileLock(link); err == nil {
 		t.Fatal("expected symlink rejection")
+	}
+}
+
+func TestAcquireFileLock_RejectsSpecialFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.lock")
+	if err := unix.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcquireFileLock(path); !errors.Is(err, ErrUnsafePath) {
+		t.Fatalf("expected unsafe path for FIFO lock, got %v", err)
 	}
 }
 

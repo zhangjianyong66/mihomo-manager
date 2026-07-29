@@ -16,16 +16,13 @@ import (
 	"github.com/zhangjianyong66/mihomo-manager/internal/legacy"
 	"github.com/zhangjianyong66/mihomo-manager/internal/mihomo"
 	"github.com/zhangjianyong66/mihomo-manager/internal/platform"
-	"github.com/zhangjianyong66/mihomo-manager/internal/platform/systemd"
 )
 
 func NewDaemonService(paths config.ManagerPaths) *DaemonService {
-	controller := systemd.New(paths.UserUnitDir)
-	controller.Environment = daemonUnitEnvironment()
 	return &DaemonService{
 		Client:     daemonIPCClient{client: ipc.NewClient(paths.Socket)},
 		Runner:     localDaemonRunner{paths: paths},
-		Controller: systemdController{controller: controller},
+		Controller: newDaemonController(paths),
 		Core:       NewCapabilityService(paths),
 	}
 }
@@ -119,42 +116,6 @@ func (r localDaemonRunner) Run(ctx context.Context, diagnostics io.Writer) error
 	return err
 }
 
-type systemdController struct{ controller *systemd.Controller }
-
-func (c systemdController) Status(ctx context.Context) (DaemonControlResult, error) {
-	result, err := c.controller.Status(ctx)
-	return convertSystemdResult(result), mapSystemdError(err)
-}
-func (c systemdController) Enable(ctx context.Context) (DaemonControlResult, error) {
-	result, err := c.controller.Enable(ctx)
-	return convertSystemdResult(result), mapSystemdError(err)
-}
-func (c systemdController) Disable(ctx context.Context) (DaemonControlResult, error) {
-	result, err := c.controller.Disable(ctx)
-	return convertSystemdResult(result), mapSystemdError(err)
-}
-func (c systemdController) Start(ctx context.Context) (DaemonControlResult, error) {
-	result, err := c.controller.Start(ctx)
-	return convertSystemdResult(result), mapSystemdError(err)
-}
-func (c systemdController) Stop(ctx context.Context) (DaemonControlResult, error) {
-	result, err := c.controller.Stop(ctx)
-	return convertSystemdResult(result), mapSystemdError(err)
-}
-func (c systemdController) Restart(ctx context.Context) (DaemonControlResult, error) {
-	result, err := c.controller.Restart(ctx)
-	return convertSystemdResult(result), mapSystemdError(err)
-}
-
-func convertSystemdResult(result systemd.Result) DaemonControlResult {
-	return DaemonControlResult{
-		Installed: result.Installed, Managed: result.Managed, Available: result.Available,
-		Enabled: result.Enabled, Active: result.Active,
-		ServiceActive: result.ServiceActive, SocketActive: result.SocketActive,
-		Message: result.Message, Hint: result.Hint,
-	}
-}
-
 func mapIPCError(err error) error {
 	if errors.Is(err, ipc.ErrPermissionDenied) {
 		return &Error{Category: ErrorCategoryPermissionDenied, Code: ErrorCodePermissionDenied, Message: "daemon socket 权限不足"}
@@ -176,7 +137,7 @@ func protocolCategory(code string) ErrorCategory {
 	switch code {
 	case "REQUEST_ID_CONFLICT", "OPERATION_CONFLICT", "CONFLICT", "CONFIG_CHANGED", "PORT_CONFLICT", "PROFILE_MODE_UNSUPPORTED", "UNSUPPORTED_PROFILE", "PROXY_AUTH_UNSUPPORTED":
 		return ErrorCategoryConflict
-	case "INVALID_REQUEST", "INVALID_ROUTING_MODE", "REQUEST_ID_REQUIRED":
+	case "INVALID_REQUEST", "INVALID_ROUTING_MODE", "REQUEST_ID_REQUIRED", "PLATFORM_UNSUPPORTED":
 		return ErrorCategoryInvalidArgument
 	case "NOT_FOUND", "PROXY_SNAPSHOT_NOT_FOUND":
 		return ErrorCategoryNotFound
@@ -191,17 +152,4 @@ func protocolCategory(code string) ErrorCategory {
 	default:
 		return ErrorCategoryDaemonUnavailable
 	}
-}
-
-func mapSystemdError(err error) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, systemd.ErrUnavailable) {
-		return &Error{Category: ErrorCategoryDaemonUnavailable, Code: ErrorCodeDaemonUnavailable, Message: "systemd user 会话不可用，请运行 mm daemon run", Retryable: true}
-	}
-	if errors.Is(err, os.ErrPermission) {
-		return &Error{Category: ErrorCategoryPermissionDenied, Code: ErrorCodePermissionDenied, Message: "systemd unit 权限不足"}
-	}
-	return &Error{Category: ErrorCategoryInternal, Code: ErrorCodeInternal, Message: "systemd daemon 操作失败", Err: err}
 }

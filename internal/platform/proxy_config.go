@@ -71,6 +71,12 @@ func (s GNOMEProxySnapshot) clone() GNOMEProxySnapshot {
 
 type GNOMEProxyConfigurator struct{ run commandRunner }
 
+type SystemProxyConfigurator interface {
+	Read(context.Context) (GNOMEProxySnapshot, error)
+	Apply(context.Context, GNOMEProxySnapshot, map[ProxyTarget]ProxyConfigEndpoint) (GNOMEProxySnapshot, error)
+	Restore(context.Context, GNOMEProxySnapshot, GNOMEProxySnapshot) error
+}
+
 func NewGNOMEProxyConfigurator() *GNOMEProxyConfigurator {
 	return &GNOMEProxyConfigurator{run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		return exec.CommandContext(ctx, name, args...).CombinedOutput()

@@ -12,8 +12,8 @@ import (
 )
 
 func newProxyCommand(deps Dependencies) *cobra.Command {
-	root := &cobra.Command{Use: "proxy", Short: "管理 GNOME 与 Bash 代理", Args: noArgs}
-	root.AddCommand(newProxyLayerCommand(deps, "system", "GNOME 系统代理", true), newProxyLayerCommand(deps, "env", "Bash 环境代理", false))
+	root := &cobra.Command{Use: "proxy", Short: "管理系统与 Bash 代理", Args: noArgs}
+	root.AddCommand(newProxyLayerCommand(deps, "system", "系统代理", true), newProxyLayerCommand(deps, "env", "Bash 环境代理", false))
 	return root
 }
 
@@ -55,7 +55,7 @@ func newProxyLayerCommand(deps Dependencies, layer, title string, restore bool) 
 	}
 	command.AddCommand(status, set)
 	if restore {
-		restoreCommand := &cobra.Command{Use: "restore", Short: "恢复 GNOME 启用前设置", Args: noArgs}
+		restoreCommand := &cobra.Command{Use: "restore", Short: "恢复系统代理启用前设置", Args: noArgs}
 		var restoreProfile string
 		var restoreOptions OutputOptions
 		bindCapabilityOptions(restoreCommand, &restoreProfile, &restoreOptions)
@@ -127,7 +127,7 @@ func writeProxyCLIResult(command *cobra.Command, options OutputOptions, value ap
 			if value.Layer == "env" {
 				_, _ = fmt.Fprintln(w, "生效范围: 新 Bash 终端；当前终端请执行 source ~/.bashrc")
 			} else {
-				_, _ = fmt.Fprintln(w, "生效范围: GNOME 桌面应用")
+				_, _ = fmt.Fprintln(w, "生效范围: 系统桌面应用")
 			}
 			if value.NextStart {
 				_, _ = fmt.Fprintln(w, "Core 状态: 当前未运行，代理配置不会自动启动 Core")

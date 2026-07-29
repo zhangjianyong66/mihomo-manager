@@ -42,6 +42,8 @@ type DaemonController interface {
 }
 
 type DaemonControlResult struct {
+	Backend       string `json:"backend,omitempty"`
+	Ready         bool   `json:"ready"`
 	Installed     bool   `json:"installed"`
 	Managed       bool   `json:"managed"`
 	Available     bool   `json:"available"`
@@ -84,7 +86,7 @@ func (s *DaemonService) Status(ctx context.Context) (DaemonStatus, error) {
 				if diagnostic.Hint != "" {
 					copy.Message = copy.Message + "；" + diagnostic.Hint
 				}
-				copy.Details = map[string]any{"systemd": diagnostic.Message, "hint": diagnostic.Hint}
+				copy.Details = map[string]any{"backend": diagnostic.Backend, "serviceManager": diagnostic.Message, "hint": diagnostic.Hint}
 				return DaemonStatus{}, &copy
 			}
 		}

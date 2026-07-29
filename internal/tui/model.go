@@ -1360,7 +1360,7 @@ func (m Model) executeAction(cat, act string) (tea.Model, tea.Cmd) {
 			m.actionIndex = 0
 			m.listenerPortResult = ""
 			return m, loadListenerPortsCmd(m.ctx, m.client)
-		case "GNOME 系统代理", "Bash 环境代理":
+		case "系统代理", "Bash 环境代理":
 			m.proxyLayer = "system"
 			if act == "Bash 环境代理" {
 				m.proxyLayer = "env"
@@ -1392,7 +1392,7 @@ func menuActions(main string) []string {
 	case "白名单管理":
 		return []string{"返回"}
 	case "配置管理":
-		return []string{"监听端口", "GNOME 系统代理", "Bash 环境代理", "备份配置", "恢复配置", "编辑配置", "应用分流规则（大陆直连/其他走GLOBAL）", "返回"}
+		return []string{"监听端口", "系统代理", "Bash 环境代理", "备份配置", "恢复配置", "编辑配置", "应用分流规则（大陆直连/其他走GLOBAL）", "返回"}
 	default:
 		return []string{"返回"}
 	}
@@ -2451,7 +2451,7 @@ func (m Model) renderModeView(title string) string {
 		}
 		body.WriteString("规则集：" + ruleSetSummary(m.modeStatus) + "\n")
 		body.WriteString("监听入口：" + modeSummary(listenerSummary(m.modeStatus.Listeners), m.width) + "\n")
-		body.WriteString("GNOME 代理：" + modeSummary(proxySourceSummary(m.modeStatus.SystemProxy), m.width) + "\n")
+		body.WriteString("系统代理：" + modeSummary(proxySourceSummary(m.modeStatus.SystemProxy), m.width) + "\n")
 		body.WriteString("CLI 环境代理：" + modeSummary(proxySourceSummary(m.modeStatus.EnvironmentProxy), m.width) + "\n")
 		if m.modeStatus.NextStart {
 			body.WriteString("生效状态：配置已保存，下次启动生效\n")
@@ -2560,7 +2560,7 @@ func (m Model) renderListenerPortsView(title string) string {
 
 func (m Model) renderProxyView(title string) string {
 	var body strings.Builder
-	name := "GNOME 系统代理"
+	name := "系统代理"
 	if m.proxyLayer == "env" {
 		name = "Bash 环境代理"
 	}

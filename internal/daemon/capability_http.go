@@ -681,6 +681,8 @@ func classifyCapabilityError(err error) (int, string, string, bool) {
 		return http.StatusBadGateway, "MODE_RUNTIME_MISMATCH", "mihomo 运行模式核验失败", true
 	case errors.Is(err, legacy.ErrValidation), errors.Is(err, core.ErrInvalidConfig), errors.Is(err, core.ErrConfigChanged):
 		return http.StatusUnprocessableEntity, "VALIDATION_FAILED", "配置校验失败", false
+	case errors.Is(err, platform.ErrUnsupported):
+		return http.StatusNotImplemented, "PLATFORM_UNSUPPORTED", "macOS 系统代理暂不支持；请在系统设置中手动配置代理", false
 	case errors.Is(err, platform.ErrProxyAuthUnsupported):
 		return http.StatusConflict, "PROXY_AUTH_UNSUPPORTED", "GNOME 代理已启用认证，首版不接管认证代理", false
 	case errors.Is(err, platform.ErrProxySnapshotNotFound), errors.Is(err, ErrProxySnapshotMissing):

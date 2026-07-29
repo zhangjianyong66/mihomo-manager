@@ -1,0 +1,8 @@
+{"file":".trellis/spec/backend/index.md","reason":"按项目质量检查清单核对分层、命令和长期约定。"}
+{"file":".trellis/spec/backend/deployment.md","reason":"检查 Linux/macOS 安装、升级、规则集、状态和卸载协议没有缺口或回归。"}
+{"file":".trellis/spec/backend/daemon-ipc.md","reason":"检查 Darwin peer UID、私有 socket/lock、launchd 生命周期与组合重启恢复安全。"}
+{"file":".trellis/spec/backend/code-style.md","reason":"检查 Go/Shell 错误处理、权限、原子写入、build tags 和测试风格。"}
+{"file":".trellis/spec/backend/development-commands.md","reason":"执行并核对全量测试、race、vet、Shell 与四平台架构构建门禁。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"复核 app DTO、controller backend、installer 状态和 UI 提示跨层一致。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"检查平台分支没有复制或分叉摘要、资产、状态和 daemon 状态机契约。"}
+{"file":".trellis/tasks/07-29-macos-installer/research/platform-evidence.md","reason":"核对实现使用的 macOS/launchd/Go/mihomo 假设与已验证外部证据一致。"}

@@ -1,0 +1,10 @@
+{"file":".trellis/spec/backend/index.md","reason":"加载 Go CLI 项目分层、开发前检查和安装变更质量门。"}
+{"file":".trellis/spec/backend/deployment.md","reason":"实现必须保持安装器、core、规则集、daemon 编排、状态和安全卸载契约。"}
+{"file":".trellis/spec/backend/daemon-ipc.md","reason":"Darwin IPC、launchd controller 与组合重启必须保持同 UID、权限、生命周期和恢复约束。"}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"新增 Darwin/launchd 代码与配置路径需放在正确的 internal/platform 和 internal/config 边界。"}
+{"file":".trellis/spec/backend/code-style.md","reason":"Go build tags、错误映射、原子文件写入和测试需遵循项目代码规范。"}
+{"file":".trellis/spec/backend/development-commands.md","reason":"提供 Go、race、vet、Shell 和跨架构构建验证命令。"}
+{"file":".trellis/spec/backend/project-conventions.md","reason":"保持 CONFIG_DIR、MIHOMO_BIN、规则集与 legacy 配置兼容边界。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"该任务跨安装脚本、platform、app、CLI/TUI 和持久 launchd 资产，需要逐层核对契约。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"平台选择、摘要校验和 daemon controller 应复用现有单一事实来源，避免 Linux/Darwin 逻辑漂移。"}
+{"file":".trellis/tasks/07-29-macos-installer/research/platform-evidence.md","reason":"包含 macOS 最低版本、官方归档摘要、mihomo Darwin 资产、launchctl 与 Darwin IPC API 证据。"}
