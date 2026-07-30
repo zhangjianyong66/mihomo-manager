@@ -820,3 +820,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 26: 支持 CN 规则集延迟安装
+
+**Date**: 2026-07-30
+**Task**: 支持 CN 规则集延迟安装
+**Branch**: `master`
+
+### Summary
+
+默认安装跳过 CN 规则集网络下载，新增显式安装开关、ruleset status/install CLI、TUI 配置管理入口、daemon NDJSON 事务、代理优先级与 readiness 门禁；规则 provider 改为本地 file，补齐缓存复用、原子发布/回滚、跨平台安装测试和项目规范。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9a422a7` | (see git log) |
+
+### Status
+
+[OK] **Completed**
