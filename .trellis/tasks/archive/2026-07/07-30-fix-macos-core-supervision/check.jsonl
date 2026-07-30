@@ -1,0 +1,3 @@
+{"file":".trellis/spec/backend/core-adapter.md","reason":"核对异常退出必须 failed、只管理精确 process 句柄"}
+{"file":".trellis/spec/backend/daemon-ipc.md","reason":"核对 daemon 状态对 CLI/TUI 的可见性和生命周期"}
+{"file":".trellis/spec/backend/development-commands.md","reason":"质量检查与全量测试要求"}
