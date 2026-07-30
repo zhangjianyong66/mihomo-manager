@@ -22,7 +22,58 @@ func newCapabilityCommands(deps Dependencies) []*cobra.Command {
 	if deps.Capabilities == nil {
 		return nil
 	}
-	return []*cobra.Command{newModeCommand(deps), newCoreCommand(deps), newGroupCommand(deps), newNodeCommand(deps), newSubscriptionCommand(deps), newRouteCommand(deps), newConfigCommand(deps), newProxyCommand(deps)}
+	commands := []*cobra.Command{newModeCommand(deps), newCoreCommand(deps), newGroupCommand(deps), newNodeCommand(deps), newSubscriptionCommand(deps), newRouteCommand(deps), newConfigCommand(deps), newProxyCommand(deps)}
+	if _, ok := deps.Capabilities.(app.RuleSetCapability); ok {
+		commands = append(commands, newRuleSetCommand(deps))
+	}
+	return commands
+}
+
+func newRuleSetCommand(deps Dependencies) *cobra.Command {
+	service := deps.Capabilities.(app.RuleSetCapability)
+	command := &cobra.Command{Use: "ruleset", Short: "管理 CN 规则集", Args: noArgs}
+	status := &cobra.Command{Use: "status", Short: "查看 CN 规则集状态", Args: noArgs}
+	var profile string
+	var options OutputOptions
+	bindCapabilityOptions(status, &profile, &options)
+	status.RunE = func(cmd *cobra.Command, _ []string) error {
+		value, err := service.RuleSetStatus(cmd.Context(), profile)
+		if err != nil {
+			return err
+		}
+		return capabilityResult(cmd, options, Result{Kind: "RuleSetStatus", Data: func(bool) any { return value }, Table: func(w io.Writer, _ bool) error {
+			_, err := fmt.Fprintf(w, "状态: %s\n来源: %s\n引用: %s\nDomain: %s (%s)\nIP: %s (%s)\n", value.State, value.Target.Source, value.Target.Ref, value.Domain.Path, boolLabel(value.Domain.DigestValid), value.IP.Path, boolLabel(value.IP.DigestValid))
+			return err
+		}})
+	}
+	install := &cobra.Command{Use: "install", Short: "安装或修复 CN 规则集", Args: noArgs}
+	var installProfile string
+	var installOptions OutputOptions
+	bindCapabilityOptions(install, &installProfile, &installOptions)
+	install.RunE = func(cmd *cobra.Command, _ []string) error {
+		var final app.RuleSetStatus
+		var finalErr error
+		for event := range service.InstallRuleSets(cmd.Context(), installProfile) {
+			if event.Status != nil {
+				final = *event.Status
+			}
+			if event.Err != nil {
+				finalErr = event.Err
+			}
+			if installOptions.Format == OutputTable && event.Phase != "" {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "阶段: %s\n", event.Phase)
+			}
+		}
+		if finalErr != nil {
+			return finalErr
+		}
+		return capabilityResult(cmd, installOptions, Result{Kind: "RuleSetInstall", Data: func(bool) any { return final }, Table: func(w io.Writer, _ bool) error {
+			_, err := fmt.Fprintf(w, "CN 规则集安装完成: %s\n", final.State)
+			return err
+		}})
+	}
+	command.AddCommand(status, install)
+	return command
 }
 
 func bindCapabilityOptions(command *cobra.Command, profile *string, options *OutputOptions) {

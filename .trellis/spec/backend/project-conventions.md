@@ -35,7 +35,7 @@
 - `domain.RoutingMode` 仅允许 `global|rule|direct`，不得与 `ProfileMode(managed|external|legacy)` 混用；缺少配置 `mode` 时 policy 按 `rule` 解析。
 - `internal/mihomo/routing_policy.go` 是 Rule 规则、CN providers 与 DNS 所有权的唯一来源。顺序固定为本机/局域网、自定义规则、白名单、`mm-cn-domain`、`mm-cn-ip`、唯一 `MATCH,🌐 代理`。
 - 白名单域名生成 `DOMAIN-SUFFIX,<domain>,DIRECT`；清理 manager 本机规则、旧 CN Geo 规则、两个 manager provider 规则和所有旧 `MATCH`，其他 custom rules/providers 保持内容及相对顺序。
-- CN providers 使用 `type: http`、`format: mrs`、`behavior: domain|ipcidr`、相对 `<CONFIG_DIR>/rulesets` 路径、MetaCubeX `meta` 更新 URL 和 `interval: 86400`。
+- manager CN providers 使用本地 `type: file`、`format: mrs`、`behavior: domain|ipcidr` 和相对 `<CONFIG_DIR>/rulesets` 路径，不允许 mihomo 因缺失文件隐式联网；唯一更新入口为 `mm ruleset install`。普通自定义 providers 仍按用户配置保留。
 - Rule DNS 管理 `enable`、`respect-rules`、`default-nameserver`、`nameserver`、`proxy-server-nameserver` 及本机/CN nameserver policy；保留 fake-IP、IPv6 和不冲突的用户 policy，移除会绕开该模型的旧 fallback 字段。
 - `ApplyRouteCN()` 是设置 `mode: rule` 并应用同一 policy 的兼容入口，不得恢复独立 `GEOSITE/GEOIP + MATCH,GLOBAL` 算法。所有写入使用 `mihomo -t -d <dir> -f <file>` 校验，失败恢复内容和权限。
 

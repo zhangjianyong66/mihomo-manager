@@ -38,6 +38,7 @@ CLI 签名：`mm daemon run|status|start|stop|restart|enable|disable`；除 `run
 - launchd：固定 label 的 plist 使用绝对 `mm` 路径、`RunAtLoad/KeepAlive`、`Umask=63`、日志路径和内容摘要，以 `0600` 临时文件 fsync+rename 安装；controller 只调用 `gui/<uid>` 域的固定 target。
 - 显式执行 `CONFIG_DIR=... MIHOMO_BIN=... MIHOMO_API_PORT=... mm daemon enable` 时，controller 将三个白名单变量校验、转义并写入受管 `Environment=` 块；后续未显式传环境的重复 enable 保留该块，确保 systemd 重启后 legacy 迁移与兼容操作仍使用同一路径。环境值不得包含凭据或控制字符，两个路径必须绝对，端口必须为 1-65535。
 - 监听端口 IPC 为 `GET /v1/config/ports?profileId=...` 与 `PUT /v1/config/ports`；PUT body 固定为 `profileId`、`field`、`port` 且必须带 `MM-Request-ID`。响应包含六项 typed ports、core state、`restarted`、`nextStart` 和最近 `portConflicts`，错误 details 保留 `conflicts` 及可用的 partial `status`。
+- CN 规则集 IPC 为 `GET /v1/rulesets/status` 与带 `MM-Request-ID` 的 `POST /v1/rulesets/install`；安装响应使用不可缓存 NDJSON 阶段流。调用进程通过请求参数传递已校验的 source/ref/SHA，代理 endpoint 只接受无认证的 HTTP/HTTPS/SOCKS5，daemon 不持久化代理值。
 
 ## 4. Validation & Error Matrix
 

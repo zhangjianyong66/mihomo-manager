@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,7 +19,26 @@ import (
 	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
 	"github.com/zhangjianyong66/mihomo-manager/internal/ipc"
 	"github.com/zhangjianyong66/mihomo-manager/internal/platform"
+	"github.com/zhangjianyong66/mihomo-manager/internal/ruleset"
 )
+
+// RuleSetCapability is optional to keep third-party/fake CapabilityAPI
+// implementations source-compatible while exposing the deferred installer to
+// clients that support it.
+type RuleSetCapability interface {
+	RuleSetStatus(context.Context, string) (RuleSetStatus, error)
+	InstallRuleSets(context.Context, string) <-chan RuleSetInstallEvent
+}
+
+type RuleSetStatus = ruleset.Status
+
+type RuleSetInstallEvent struct {
+	Phase   string
+	Status  *RuleSetStatus
+	Warning string
+	Err     error
+	Done    bool
+}
 
 type CapabilityAPI interface {
 	ModeStatus(context.Context, string) (RoutingModeStatus, error)
@@ -155,6 +175,141 @@ type DaemonCapabilities struct {
 
 func NewCapabilityService(paths config.ManagerPaths) *DaemonCapabilities {
 	return &DaemonCapabilities{client: ipc.NewClient(paths.Socket), lookupEnv: os.LookupEnv}
+}
+
+func (c *DaemonCapabilities) RuleSetStatus(ctx context.Context, profileID string) (RuleSetStatus, error) {
+	if c == nil || c.client == nil {
+		return RuleSetStatus{}, &Error{Category: ErrorCategoryDaemonUnavailable, Code: ErrorCodeDaemonUnavailable, Message: "daemon 客户端未配置"}
+	}
+	target, err := c.ruleSetTargetFromEnv()
+	if err != nil {
+		return RuleSetStatus{}, err
+	}
+	path := "/v1/rulesets/status"
+	path = addQuery(path, "source", target.Source)
+	path = addQuery(path, "ref", target.Ref)
+	path = addQuery(path, "domainSha256", target.DomainSHA256)
+	path = addQuery(path, "ipSha256", target.IPSHA256)
+	var value RuleSetStatus
+	if err := c.do(ctx, http.MethodGet, path, "", nil, &value); err != nil {
+		return value, c.mapError(err)
+	}
+	return value, nil
+}
+
+func (c *DaemonCapabilities) InstallRuleSets(ctx context.Context, profileID string) <-chan RuleSetInstallEvent {
+	result := make(chan RuleSetInstallEvent, 16)
+	go func() {
+		defer close(result)
+		if c == nil || c.client == nil {
+			result <- RuleSetInstallEvent{Err: &Error{Category: ErrorCategoryDaemonUnavailable, Code: ErrorCodeDaemonUnavailable, Message: "daemon 客户端未配置"}, Done: true}
+			return
+		}
+		target, targetErr := c.ruleSetTargetFromEnv()
+		if targetErr != nil {
+			result <- RuleSetInstallEvent{Err: targetErr, Done: true}
+			return
+		}
+		proxyEndpoint, proxyErr := rulesetProxyFromEnv(c.lookupEnv)
+		if proxyErr != nil {
+			result <- RuleSetInstallEvent{Err: proxyErr, Done: true}
+			return
+		}
+		body, err := c.client.OpenStream(ctx, http.MethodPost, "/v1/rulesets/install", newRequestID("ruleset-install"), map[string]string{"profileId": profileID, "proxy": proxyEndpoint, "source": target.Source, "ref": target.Ref, "domainSha256": target.DomainSHA256, "ipSha256": target.IPSHA256})
+		if err != nil {
+			result <- RuleSetInstallEvent{Err: c.mapError(err), Done: true}
+			return
+		}
+		defer body.Close()
+		decoder := ipc.NewStreamDecoder(body)
+		for {
+			event, decodeErr := decoder.Next(ctx)
+			if decodeErr != nil {
+				result <- RuleSetInstallEvent{Err: c.mapError(decodeErr), Done: true}
+				return
+			}
+			switch event.Kind {
+			case "event":
+				var value struct {
+					Phase   string         `json:"phase"`
+					Status  *RuleSetStatus `json:"status,omitempty"`
+					Warning string         `json:"warning,omitempty"`
+				}
+				if err := json.Unmarshal(event.Data, &value); err != nil {
+					result <- RuleSetInstallEvent{Err: err, Done: true}
+					return
+				}
+				result <- RuleSetInstallEvent{Phase: value.Phase, Status: value.Status, Warning: value.Warning}
+			case "done":
+				result <- RuleSetInstallEvent{Done: true}
+				return
+			case "error":
+				if event.Error != nil {
+					result <- RuleSetInstallEvent{Err: c.mapError(&ipc.Error{Body: *event.Error}), Done: true}
+				} else {
+					result <- RuleSetInstallEvent{Err: errors.New("规则集安装流错误"), Done: true}
+				}
+				return
+			}
+		}
+	}()
+	return result
+}
+
+func rulesetProxyFromEnv(lookup func(string) (string, bool)) (string, error) {
+	if lookup == nil {
+		lookup = os.LookupEnv
+	}
+	for _, key := range []string{"HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"} {
+		value, ok := lookup(key)
+		if !ok || strings.TrimSpace(value) == "" {
+			continue
+		}
+		parsed, err := ruleset.ValidateProxy(value)
+		if err != nil {
+			code := ErrorCodeInvalidArgument
+			message := "规则集下载代理设置无效"
+			if errors.Is(err, ruleset.ErrProxyAuthUnsupported) {
+				code = ErrorCode("RULESET_PROXY_AUTH_UNSUPPORTED")
+				message = "规则集下载不支持带认证信息的代理"
+			}
+			return "", &Error{Category: ErrorCategoryInvalidArgument, Code: code, Message: message, Err: err}
+		}
+		return fmt.Sprintf("%s://%s", parsed.Scheme, net.JoinHostPort(parsed.Host, strconv.Itoa(parsed.Port))), nil
+	}
+	return "", nil
+}
+
+func (c *DaemonCapabilities) ruleSetTargetFromEnv() (ruleset.Target, error) {
+	catalog := ruleset.DefaultCatalog()
+	target := ruleset.Target{Source: catalog.Source, Ref: catalog.Ref, DomainSHA256: catalog.DomainSHA, IPSHA256: catalog.IPSHA}
+	lookup := c.lookupEnv
+	if lookup == nil {
+		lookup = os.LookupEnv
+	}
+	read := func(key string) string { value, _ := lookup(key); return strings.TrimSpace(value) }
+	source, ref := read("MM_RULESET_BASE_URL"), read("MM_RULESET_REF")
+	domainSHA, ipSHA := read("MM_RULESET_DOMAIN_SHA256"), read("MM_RULESET_IP_SHA256")
+	customSource := source != "" || ref != ""
+	if source != "" {
+		target.Source = strings.TrimRight(source, "/")
+	}
+	if ref != "" {
+		target.Ref = ref
+	}
+	if customSource && (domainSHA == "" || ipSHA == "") {
+		return ruleset.Target{}, &Error{Category: ErrorCategoryInvalidArgument, Code: ErrorCodeInvalidArgument, Message: "覆盖规则集来源时必须成对提供可信摘要"}
+	}
+	if (domainSHA == "") != (ipSHA == "") {
+		return ruleset.Target{}, &Error{Category: ErrorCategoryInvalidArgument, Code: ErrorCodeInvalidArgument, Message: "规则集摘要必须成对覆盖"}
+	}
+	if domainSHA != "" {
+		target.DomainSHA256, target.IPSHA256 = strings.ToLower(domainSHA), strings.ToLower(ipSHA)
+	}
+	if err := target.Validate(); err != nil {
+		return ruleset.Target{}, &Error{Category: ErrorCategoryInvalidArgument, Code: ErrorCodeInvalidArgument, Message: "规则集来源或摘要无效", Err: err}
+	}
+	return target, nil
 }
 
 func (c *DaemonCapabilities) ModeStatus(ctx context.Context, profileID string) (RoutingModeStatus, error) {

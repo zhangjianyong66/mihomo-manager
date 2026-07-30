@@ -1008,3 +1008,13 @@ func TestModePartialFailureKeepsAppliedModeVisible(t *testing.T) {
 		t.Fatalf("partial status was not preserved: status=%+v selected=%s view=%s", model.modeStatus, model.modeSelected, model.View())
 	}
 }
+
+func TestConfigMenuIncludesRuleSetEntry(t *testing.T) {
+	items := menuActions("配置管理")
+	for _, item := range items {
+		if item == "CN 规则集" {
+			return
+		}
+	}
+	t.Fatalf("CN 规则集 entry missing: %v", items)
+}

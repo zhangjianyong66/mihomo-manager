@@ -63,6 +63,25 @@ func (c *InteractiveCapabilities) RestartDaemon(ctx context.Context, progress Da
 	return c.restarter.Restart(ctx, progress)
 }
 
+func (c *InteractiveCapabilities) RuleSetStatus(ctx context.Context, profileID string) (RuleSetStatus, error) {
+	service, ok := c.CapabilityAPI.(RuleSetCapability)
+	if !ok {
+		return RuleSetStatus{}, &Error{Code: ErrorCodeInternal, Message: "规则集 capability 未配置"}
+	}
+	return service.RuleSetStatus(ctx, profileID)
+}
+
+func (c *InteractiveCapabilities) InstallRuleSets(ctx context.Context, profileID string) <-chan RuleSetInstallEvent {
+	service, ok := c.CapabilityAPI.(RuleSetCapability)
+	if !ok {
+		result := make(chan RuleSetInstallEvent, 1)
+		result <- RuleSetInstallEvent{Err: &Error{Code: ErrorCodeInternal, Message: "规则集 capability 未配置"}, Done: true}
+		close(result)
+		return result
+	}
+	return service.InstallRuleSets(ctx, profileID)
+}
+
 func (c *InteractiveCapabilities) EditConfig(ctx context.Context, profileID string) error {
 	if c == nil || c.CapabilityAPI == nil {
 		return &Error{Code: ErrorCodeInternal, Message: "TUI daemon capability 未配置"}

@@ -16,7 +16,7 @@ curl -fsSL https://raw.githubusercontent.com/zhangjianyong66/mihomo-manager/mast
 - 复用 Go 1.22+，或安装隔离的官方 Go 1.26.4；
 - 从源码构建独立的 `$HOME/.local/bin/mm`；
 - 下载并校验官方 mihomo core，默认固定为 `v1.19.28`；
-- 下载并校验固定版本的 CN domain/IP `.mrs` 到 `$CONFIG_DIR/rulesets`；
+- 默认不下载 CN domain/IP `.mrs`，避免首次安装受网络影响；网络可用后执行 `mm ruleset install`；
 - 在缺少配置时创建最小 `DIRECT` 配置；
 - 通过 Linux systemd user 或 macOS launchd LaunchAgent 安装并启用 manager daemon，但保持 mihomo core 为停止状态；
 - 仅对本次新建的配置自动执行 legacy 注册，已有配置只给出迁移提示；
@@ -62,6 +62,7 @@ make install
 
 - `--yes`：跳过 apt/Homebrew 安装确认。
 - `--force-core`：强制重新安装目标 mihomo core。
+- `--with-rulesets` 或 `MM_INSTALL_RULESETS=1`：安装时同时下载并校验 CN 规则集；失败会使安装失败。
 - `MM_REF`：远程安装使用的源码分支、标签或提交，默认 `master`。
 - `MIHOMO_VERSION`：指定 core 版本，默认 `v1.19.28`。
 - `MM_GITHUB_BASE_URL`：覆盖 GitHub 下载基地址。
@@ -72,7 +73,7 @@ make install
 - `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`：标准下载代理变量。
 
 安装器不会自动切换第三方镜像。覆盖下载源时，应自行确认来源可信。
-首次下载或校验失败且没有 install-state 可验证缓存时，安装直接失败；升级失败时只会保留摘要和格式仍与 install-state 一致的旧缓存。
+默认安装完全跳过规则集网络请求。执行 `mm ruleset install` 可在网络可用后安装或修复；已有有效缓存会直接复用。显式使用 `--with-rulesets` 时，下载或校验失败会使安装直接失败；升级失败时只会保留摘要和格式仍与 install-state 一致的旧缓存。
 
 ## 卸载
 

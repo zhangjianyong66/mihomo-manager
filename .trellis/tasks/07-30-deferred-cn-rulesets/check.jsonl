@@ -1,0 +1,7 @@
+{"file":".trellis/spec/backend/deployment.md","reason":"核对默认零下载、显式完整安装、缓存兼容、权限和跨平台验收"}
+{"file":".trellis/spec/backend/daemon-ipc.md","reason":"核对 IPC 上限、流式 flush/不缓存、共享协调器和取消/恢复事务"}
+{"file":".trellis/spec/backend/cli-contract.md","reason":"核对稳定 envelope、错误分类、退出码、TUI 边界与秘密值脱敏"}
+{"file":".trellis/spec/backend/core-adapter.md","reason":"核对 Core 运行态 reload/verify、恢复失败标记及不重复进程"}
+{"file":".trellis/spec/backend/route-observability.md","reason":"核对调用进程代理投影、userinfo/path/query 不跨 DTO 与 TUI 取消惯例"}
+{"file":".trellis/spec/backend/project-conventions.md","reason":"核对 manager provider、本地资产门禁及 Rule/global/direct 兼容语义"}
+{"file":".trellis/tasks/07-30-deferred-cn-rulesets/research/code-evidence.md","reason":"对照现有实现逐项检查改动覆盖，防止 Shell/Go 或 CLI/TUI 漂移"}

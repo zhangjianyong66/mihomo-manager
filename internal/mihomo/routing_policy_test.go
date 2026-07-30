@@ -16,7 +16,7 @@ import (
 func TestRoutingPolicy_GeneratesStableRuleOrderAndProviders(t *testing.T) {
 	configDir := t.TempDir()
 	cfg := map[string]any{
-		"mode": "global",
+		"mode": "rule",
 		"rule-providers": map[string]any{
 			"custom":             map[string]any{"type": "file", "path": "./custom.yaml", "behavior": "classical"},
 			CNDomainProviderName: map[string]any{"type": "file", "path": "./old-domain.mrs"},
@@ -51,7 +51,7 @@ func TestRoutingPolicy_GeneratesStableRuleOrderAndProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseRoutingPolicy failed: %v", err)
 	}
-	if policy.Mode != domain.RoutingModeGlobal {
+	if policy.Mode != domain.RoutingModeRule {
 		t.Fatalf("mode = %q", policy.Mode)
 	}
 	wantCustomRules := []string{
@@ -225,7 +225,10 @@ func assertManagerProvider(t *testing.T, value any, behavior, path, url string) 
 	if !ok {
 		t.Fatalf("provider = %#v", value)
 	}
-	if provider["type"] != "http" || provider["behavior"] != behavior || provider["format"] != "mrs" || provider["path"] != path || provider["url"] != url || provider["interval"] != rulesetUpdateInterval {
+	if provider["type"] != "file" || provider["behavior"] != behavior || provider["format"] != "mrs" || provider["path"] != path {
 		t.Fatalf("provider = %#v", provider)
+	}
+	if _, ok := provider["url"]; ok {
+		t.Fatalf("manager provider unexpectedly has remote url: %#v", provider)
 	}
 }

@@ -415,6 +415,35 @@ test_ruleset_override_requires_trusted_digests() {
     pass "规则集来源拒绝可能泄露的凭据和查询信息"
 }
 
+test_ruleset_install_is_explicit_and_catalog_shared() {
+    (
+        export HOME="$TEST_ROOT/ruleset-default-home"
+        export MM_INSTALL_LIB_ONLY=1
+        source "$PROJECT_DIR/scripts/install.sh"
+        parse_args
+        [[ "$INSTALL_RULESETS" == "0" ]]
+        load_ruleset_catalog
+        [[ "$DEFAULT_RULESET_REF" == "$(jq -r '.ref' "$PROJECT_DIR/internal/ruleset/catalog.json")" ]]
+        [[ "$DEFAULT_RULESET_DOMAIN_SHA256" == "$(jq -r '.domain_sha256' "$PROJECT_DIR/internal/ruleset/catalog.json")" ]]
+    )
+    (
+        export HOME="$TEST_ROOT/ruleset-explicit-home"
+        export MM_INSTALL_LIB_ONLY=1
+        source "$PROJECT_DIR/scripts/install.sh"
+        parse_args --with-rulesets
+        [[ "$INSTALL_RULESETS" == "1" ]]
+    )
+    (
+        export HOME="$TEST_ROOT/ruleset-env-home"
+        export MM_INSTALL_RULESETS=1
+        export MM_INSTALL_LIB_ONLY=1
+        source "$PROJECT_DIR/scripts/install.sh"
+        parse_args
+        [[ "$INSTALL_RULESETS" == "1" ]]
+    )
+    pass "CN 规则集默认离线，显式参数和共享 catalog 生效"
+}
+
 test_ruleset_path_rejects_symlink() {
     local home="$TEST_ROOT/ruleset-symlink-home"
     local config="$home/.config/mihomo"
@@ -935,6 +964,7 @@ test_newer_core_is_not_downgraded
 test_force_core_replaces_after_validation_and_keeps_backup
 test_sha_failure_is_detected
 test_ruleset_override_requires_trusted_digests
+test_ruleset_install_is_explicit_and_catalog_shared
 test_ruleset_path_rejects_symlink
 test_ruleset_install_and_state_round_trip
 test_ruleset_publish_failure_restores_pair

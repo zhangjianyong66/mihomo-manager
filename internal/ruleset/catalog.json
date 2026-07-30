@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "source": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat",
+  "ref": "32ae0e8658ca541374b721efcee84955e8a59755",
+  "domain_path": "geo/geosite/cn.mrs",
+  "ip_path": "geo/geoip/cn.mrs",
+  "domain_sha256": "52c146262ef51dc23a84533a0d13f8addd031c61708a863d17cdb75cc3089ee4",
+  "ip_sha256": "206ad4cc22005976e8bfb50a869e5483cb81cc174a56c9a79c8a13e3e64e2eea",
+  "domain_name": "cn-domain.mrs",
+  "ip_name": "cn-ip.mrs",
+  "behavior": {"domain": "domain", "ip": "ipcidr"}
+}

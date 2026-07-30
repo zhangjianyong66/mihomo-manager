@@ -140,6 +140,10 @@ type Model struct {
 	proxyPort              int
 	daemonRestartProgress  app.DaemonRestartProgress
 	daemonRestartSeen      map[app.DaemonRestartPhase]bool
+	rulesetStatus          app.RuleSetStatus
+	rulesetErr             error
+	rulesetPhase           string
+	rulesetCancel          context.CancelFunc
 }
 
 type actionDoneMsg struct {
@@ -245,6 +249,22 @@ type daemonRestartEvent struct {
 	done     bool
 }
 
+type rulesetStatusMsg struct {
+	status  app.RuleSetStatus
+	err     error
+	install bool
+}
+
+type rulesetInstallStartedMsg struct {
+	ch <-chan app.RuleSetInstallEvent
+}
+
+type rulesetInstallEventMsg struct {
+	ch    <-chan app.RuleSetInstallEvent
+	event app.RuleSetInstallEvent
+	ok    bool
+}
+
 func New(client Capabilities) Model {
 	return NewWithContext(context.Background(), client)
 }
@@ -285,6 +305,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.returnPage = actionMenu
 			m.page = resultView
 			return m, nil
+		}
+		return m, nil
+	case rulesetInstallStartedMsg:
+		return m, waitRulesetInstallEventMsg(msg.ch)
+	case rulesetInstallEventMsg:
+		if !msg.ok {
+			m.busy = false
+			m.rulesetCancel = nil
+			m.rulesetErr = fmt.Errorf("规则集安装流意外结束")
+			return m, nil
+		}
+		if msg.event.Phase != "" {
+			m.rulesetPhase = msg.event.Phase
+		}
+		if msg.event.Status != nil {
+			m.rulesetStatus = *msg.event.Status
+		}
+		if msg.event.Err != nil {
+			m.busy = false
+			m.rulesetCancel = nil
+			m.rulesetErr = msg.event.Err
+			return m, nil
+		}
+		if msg.event.Done {
+			m.busy = false
+			m.rulesetCancel = nil
+			return m, nil
+		}
+		return m, waitRulesetInstallEventMsg(msg.ch)
+	case rulesetStatusMsg:
+		m.busy = false
+		m.rulesetCancel = nil
+		m.rulesetErr = msg.err
+		if msg.err == nil {
+			m.rulesetStatus = msg.status
+		}
+		if msg.install && msg.err != nil {
+			m.result, m.err, m.returnPage, m.page = "CN 规则集安装失败", msg.err, actionMenu, resultView
 		}
 		return m, nil
 	case modeStatusMsg:
@@ -599,9 +657,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if s == "ctrl+c" {
+			if m.actionCtx == "ruleset" && m.busy && m.rulesetCancel != nil && m.rulesetPhase != "publishing" && m.rulesetPhase != "reloading" && m.rulesetPhase != "verifying" {
+				m.rulesetCancel()
+				m.rulesetCancel = nil
+				m.busy = false
+				m.rulesetErr = context.Canceled
+				return m, nil
+			}
 			return m, tea.Quit
 		}
 		if m.busy {
+			if s == "esc" && m.actionCtx == "ruleset" && m.rulesetCancel != nil && m.rulesetPhase != "publishing" && m.rulesetPhase != "reloading" && m.rulesetPhase != "verifying" {
+				m.rulesetCancel()
+				m.rulesetCancel = nil
+				m.busy = false
+				m.rulesetErr = context.Canceled
+				return m, nil
+			}
 			if s == "esc" && m.actionCtx == "mode" {
 				if m.modeCancel != nil {
 					m.modeCancel()
@@ -699,6 +771,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.actionItems = menuActions("配置管理")
 				m.actionIndex = 0
 				m.listenerPortResult = ""
+				return m, nil
+			}
+			if m.page == actionMenu && (m.actionCtx == "ruleset" || m.actionCtx == "ruleset_confirm") {
+				m.actionCtx = ""
+				m.actionItems = menuActions("配置管理")
+				m.actionIndex = 0
+				m.rulesetErr = nil
+				m.rulesetPhase = ""
 				return m, nil
 			}
 			if m.page == actionMenu && strings.HasPrefix(m.actionCtx, "proxy_") {
@@ -878,6 +958,9 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.actionCtx == "listener_ports" {
 		return m.updateListenerPorts(msg)
+	}
+	if m.actionCtx == "ruleset" || m.actionCtx == "ruleset_confirm" {
+		return m.updateRuleSet(msg)
 	}
 	if m.actionCtx == "proxy_system" || m.actionCtx == "proxy_env" || m.actionCtx == "proxy_confirm" {
 		return m.updateProxy(msg)
@@ -1277,6 +1360,58 @@ func (m Model) updateProxy(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateRuleSet(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if len(m.actionItems) == 0 {
+		return m, nil
+	}
+	switch msg.String() {
+	case "up":
+		if m.actionIndex > 0 {
+			m.actionIndex--
+		}
+	case "down":
+		if m.actionIndex < len(m.actionItems)-1 {
+			m.actionIndex++
+		}
+	case "enter":
+		if m.actionCtx == "ruleset_confirm" {
+			if m.actionItems[m.actionIndex] != "确认安装" {
+				m.actionCtx = "ruleset"
+				m.actionItems = []string{"安装/修复", "返回"}
+				m.actionIndex = 0
+				return m, nil
+			}
+			m.actionCtx = "ruleset"
+			m.actionItems = []string{"安装/修复", "返回"}
+			m.actionIndex = 0
+			m.busy = true
+			m.rulesetPhase = "checking"
+			m.rulesetErr = nil
+			ctx, cancel := context.WithCancel(m.ctx)
+			m.rulesetCancel = cancel
+			return m, installRuleSetsCmd(ctx, m.client)
+		}
+		if m.actionItems[m.actionIndex] == "安装/修复" {
+			m.actionCtx = "ruleset_confirm"
+			m.actionItems = []string{"确认安装", "取消"}
+			m.actionIndex = 0
+			return m, nil
+		}
+		if m.actionItems[m.actionIndex] == "返回" {
+			m.actionCtx = ""
+			m.actionItems = menuActions("配置管理")
+			m.actionIndex = 1
+			return m, nil
+		}
+		if _, ok := m.client.(app.RuleSetCapability); !ok {
+			m.rulesetErr = fmt.Errorf("当前 daemon 不支持 CN 规则集管理")
+			return m, nil
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
 func (m Model) executeAction(cat, act string) (tea.Model, tea.Cmd) {
 	switch cat {
 	case "服务管理":
@@ -1360,6 +1495,14 @@ func (m Model) executeAction(cat, act string) (tea.Model, tea.Cmd) {
 			m.actionIndex = 0
 			m.listenerPortResult = ""
 			return m, loadListenerPortsCmd(m.ctx, m.client)
+		case "CN 规则集":
+			m.actionCtx = "ruleset"
+			m.actionItems = []string{"安装/修复", "返回"}
+			m.actionIndex = 0
+			m.rulesetPhase = ""
+			m.rulesetErr = nil
+			m.busy = true
+			return m, loadRuleSetStatusCmd(m.ctx, m.client)
 		case "系统代理", "Bash 环境代理":
 			m.proxyLayer = "system"
 			if act == "Bash 环境代理" {
@@ -1392,7 +1535,7 @@ func menuActions(main string) []string {
 	case "白名单管理":
 		return []string{"返回"}
 	case "配置管理":
-		return []string{"监听端口", "系统代理", "Bash 环境代理", "备份配置", "恢复配置", "编辑配置", "应用分流规则（大陆直连/其他走GLOBAL）", "返回"}
+		return []string{"监听端口", "CN 规则集", "系统代理", "Bash 环境代理", "备份配置", "恢复配置", "编辑配置", "应用分流规则（大陆直连/其他走GLOBAL）", "返回"}
 	default:
 		return []string{"返回"}
 	}
@@ -1597,6 +1740,27 @@ func loadProxyStatusCmd(ctx context.Context, service Capabilities, layer string)
 	}
 }
 
+func loadRuleSetStatusCmd(ctx context.Context, service Capabilities) tea.Cmd {
+	return func() tea.Msg {
+		provider, ok := service.(app.RuleSetCapability)
+		if !ok {
+			return rulesetStatusMsg{err: fmt.Errorf("当前 daemon 不支持 CN 规则集管理")}
+		}
+		value, err := provider.RuleSetStatus(ctx, "")
+		return rulesetStatusMsg{status: value, err: err}
+	}
+}
+
+func installRuleSetsCmd(ctx context.Context, service Capabilities) tea.Cmd {
+	return func() tea.Msg {
+		provider, ok := service.(app.RuleSetCapability)
+		if !ok {
+			return rulesetStatusMsg{err: fmt.Errorf("当前 daemon 不支持 CN 规则集管理"), install: true}
+		}
+		return rulesetInstallStartedMsg{ch: provider.InstallRuleSets(ctx, "")}
+	}
+}
+
 func setProxyCmd(ctx context.Context, service Capabilities, request app.ProxyRequest) tea.Cmd {
 	return func() tea.Msg {
 		value, err := service.SetProxy(ctx, request)
@@ -1775,6 +1939,9 @@ func (m Model) View() string {
 	if m.page == actionMenu && m.actionCtx == "listener_ports" {
 		return m.renderListenerPortsView(title)
 	}
+	if m.page == actionMenu && (m.actionCtx == "ruleset" || m.actionCtx == "ruleset_confirm") {
+		return m.renderRuleSetView(title)
+	}
 	if m.page == actionMenu && (m.actionCtx == "proxy_system" || m.actionCtx == "proxy_env" || m.actionCtx == "proxy_confirm") {
 		return m.renderProxyView(title)
 	}
@@ -1918,6 +2085,13 @@ func waitConnectionEventMsg(ch <-chan app.ConnectionEvent) tea.Cmd {
 	return func() tea.Msg {
 		event, ok := <-ch
 		return connectionEventMsg{ch: ch, event: event, ok: ok}
+	}
+}
+
+func waitRulesetInstallEventMsg(ch <-chan app.RuleSetInstallEvent) tea.Cmd {
+	return func() tea.Msg {
+		event, ok := <-ch
+		return rulesetInstallEventMsg{ch: ch, event: event, ok: ok}
 	}
 }
 
@@ -2556,6 +2730,36 @@ func (m Model) renderListenerPortsView(title string) string {
 	}
 	footer := fitFooter("↑/↓ 选择  Enter 修改  Esc 返回  q 退出", m.width)
 	return fmt.Sprintf("%s\n\n%s\n%s", title, body.String(), footer)
+}
+
+func (m Model) renderRuleSetView(title string) string {
+	var body strings.Builder
+	body.WriteString("配置管理 / CN 规则集\n")
+	if m.rulesetStatus.Target.Ref != "" {
+		body.WriteString(fmt.Sprintf("状态：%s\n固定引用：%s\n来源：%s\n", m.rulesetStatus.State, m.rulesetStatus.Target.Ref, m.rulesetStatus.Target.Source))
+		body.WriteString(fmt.Sprintf("Domain：%s [%t]\nIP：%s [%t]\n", m.rulesetStatus.Domain.Path, m.rulesetStatus.Domain.DigestValid && m.rulesetStatus.Domain.FormatValid, m.rulesetStatus.IP.Path, m.rulesetStatus.IP.DigestValid && m.rulesetStatus.IP.FormatValid))
+	} else if m.busy {
+		body.WriteString("正在读取规则集状态...\n")
+	} else {
+		body.WriteString("规则集状态不可用\n")
+	}
+	if m.rulesetPhase != "" {
+		body.WriteString("阶段：" + m.rulesetPhase + "\n")
+	}
+	if m.rulesetErr != nil {
+		body.WriteString("错误：" + m.rulesetErr.Error() + "\n")
+	}
+	for index, item := range m.actionItems {
+		cursor := "  "
+		if index == m.actionIndex {
+			cursor = "> "
+		}
+		body.WriteString(cursor + item + "\n")
+	}
+	if m.busy {
+		body.WriteString("\n下载与校验中，可按 Esc 取消\n")
+	}
+	return fmt.Sprintf("%s\n\n%s\n%s", title, body.String(), fitFooter("↑/↓ 选择  Enter 确认  Esc 返回  q 退出", m.width))
 }
 
 func (m Model) renderProxyView(title string) string {

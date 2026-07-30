@@ -5,7 +5,8 @@ help:
 	@echo "支持 Ubuntu/Debian 与 macOS 12+（amd64/arm64）"
 	@echo ""
 	@echo "使用方法:"
-	@echo "  make install       安装依赖、规则集、mihomo core、mm 和用户 daemon"
+	@echo "  make install       安装依赖、mihomo core、mm 和用户 daemon（默认跳过 CN 规则集下载）"
+	@echo "  make install WITH_RULESETS=1  同时下载并安装 CN 规则集"
 	@echo "  make uninstall     卸载 mm，默认保留 core 和配置"
 	@echo "  make test-install  运行隔离安装测试"
 	@echo ""
@@ -14,7 +15,7 @@ help:
 	@echo "  ./scripts/uninstall.sh  卸载"
 
 install:
-	@./scripts/install.sh
+	@if [ "$(WITH_RULESETS)" = "1" ]; then ./scripts/install.sh --with-rulesets; else ./scripts/install.sh; fi
 
 uninstall:
 	@./scripts/uninstall.sh

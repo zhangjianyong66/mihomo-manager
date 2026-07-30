@@ -25,7 +25,7 @@ func Execute(
 ) int
 ```
 
-应用服务接口放在 `internal/app`，按 core、profile、node、group、subscription、route、config、log 拆分。所有方法首参为 `context.Context`，参数和返回值只能使用标准库、`internal/domain` 或 `internal/app` 类型。
+应用服务接口放在 `internal/app`，按 core、profile、node、group、subscription、route、config、log、ruleset 拆分。所有方法首参为 `context.Context`，参数和返回值只能使用标准库、`internal/domain` 或 `internal/app` 类型。
 
 领域 ID 和枚举放在 `internal/domain`：`ProfileID`、`SubscriptionID`、`NodeID`、`GroupID`、`CoreType`、`CoreState`。
 
@@ -34,6 +34,8 @@ func Execute(
 模式 CLI 固定为 `mm mode status [--profile ID] [--output table|json]` 与 `mm mode set <global|rule|direct> [--profile ID] [--close-connections] [--output table|json]`；成功 kind 分别为 `RoutingModeStatus`、`RoutingModeChange`。daemon 不可用和未迁移错误必须分别给出 `mm daemon status/start`、`mm migrate plan/apply` 的可执行提示。
 
 监听端口 CLI 固定为 `mm config ports [--profile ID] [--output table|json]` 与 `mm config port set <field> <port> [--profile ID] [--output table|json]`；成功 kind 为 `ListenerPortStatus`。TUI 常驻入口为“配置管理 > 监听端口”，只能通过 `app.CapabilityAPI.ListenerPorts|SetListenerPort` 异步调用 daemon。
+
+CN 规则集 CLI 固定为 `mm ruleset status [--output table|json]` 与 `mm ruleset install [--output table|json]`；状态 kind 为 `RuleSetStatus`，安装终态 kind 为 `RuleSetInstall`，安装过程使用不可缓存 NDJSON。TUI 常驻入口为“配置管理 > CN 规则集”，安装前必须确认，下载期取消不得产生文件副作用。
 
 ### 3. Contracts
 

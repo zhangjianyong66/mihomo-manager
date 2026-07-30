@@ -18,9 +18,13 @@ DEFAULT_RULESET_BASE_URL="https://raw.githubusercontent.com/MetaCubeX/meta-rules
 DEFAULT_RULESET_REF="32ae0e8658ca541374b721efcee84955e8a59755"
 DEFAULT_RULESET_DOMAIN_SHA256="52c146262ef51dc23a84533a0d13f8addd031c61708a863d17cdb75cc3089ee4"
 DEFAULT_RULESET_IP_SHA256="206ad4cc22005976e8bfb50a869e5483cb81cc174a56c9a79c8a13e3e64e2eea"
+RULESET_CATALOG_FILE="$PROJECT_DIR/internal/ruleset/catalog.json"
+RULESET_DOMAIN_SOURCE_PATH="geo/geosite/cn.mrs"
+RULESET_IP_SOURCE_PATH="geo/geoip/cn.mrs"
 
 ASSUME_YES=0
 FORCE_CORE=0
+INSTALL_RULESETS=0
 TARGET_OS=""
 TARGET_ARCH=""
 GO_BIN=""
@@ -102,10 +106,12 @@ Mihomo Manager 安装器
 选项：
   --yes          跳过 apt/Homebrew 安装确认
   --force-core   强制重新安装目标 mihomo core 版本
+  --with-rulesets  同时下载并安装 CN 规则集（默认跳过网络下载）
   -h, --help     显示帮助
 
 环境变量：
   MM_ASSUME_YES=1             等同 --yes
+  MM_INSTALL_RULESETS=1       同时安装 CN 规则集
   MIHOMO_VERSION=v1.19.28     指定 mihomo core 版本
   MM_GITHUB_BASE_URL=...      覆盖 GitHub 下载基地址
   MM_GITHUB_API_BASE_URL=...  覆盖 GitHub API 基地址
@@ -121,6 +127,9 @@ parse_args() {
     case "${MM_ASSUME_YES:-0}" in
         1|true|TRUE|yes|YES) ASSUME_YES=1 ;;
     esac
+    case "${MM_INSTALL_RULESETS:-0}" in
+        1|true|TRUE|yes|YES) INSTALL_RULESETS=1 ;;
+    esac
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -129,6 +138,9 @@ parse_args() {
                 ;;
             --force-core)
                 FORCE_CORE=1
+                ;;
+            --with-rulesets)
+                INSTALL_RULESETS=1
                 ;;
             -h|--help)
                 usage
@@ -417,6 +429,16 @@ validate_ruleset_settings() {
         || die "MM_RULESET_IP_SHA256 必须是 64 位十六进制。"
 }
 
+load_ruleset_catalog() {
+    [[ -r "$RULESET_CATALOG_FILE" ]] || die "规则集 catalog 不存在: $RULESET_CATALOG_FILE"
+    DEFAULT_RULESET_BASE_URL="$(jq -er '.source' "$RULESET_CATALOG_FILE")" || die "无法读取规则集 catalog source。"
+    DEFAULT_RULESET_REF="$(jq -er '.ref' "$RULESET_CATALOG_FILE")" || die "无法读取规则集 catalog ref。"
+    DEFAULT_RULESET_DOMAIN_SHA256="$(jq -er '.domain_sha256' "$RULESET_CATALOG_FILE")" || die "无法读取规则集 catalog domain 摘要。"
+    DEFAULT_RULESET_IP_SHA256="$(jq -er '.ip_sha256' "$RULESET_CATALOG_FILE")" || die "无法读取规则集 catalog IP 摘要。"
+    RULESET_DOMAIN_SOURCE_PATH="$(jq -er '.domain_path' "$RULESET_CATALOG_FILE")" || die "无法读取规则集 catalog domain 路径。"
+    RULESET_IP_SOURCE_PATH="$(jq -er '.ip_path' "$RULESET_CATALOG_FILE")" || die "无法读取规则集 catalog IP 路径。"
+}
+
 path_has_symlink_component() {
     local current="$1"
     while [[ "$current" != "/" && "$current" != "." ]]; do
@@ -594,8 +616,8 @@ publish_ruleset_pair() {
 
 install_rulesets() {
     local domain_url ip_url domain_temp ip_temp
-    domain_url="$RULESET_REQUESTED_BASE_URL/$RULESET_REQUESTED_REF/geo/geosite/cn.mrs"
-    ip_url="$RULESET_REQUESTED_BASE_URL/$RULESET_REQUESTED_REF/geo/geoip/cn.mrs"
+    domain_url="$RULESET_REQUESTED_BASE_URL/$RULESET_REQUESTED_REF/$RULESET_DOMAIN_SOURCE_PATH"
+    ip_url="$RULESET_REQUESTED_BASE_URL/$RULESET_REQUESTED_REF/$RULESET_IP_SOURCE_PATH"
     domain_temp="$(mktemp "$RULESET_DIR/.cn-domain.download.XXXXXX")" \
         || die "无法在规则集目录创建 domain 临时文件。"
     TEMP_PATHS+=("$domain_temp")
@@ -1140,7 +1162,11 @@ print_summary() {
     printf '  mm:      %s\n' "$INSTALL_DIR/mm"
     printf '  mihomo:  %s (%s)\n' "$MIHOMO_BIN" "$CORE_VERSION"
     printf '  配置目录: %s\n' "$CONFIG_DIR"
-    printf '  CN 规则集: %s (%s)\n' "$RULESET_DIR" "$RULESET_INSTALLED_REF"
+    if [[ -n "$RULESET_INSTALLED_REF" ]]; then
+        printf '  CN 规则集: %s (%s，已安装/复用)\n' "$RULESET_DIR" "$RULESET_INSTALLED_REF"
+    else
+        printf '  CN 规则集: 待安装（执行 mm ruleset install）\n'
+    fi
     printf '\n安装器没有启动 mihomo，也没有修改系统代理。\n'
     if ((CONFIG_WARNING == 1)); then
         warn "mm 已安装，但现有配置需要修复后才能启动 mihomo。"
@@ -1155,15 +1181,35 @@ print_summary() {
 main() {
     parse_args "$@"
     preflight
-    validate_ruleset_settings
     install_system_dependencies
     verify_required_commands
+    load_ruleset_catalog
+    if ((INSTALL_RULESETS == 1)); then
+        validate_ruleset_settings
+    else
+        RULESET_REQUESTED_BASE_URL="$DEFAULT_RULESET_BASE_URL"
+        RULESET_REQUESTED_REF="$DEFAULT_RULESET_REF"
+        RULESET_REQUESTED_DOMAIN_SHA256="$DEFAULT_RULESET_DOMAIN_SHA256"
+        RULESET_REQUESTED_IP_SHA256="$DEFAULT_RULESET_IP_SHA256"
+    fi
     prepare_install_state_dir
     prepare_ruleset_dir
     select_go
     build_mm
     install_mihomo_core
-    install_rulesets
+    if ((INSTALL_RULESETS == 1)); then
+        install_rulesets
+    else
+        if load_valid_ruleset_cache; then
+            info "已复用本地验证通过的 CN 规则集缓存。"
+        else
+            RULESET_INSTALLED_BASE_URL=""
+            RULESET_INSTALLED_REF=""
+            RULESET_INSTALLED_DOMAIN_SHA256=""
+            RULESET_INSTALLED_IP_SHA256=""
+            info "默认跳过 CN 规则集下载；稍后可执行 mm ruleset install。"
+        fi
+    fi
     configure_mihomo
     probe_daemon_before_upgrade
     install_mm_binary

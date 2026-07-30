@@ -11,10 +11,12 @@ import (
 )
 
 const (
-	ProxyGroupName         = "🌐 代理"
-	DirectGroupName        = "🎯 直连"
-	CNDomainProviderName   = "mm-cn-domain"
-	CNIPProviderName       = "mm-cn-ip"
+	ProxyGroupName       = "🌐 代理"
+	DirectGroupName      = "🎯 直连"
+	CNDomainProviderName = "mm-cn-domain"
+	CNIPProviderName     = "mm-cn-ip"
+	// Kept for compatibility with callers that display the historical source;
+	// manager providers are now local file providers and never use these URLs.
 	rulesetUpdateInterval  = 86400
 	cnDomainRulesetURL     = "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/cn.mrs"
 	cnIPRulesetURL         = "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/cn.mrs"
@@ -122,20 +124,22 @@ func ApplyRoutingPolicy(cfg map[string]any, policy RoutingPolicy, paths config.P
 		}
 		providers[name] = cloneYAMLValue(provider)
 	}
-	providers[CNDomainProviderName] = managerRuleProvider(
-		"domain",
-		rulesetConfigPath(paths.ConfigDir, paths.CNDomainRuleset, "cn-domain.mrs"),
-		cnDomainRulesetURL,
-	)
-	providers[CNIPProviderName] = managerRuleProvider(
-		"ipcidr",
-		rulesetConfigPath(paths.ConfigDir, paths.CNIPRuleset, "cn-ip.mrs"),
-		cnIPRulesetURL,
-	)
+	if policy.Mode == domain.RoutingModeRule {
+		providers[CNDomainProviderName] = managerRuleProvider(
+			"domain",
+			rulesetConfigPath(paths.ConfigDir, paths.CNDomainRuleset, "cn-domain.mrs"),
+		)
+		providers[CNIPProviderName] = managerRuleProvider(
+			"ipcidr",
+			rulesetConfigPath(paths.ConfigDir, paths.CNIPRuleset, "cn-ip.mrs"),
+		)
+	}
 	cfg["rule-providers"] = providers
 
 	rules := make([]string, 0, len(managerLocalRules)+len(policy.CustomRules)+len(policy.Whitelist)+3)
-	rules = append(rules, managerLocalRules...)
+	if policy.Mode == domain.RoutingModeRule {
+		rules = append(rules, managerLocalRules...)
+	}
 	for _, rule := range policy.CustomRules {
 		if !isManagerOwnedRule(rule, policy.Whitelist) {
 			rules = append(rules, rule)
@@ -144,28 +148,34 @@ func ApplyRoutingPolicy(cfg map[string]any, policy RoutingPolicy, paths config.P
 	for _, domainName := range normalizeDomainList(policy.Whitelist) {
 		rules = append(rules, "DOMAIN-SUFFIX,"+domainName+",DIRECT")
 	}
-	rules = append(rules,
-		"RULE-SET,"+CNDomainProviderName+",DIRECT",
-		"RULE-SET,"+CNIPProviderName+",DIRECT,no-resolve",
-		"MATCH,"+ProxyGroupName,
-	)
-	cfg["rules"] = rules
-	dns, err := applyManagerDNS(policy.DNS)
-	if err != nil {
-		return err
+	if policy.Mode == domain.RoutingModeRule {
+		rules = append(rules,
+			"RULE-SET,"+CNDomainProviderName+",DIRECT",
+			"RULE-SET,"+CNIPProviderName+",DIRECT,no-resolve",
+			"MATCH,"+ProxyGroupName,
+		)
+		cfg["rules"] = rules
+		dns, err := applyManagerDNS(policy.DNS)
+		if err != nil {
+			return err
+		}
+		cfg["dns"] = dns
+	} else {
+		cfg["rules"] = append([]string(nil), rules...)
+		if len(rules) == 0 {
+			cfg["rules"] = []string{"MATCH," + map[bool]string{true: "DIRECT", false: ProxyGroupName}[policy.Mode == domain.RoutingModeDirect]}
+		}
+		cfg["dns"] = cloneStringMap(policy.DNS)
 	}
-	cfg["dns"] = dns
 	return nil
 }
 
-func managerRuleProvider(behavior, path, url string) map[string]any {
+func managerRuleProvider(behavior, path string) map[string]any {
 	return map[string]any{
-		"type":     "http",
+		"type":     "file",
 		"behavior": behavior,
 		"format":   "mrs",
 		"path":     path,
-		"url":      url,
-		"interval": rulesetUpdateInterval,
 	}
 }
 

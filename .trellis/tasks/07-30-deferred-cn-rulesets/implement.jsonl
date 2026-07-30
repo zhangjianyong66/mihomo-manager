@@ -1,0 +1,7 @@
+{"file":".trellis/spec/backend/deployment.md","reason":"安装器默认行为、固定资产、install-state、跨平台与 Shell 测试契约"}
+{"file":".trellis/spec/backend/daemon-ipc.md","reason":"daemon 单写者、Coordinator、request ID、NDJSON 流、恢复与 Core 状态契约"}
+{"file":".trellis/spec/backend/cli-contract.md","reason":"CapabilityAPI、CLI/TUI typed DTO、table/json、退出码与脱敏契约"}
+{"file":".trellis/spec/backend/core-adapter.md","reason":"Core validate/start、runtime reload/verify、独立恢复 context 与 failed 语义"}
+{"file":".trellis/spec/backend/project-conventions.md","reason":"规则集路径、路由合成唯一入口、provider 与订阅/白名单重放约定"}
+{"file":".trellis/spec/backend/code-style.md","reason":"包边界、TUI tea.Cmd、副作用、错误与测试风格"}
+{"file":".trellis/tasks/07-30-deferred-cn-rulesets/research/code-evidence.md","reason":"当前强制下载、HTTP provider、跨层入口和可复用实现的文件行证据"}

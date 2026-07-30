@@ -44,9 +44,9 @@ make install
 ## 配置与 PATH
 
 - 默认配置目录为 `~/.config/mihomo`，仍可通过 `CONFIG_DIR` 覆盖。
-- 安装器固定下载 `MetaCubeX/meta-rules-dat` commit `32ae0e8658ca541374b721efcee84955e8a59755` 的 `geo/geosite/cn.mrs` 与 `geo/geoip/cn.mrs`，SHA-256 分别为 `52c146262ef51dc23a84533a0d13f8addd031c61708a863d17cdb75cc3089ee4`、`206ad4cc22005976e8bfb50a869e5483cb81cc174a56c9a79c8a13e3e64e2eea`，安装路径为 `<CONFIG_DIR>/rulesets/cn-domain.mrs` 和 `cn-ip.mrs`。
+- 规则集 catalog 固定 `MetaCubeX/meta-rules-dat` commit `32ae0e8658ca541374b721efcee84955e8a59755`、两份 SHA-256 和资产路径；安装器默认完全跳过 CN 规则集网络下载，`--with-rulesets`/`MM_INSTALL_RULESETS=1` 才在一次性安装中下载。
 - 规则集目录/文件权限为 `0700/0600`；两份文件先全部下载、SHA-256 与 mihomo provider 原生校验，再成对发布。第二份发布失败必须恢复完整旧版本。
-- 首次无有效缓存失败时安装非零退出；升级仅可复用路径、摘要和格式均与 install-state 一致的旧缓存。
+- `mm ruleset status` 报告 `installed|missing|invalid|outdated`；`mm ruleset install` 在当前固定版本缓存有效时不联网，只补齐 metadata。显式下载或后续修复失败时返回非零；升级仅可复用路径、摘要和格式均已验证的旧缓存。
 - `config.yaml` 不存在时创建最小 `DIRECT` 配置并执行 mihomo 配置测试；已有配置只验证、不改写。
 - 安装器不启动 core、不修改系统代理。
 - Bash/Zsh 缺少等效 PATH 配置时，安装器使用稳定标记块写入 `~/.bashrc` 或 `~/.zshrc`；重复安装不得重复追加。
@@ -123,6 +123,7 @@ scripts/uninstall.sh [--purge] [--purge-config] [--yes]
 | `MM_REF` | 是 | 远程源码引用，默认 `master` |
 | `MIHOMO_VERSION` | 是 | `X.Y.Z` 或 `vX.Y.Z`，默认 `v1.19.28` |
 | `MM_ASSUME_YES` | 是 | `1/true/yes` 等价于 `--yes` |
+| `MM_INSTALL_RULESETS` | 是 | `1/true/yes` 等价于 `--with-rulesets`；默认不下载 CN 规则集 |
 | `MM_GITHUB_BASE_URL` | 是 | GitHub 源码/资产下载基地址 |
 | `MM_GITHUB_API_BASE_URL` | 是 | GitHub Release API 基地址 |
 | `MM_GO_DOWNLOAD_BASE_URL` | 是 | Go 归档下载基地址 |
@@ -147,7 +148,8 @@ scripts/uninstall.sh [--purge] [--purge-config] [--yes]
 | core 资产缺少 SHA-256 | 不下载或替换 core |
 | core 校验/版本冒烟失败 | 保留已有 core，不生成备份替换 |
 | mm 构建或 `--help` 失败 | 保留已有 mm |
-| 任一规则集下载/摘要/格式失败且无有效缓存 | 不发布任一新规则集，安装失败 |
+| 默认安装且规则集下载源不可达 | 不发起规则集网络请求，基础组件继续安装并提示 `mm ruleset install` |
+| 显式规则集下载/摘要/格式失败且无有效缓存 | 不发布任一新规则集，安装失败 |
 | 第二份规则集发布失败 | 恢复两份旧规则集，不留下混合版本 |
 | 已有 `config.yaml` | 只验证，不改写 |
 | PATH 标记块不完整 | 卸载时保留文件并警告，不允许截断 shell 配置 |

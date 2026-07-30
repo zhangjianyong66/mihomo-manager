@@ -705,7 +705,7 @@ proxies:
 	defer apiServer.Close()
 
 	original := `
-mode: direct
+mode: rule
 mixed-port: 17890
 socks-port: 17891
 external-controller: 127.0.0.1:19090
@@ -767,7 +767,7 @@ dns:
 	if err != nil {
 		t.Fatalf("read updated config: %v", err)
 	}
-	if updated["mode"] != "direct" || updated["mixed-port"] != 17890 || updated["socks-port"] != 17891 || updated["external-controller"] != "127.0.0.1:19090" {
+	if updated["mode"] != "rule" || updated["mixed-port"] != 17890 || updated["socks-port"] != 17891 || updated["external-controller"] != "127.0.0.1:19090" {
 		t.Fatalf("local mode or ports changed: %#v", updated)
 	}
 	rules := anyToStrings(updated["rules"])

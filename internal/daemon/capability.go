@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +19,9 @@ import (
 	"github.com/zhangjianyong66/mihomo-manager/internal/legacy"
 	"github.com/zhangjianyong66/mihomo-manager/internal/mihomo"
 	"github.com/zhangjianyong66/mihomo-manager/internal/platform"
+	"github.com/zhangjianyong66/mihomo-manager/internal/ruleset"
 	"github.com/zhangjianyong66/mihomo-manager/internal/store"
+	"gopkg.in/yaml.v3"
 )
 
 const legacySubscriptionID domain.SubscriptionID = "legacy-subscription"
@@ -138,6 +142,260 @@ type CapabilityService struct {
 	bashConfigurator       bashProxyConfigurator
 }
 
+func (s *CapabilityService) RuleSetStatus(ctx context.Context, _ string) (ruleset.Status, error) {
+	if s == nil {
+		return ruleset.Status{}, errors.New("capability service is not configured")
+	}
+	target := ruleset.DefaultCatalog().Target(s.paths.ConfigDir)
+	return ruleset.Inspect(ctx, target, s.paths.MihomoBin)
+}
+
+func (s *CapabilityService) RuleSetStatusForTarget(ctx context.Context, requested ruleset.Target) (ruleset.Status, error) {
+	target, err := s.resolveRuleSetTarget(requested)
+	if err != nil {
+		return ruleset.Status{}, err
+	}
+	return ruleset.Inspect(ctx, target, s.paths.MihomoBin)
+}
+
+func (s *CapabilityService) resolveRuleSetTarget(requested ruleset.Target) (ruleset.Target, error) {
+	base := ruleset.DefaultCatalog().Target(s.paths.ConfigDir)
+	if requested.Source != "" {
+		base.Source = requested.Source
+	}
+	if requested.Ref != "" {
+		base.Ref = requested.Ref
+	}
+	if requested.DomainSHA256 != "" {
+		base.DomainSHA256 = strings.ToLower(requested.DomainSHA256)
+	}
+	if requested.IPSHA256 != "" {
+		base.IPSHA256 = strings.ToLower(requested.IPSHA256)
+	}
+	if err := base.Validate(); err != nil {
+		return ruleset.Target{}, err
+	}
+	return base, nil
+}
+
+func (s *CapabilityService) ensureRuleSetInstalled(ctx context.Context) error {
+	status, err := ruleset.Inspect(ctx, ruleset.DefaultCatalog().Target(s.paths.ConfigDir), s.paths.MihomoBin)
+	if err != nil {
+		return err
+	}
+	if status.State != ruleset.StateInstalled {
+		return fmt.Errorf("%w: run mm ruleset install", ruleset.ErrNotReady)
+	}
+	return nil
+}
+
+func (s *CapabilityService) readLegacyConfig(ctx context.Context, restorePoint domain.RestorePointID) (map[string]any, error) {
+	content, _, err := s.legacy.ReadConfig(ctx, restorePoint)
+	if err != nil {
+		return nil, err
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(content, &cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func (s *CapabilityService) ensureCurrentRuleSetDependencies(ctx context.Context, restorePoint domain.RestorePointID) error {
+	cfg, err := s.readLegacyConfig(ctx, restorePoint)
+	if err != nil {
+		return err
+	}
+	if !ruleset.ReferencesManagerProviders(cfg) {
+		return nil
+	}
+	return s.ensureRuleSetInstalled(ctx)
+}
+
+func (s *CapabilityService) ensureRuleSetForRoutingMutation(ctx context.Context, restorePoint domain.RestorePointID) error {
+	cfg, err := s.readLegacyConfig(ctx, restorePoint)
+	if err != nil {
+		return err
+	}
+	mode := domain.RoutingModeRule
+	if value := strings.TrimSpace(fmt.Sprint(cfg["mode"])); value != "" {
+		mode = domain.RoutingMode(strings.ToLower(value))
+	}
+	if mode != domain.RoutingModeRule && !ruleset.ReferencesManagerProviders(cfg) {
+		return nil
+	}
+	return s.ensureRuleSetInstalled(ctx)
+}
+
+// InstallRuleSets emits bounded progress events. Downloads happen before the
+// final publish, so cancellation cannot leave a partial pair on disk.
+func (s *CapabilityService) InstallRuleSets(ctx context.Context, _ string) <-chan RuleSetInstallEvent {
+	return s.InstallRuleSetsWithProxy(ctx, "", "")
+}
+
+func (s *CapabilityService) InstallRuleSetsWithProxy(ctx context.Context, _ string, selectedProxy string) <-chan RuleSetInstallEvent {
+	return s.InstallRuleSetsForProfile(ctx, "", ruleset.Target{}, selectedProxy)
+}
+
+func (s *CapabilityService) InstallRuleSetsWithTarget(ctx context.Context, requested ruleset.Target, selectedProxy string) <-chan RuleSetInstallEvent {
+	return s.InstallRuleSetsForProfile(ctx, "", requested, selectedProxy)
+}
+
+func (s *CapabilityService) InstallRuleSetsForProfile(ctx context.Context, profileID string, requested ruleset.Target, selectedProxy string) <-chan RuleSetInstallEvent {
+	result := make(chan RuleSetInstallEvent, 16)
+	go func() {
+		defer close(result)
+		target, targetErr := s.resolveRuleSetTarget(requested)
+		send := func(phase string, status *ruleset.Status, err error) bool {
+			select {
+			case result <- RuleSetInstallEvent{Phase: phase, Status: status, Err: err}:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		if targetErr != nil {
+			send("failed", nil, targetErr)
+			return
+		}
+		if strings.TrimSpace(selectedProxy) == "" {
+			selectedProxy = s.runningRuleSetProxy(ctx, profileID)
+		}
+		if !send("checking", nil, nil) {
+			return
+		}
+		status, err := ruleset.Inspect(ctx, target, s.paths.MihomoBin)
+		if err != nil {
+			send("failed", &status, err)
+			return
+		}
+		if status.State == ruleset.StateInstalled {
+			if !status.MetadataValid {
+				if err := ruleset.WriteMetadata(target); err != nil {
+					send("failed", &status, err)
+					return
+				}
+				status, err = ruleset.Inspect(ctx, target, s.paths.MihomoBin)
+				if err != nil {
+					send("failed", &status, err)
+					return
+				}
+			}
+			send("succeeded", &status, nil)
+			return
+		}
+		dir := filepath.Dir(target.DomainPath)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			send("failed", &status, err)
+			return
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			send("failed", &status, err)
+			return
+		}
+		downloader := ruleset.Downloader{Proxy: selectedProxy}
+		if !send("downloading_domain", nil, nil) {
+			return
+		}
+		domainTmp, ipTmp, err := downloader.Download(ctx, target, dir, nil)
+		if err != nil {
+			send("failed", &status, err)
+			return
+		}
+		defer os.Remove(domainTmp)
+		defer os.Remove(ipTmp)
+		if !send("downloading_ip", nil, nil) {
+			return
+		}
+		if !send("validating", nil, nil) {
+			return
+		}
+		if !send("waiting_to_publish", nil, nil) {
+			return
+		}
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		if !send("publishing", nil, nil) {
+			return
+		}
+		transactionCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		sendCommitted := func(phase string, value *ruleset.Status, committedErr error) {
+			result <- RuleSetInstallEvent{Phase: phase, Status: value, Err: committedErr}
+		}
+		reload, shouldReload := s.rulesetReloadHook(ctx, profileID)
+		if shouldReload {
+			sendCommitted("reloading", nil, nil)
+		}
+		published, err := ruleset.PublishWithHook(transactionCtx, target, domainTmp, ipTmp, s.paths.MihomoBin, reload)
+		if err != nil {
+			if errors.Is(err, ruleset.ErrRestoreFailed) && s.core != nil && strings.TrimSpace(profileID) != "" {
+				s.core.markFailed(domain.ProfileID(profileID), "RESTORE_FAILED")
+			}
+			sendCommitted("failed", &status, err)
+			return
+		}
+		if shouldReload {
+			sendCommitted("verifying", &published, nil)
+		}
+		sendCommitted("succeeded", &published, nil)
+	}()
+	return result
+}
+
+func (s *CapabilityService) runningRuleSetProxy(ctx context.Context, profileID string) string {
+	if s == nil || s.core == nil || s.legacy == nil || s.core.Status().State != domain.CoreStateRunning {
+		return ""
+	}
+	if strings.TrimSpace(profileID) == "" {
+		profileID = s.core.Status().ProfileID.String()
+	}
+	_, restorePoint, err := s.profile(ctx, profileID)
+	if err != nil {
+		return ""
+	}
+	ports, err := s.legacy.ListenerPorts(ctx, restorePoint)
+	if err != nil {
+		return ""
+	}
+	for _, field := range []string{"mixed-port", "port"} {
+		for _, listener := range ports {
+			if listener.Field != field || listener.Port <= 0 || !rulesetLoopbackHost(listener.Host) {
+				continue
+			}
+			return "http://" + net.JoinHostPort(listener.Host, strconv.Itoa(listener.Port))
+		}
+	}
+	return ""
+}
+
+func rulesetLoopbackHost(host string) bool {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+func (s *CapabilityService) rulesetReloadHook(ctx context.Context, profileID string) (func(context.Context) error, bool) {
+	if s == nil || s.core == nil || s.legacy == nil || s.core.Status().State != domain.CoreStateRunning {
+		return nil, false
+	}
+	profile, restorePoint, err := s.profile(ctx, profileID)
+	if err != nil || profile.ID == "" {
+		return nil, false
+	}
+	cfg, err := s.readLegacyConfig(ctx, restorePoint)
+	if err != nil || !ruleset.ReferencesManagerProviders(cfg) {
+		return nil, false
+	}
+	return func(reloadCtx context.Context) error { return s.legacy.Reload(reloadCtx, restorePoint) }, true
+}
+
+type RuleSetInstallEvent struct {
+	Phase  string
+	Status *ruleset.Status
+	Err    error
+}
+
 func NewCapabilityService(store CapabilityStore, manager *CoreManager, compatibility *legacy.Compatibility, paths config.Paths, managerPaths ...config.ManagerPaths) *CapabilityService {
 	coordinator := NewCoordinator()
 	if manager != nil && manager.coordinator != nil {
@@ -221,6 +479,11 @@ func (s *CapabilityService) SetMode(ctx context.Context, profileID string, mode 
 	}
 	if !profile.Active {
 		return ModeStatus{}, fmt.Errorf("profile %s is not active: %w", profile.ID, ErrCapabilityUnsupported)
+	}
+	if mode == domain.RoutingModeRule {
+		if err := s.ensureRuleSetInstalled(ctx); err != nil {
+			return ModeStatus{}, err
+		}
 	}
 	coordinator, newID := s.mutationDependencies()
 	release, err := coordinator.TryAcquire(ctx, newID("routing-mode"), "routing.mode.set")
@@ -333,6 +596,11 @@ func (s *CapabilityService) CoreAction(ctx context.Context, profileID, action st
 	if s.core == nil {
 		return errors.New("core service is not configured")
 	}
+	if action != "stop" {
+		if err := s.ensureCurrentRuleSetDependencies(ctx, restorePoint); err != nil {
+			return err
+		}
+	}
 	ports, err := s.legacy.ListenerPorts(ctx, restorePoint)
 	if err != nil {
 		return err
@@ -366,6 +634,9 @@ func (s *CapabilityService) CoreAction(ctx context.Context, profileID, action st
 func (s *CapabilityService) ValidateConfig(ctx context.Context, profileID string) error {
 	_, restorePoint, err := s.profile(ctx, profileID)
 	if err != nil {
+		return err
+	}
+	if err := s.ensureCurrentRuleSetDependencies(ctx, restorePoint); err != nil {
 		return err
 	}
 	return s.legacy.Validate(ctx, restorePoint)
@@ -477,6 +748,9 @@ func (s *CapabilityService) UpdateSubscription(ctx context.Context, profileID st
 	if err != nil {
 		return err
 	}
+	if err := s.ensureRuleSetForRoutingMutation(ctx, restorePoint); err != nil {
+		return err
+	}
 	return s.withMutation(ctx, "subscription.update", func() error {
 		if err := s.legacy.UpdateSubscription(ctx, restorePoint); err != nil {
 			return err
@@ -523,6 +797,9 @@ func (s *CapabilityService) AddWhitelist(ctx context.Context, profileID, value s
 	if err != nil {
 		return err
 	}
+	if err := s.ensureRuleSetForRoutingMutation(ctx, restorePoint); err != nil {
+		return err
+	}
 	return s.withMutation(ctx, "routing.whitelist.add", func() error { return s.legacy.AddWhitelist(ctx, restorePoint, value) })
 }
 
@@ -531,12 +808,18 @@ func (s *CapabilityService) RemoveWhitelist(ctx context.Context, profileID, valu
 	if err != nil {
 		return err
 	}
+	if err := s.ensureRuleSetForRoutingMutation(ctx, restorePoint); err != nil {
+		return err
+	}
 	return s.withMutation(ctx, "routing.whitelist.remove", func() error { return s.legacy.RemoveWhitelist(ctx, restorePoint, value) })
 }
 
 func (s *CapabilityService) EditWhitelist(ctx context.Context, profileID, oldValue, newValue string) error {
 	_, restorePoint, err := s.profile(ctx, profileID)
 	if err != nil {
+		return err
+	}
+	if err := s.ensureRuleSetForRoutingMutation(ctx, restorePoint); err != nil {
 		return err
 	}
 	return s.withMutation(ctx, "routing.whitelist.edit", func() error { return s.legacy.EditWhitelist(ctx, restorePoint, oldValue, newValue) })
@@ -549,6 +832,9 @@ func (s *CapabilityService) ApplyRoutePreset(ctx context.Context, profileID, pre
 	}
 	if preset != "cn" && preset != "CN" {
 		return fmt.Errorf("unknown route preset %q", preset)
+	}
+	if err := s.ensureRuleSetInstalled(ctx); err != nil {
+		return err
 	}
 	return s.withMutation(ctx, "routing.preset.apply", func() error { return s.legacy.ApplyRouteCN(ctx, restorePoint) })
 }
@@ -685,6 +971,15 @@ func (s *CapabilityService) ReplaceConfig(ctx context.Context, profileID, expect
 	_, restorePoint, err := s.profile(ctx, profileID)
 	if err != nil {
 		return err
+	}
+	var candidate map[string]any
+	if err := yaml.Unmarshal(content, &candidate); err != nil {
+		return err
+	}
+	if ruleset.ReferencesManagerProviders(candidate) {
+		if err := s.ensureRuleSetInstalled(ctx); err != nil {
+			return err
+		}
 	}
 	return s.withMutation(ctx, "config.replace", func() error { return s.legacy.ReplaceConfig(ctx, restorePoint, expectedSHA256, content) })
 }

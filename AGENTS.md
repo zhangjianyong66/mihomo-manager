@@ -8,7 +8,7 @@
 - 安装产物是独立的 `~/.local/bin/mm` 普通文件，不再软链接仓库 `bin/mm`；移动或删除仓库不会影响已安装命令。
 - 安装器会自动安装并校验 mihomo core，默认固定 `v1.19.28`，支持 `MIHOMO_VERSION` 覆盖；默认 core 路径为 `~/.local/bin/mihomo`，可用 `MIHOMO_BIN` 覆盖。
 - 安装器会把固定 commit `32ae0e8658ca541374b721efcee84955e8a59755` 的 CN domain/IP `.mrs` 安装到 `<CONFIG_DIR>/rulesets/{cn-domain,cn-ip}.mrs`，目录/文件权限为 `0700/0600`；支持 `MM_RULESET_BASE_URL`、`MM_RULESET_REF` 覆盖，但必须成对提供 `MM_RULESET_DOMAIN_SHA256`、`MM_RULESET_IP_SHA256`。
-- 规则集首次无有效缓存失败时安装失败；升级失败只复用与 install-state 路径、摘要和 mihomo 格式校验一致的旧缓存，两份资产成对原子发布并在第二份失败时恢复旧版本。
+- 一键安装默认完全跳过 CN 规则集网络下载并提示执行 `mm ruleset install`；可用 `--with-rulesets`/`MM_INSTALL_RULESETS=1` 显式在安装阶段下载，显式下载失败返回非零。规则集安装/升级只复用或发布与固定来源、摘要、mihomo 格式和 `0700/0600` 权限一致的成对缓存，第二份失败时恢复旧版本。
 - 系统 Go 低于 1.22 或缺失时，安装器会把官方 Go 1.26.4 安装到 `~/.local/share/mihomo-manager/toolchains/go1.26.4`，不替换系统 Go。
 - 当前本机已安装 MetaCubeX/mihomo `v1.19.28` Linux amd64 v1 构建到 `~/.local/bin/mihomo`。
 - 运行命令：`mm` 或 `mm tui` 打开相同 TUI；已提供 `mode`、`core`、`config`、`group`、`node`、legacy `subscription`、`route` 业务命令，可用 `mm --help` 和各二级 `--help` 做非交互冒烟验证。

@@ -16,6 +16,7 @@ import (
 	"github.com/zhangjianyong66/mihomo-manager/internal/legacy"
 	"github.com/zhangjianyong66/mihomo-manager/internal/mihomo"
 	"github.com/zhangjianyong66/mihomo-manager/internal/platform"
+	"github.com/zhangjianyong66/mihomo-manager/internal/ruleset"
 	"github.com/zhangjianyong66/mihomo-manager/internal/store"
 )
 
@@ -42,6 +43,65 @@ func registerCapabilityRoutes(mux *http.ServeMux, service *CapabilityService) {
 	mux.HandleFunc("/v1/connections/follow", handler.connectionFollow)
 	mux.HandleFunc("/v1/logs", handler.logs)
 	mux.HandleFunc("/v1/logs/follow", handler.logFollow)
+	mux.HandleFunc("/v1/rulesets/status", handler.rulesetStatus)
+	mux.HandleFunc("/v1/rulesets/install", handler.rulesetInstall)
+}
+
+func (h *capabilityHandler) rulesetStatus(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	requested := ruleset.Target{Source: r.URL.Query().Get("source"), Ref: r.URL.Query().Get("ref"), DomainSHA256: r.URL.Query().Get("domainSha256"), IPSHA256: r.URL.Query().Get("ipSha256")}
+	value, err := h.service.RuleSetStatusForTarget(r.Context(), requested)
+	if err == nil {
+		_ = ipc.WriteJSON(w, http.StatusOK, "RuleSetStatus", value)
+		return
+	}
+	writeCapabilityError(w, err)
+}
+
+func (h *capabilityHandler) rulesetInstall(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	if strings.TrimSpace(r.Header.Get(ipc.RequestIDHeader)) == "" {
+		_ = ipc.WriteError(w, http.StatusBadRequest, "REQUEST_ID_REQUIRED", "规则集安装必须提供 MM-Request-ID", false, nil)
+		return
+	}
+	var request struct {
+		ProfileID    string `json:"profileId,omitempty"`
+		Proxy        string `json:"proxy,omitempty"`
+		Source       string `json:"source"`
+		Ref          string `json:"ref"`
+		DomainSHA256 string `json:"domainSha256"`
+		IPSHA256     string `json:"ipSha256"`
+	}
+	if err := ipc.DecodeJSON(w, r, &request); err != nil {
+		return
+	}
+	if request.Proxy != "" {
+		if _, err := ruleset.ValidateProxy(request.Proxy); err != nil {
+			writeCapabilityError(w, err)
+			return
+		}
+	}
+	stream := h.service.InstallRuleSetsForProfile(r.Context(), request.ProfileID, ruleset.Target{Source: request.Source, Ref: request.Ref, DomainSHA256: request.DomainSHA256, IPSHA256: request.IPSHA256}, request.Proxy)
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	writer := ipc.NewStreamWriter(w)
+	for event := range stream {
+		if event.Err != nil {
+			_ = writer.Write(r.Context(), ipc.StreamEvent{Kind: "error", Error: capabilityErrorBody(event.Err)})
+			flushResponse(w)
+			return
+		}
+		data, _ := json.Marshal(map[string]any{"phase": event.Phase, "status": event.Status})
+		if err := writer.Write(r.Context(), ipc.StreamEvent{Kind: "event", Data: data}); err != nil {
+			return
+		}
+		flushResponse(w)
+	}
+	_ = writer.Write(r.Context(), ipc.StreamEvent{Kind: "done"})
+	flushResponse(w)
 }
 
 func (h *capabilityHandler) proxySystem(w http.ResponseWriter, r *http.Request) {
@@ -644,6 +704,9 @@ func capabilityErrorDetails(err error) map[string]any {
 	if errors.As(err, &conflictErr) {
 		return map[string]any{"conflicts": conflictErr.Conflicts}
 	}
+	if errors.Is(err, ruleset.ErrNotReady) {
+		return map[string]any{"hint": "mm ruleset install"}
+	}
 	return nil
 }
 
@@ -659,6 +722,12 @@ func classifyCapabilityError(err error) (int, string, string, bool) {
 		return http.StatusFailedDependency, "CONNECTION_CLOSE_FAILED", "模式已生效，但关闭活动连接失败", true
 	case errors.Is(err, core.ErrPortConflict):
 		return http.StatusConflict, "PORT_CONFLICT", err.Error(), false
+	case errors.Is(err, ruleset.ErrNotReady):
+		return http.StatusConflict, "RULESET_NOT_READY", "CN 规则集尚未安装；请执行 mm ruleset install", false
+	case errors.Is(err, ruleset.ErrRestoreFailed):
+		return http.StatusInternalServerError, "RESTORE_FAILED", "规则集发布恢复失败，Core 状态可能不确定", false
+	case errors.Is(err, ruleset.ErrProxyAuthUnsupported):
+		return http.StatusBadRequest, "RULESET_PROXY_AUTH_UNSUPPORTED", "规则集下载不支持带认证信息的代理", false
 	case errors.Is(err, ErrCapabilityNotFound), errors.Is(err, store.ErrNotFound):
 		return http.StatusNotFound, "NOT_FOUND", "资源不存在", false
 	case errors.Is(err, mihomo.ErrProxyNotFound):
