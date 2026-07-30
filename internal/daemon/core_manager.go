@@ -49,6 +49,7 @@ type Supervisor struct {
 	status       CoreStatus
 	process      core.Process
 	spec         core.RuntimeSpec
+	processSeq   uint64
 }
 
 func NewSupervisor(adapter core.Adapter, readyTimeout time.Duration) *Supervisor {
@@ -146,11 +147,31 @@ func (s *Supervisor) start(ctx context.Context, spec core.RuntimeSpec, started f
 		return errors.Join(core.ErrReadinessTimeout, readyCtx.Err())
 	}
 	s.mu.Lock()
+	s.processSeq++
+	processSeq := s.processSeq
 	s.process = process
 	s.spec = spec
 	s.status = CoreStatus{State: domain.CoreStateRunning, ProfileID: spec.ProfileID, GenerationID: spec.GenerationID, PID: process.PID()}
 	s.mu.Unlock()
+	go s.watchProcess(process, spec, processSeq)
 	return nil
+}
+
+func (s *Supervisor) watchProcess(process core.Process, spec core.RuntimeSpec, processSeq uint64) {
+	<-process.Done()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.processSeq != processSeq || s.process == nil || s.status.State != domain.CoreStateRunning {
+		return
+	}
+	s.process = nil
+	s.spec = core.RuntimeSpec{}
+	s.status = CoreStatus{
+		State:        domain.CoreStateFailed,
+		ProfileID:    spec.ProfileID,
+		GenerationID: spec.GenerationID,
+		ErrorCode:    "PROCESS_EXITED",
+	}
 }
 
 func (s *Supervisor) Stop(ctx context.Context) error {

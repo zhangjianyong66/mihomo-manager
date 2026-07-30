@@ -355,15 +355,108 @@ func TestSupervisor_ProcessExitBeforeReadyIsFailure(t *testing.T) {
 	}
 }
 
+func TestSupervisor_ProcessExitAfterReadyClearsManagedRuntime(t *testing.T) {
+	adapter := &managerFakeAdapter{}
+	supervisor := NewSupervisor(adapter, time.Second)
+	spec := newRuntimeSpec("late-exit")
+	if err := supervisor.Start(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+
+	process := adapter.processes[0]
+	process.done <- errors.New("core exited")
+	close(process.done)
+
+	waitForSupervisorStatus(t, supervisor, func(status CoreStatus) bool {
+		return status.State == domain.CoreStateFailed && status.ErrorCode == "PROCESS_EXITED"
+	})
+	status := supervisor.Status()
+	if status.ProfileID != spec.ProfileID || status.GenerationID != spec.GenerationID || status.PID != 0 {
+		t.Fatalf("unexpected failed status: %+v", status)
+	}
+	if current, running := supervisor.Current(); running || current != (core.RuntimeSpec{}) {
+		t.Fatalf("exited process is still current: running=%v spec=%+v", running, current)
+	}
+}
+
+func TestSupervisor_StopIsNotOverwrittenByDelayedProcessExit(t *testing.T) {
+	adapter := &managerFakeAdapter{delayStopExit: []bool{true}}
+	supervisor := NewSupervisor(adapter, time.Second)
+	if err := supervisor.Start(context.Background(), newRuntimeSpec("stopped")); err != nil {
+		t.Fatal(err)
+	}
+	process := adapter.processes[0]
+	if err := supervisor.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if status := supervisor.Status(); status.State != domain.CoreStateStopped {
+		t.Fatalf("unexpected status after stop: %+v", status)
+	}
+
+	close(process.done)
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if status := supervisor.Status(); status.State != domain.CoreStateStopped || status.ErrorCode != "" {
+			t.Fatalf("delayed exit overwrote stopped status: %+v", status)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestSupervisor_DelayedOldProcessExitDoesNotOverwriteReplacement(t *testing.T) {
+	adapter := &managerFakeAdapter{delayStopExit: []bool{true}}
+	supervisor := NewSupervisor(adapter, time.Second)
+	if err := supervisor.Start(context.Background(), newRuntimeSpec("old")); err != nil {
+		t.Fatal(err)
+	}
+	oldProcess := adapter.processes[0]
+	if err := supervisor.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	replacement := newRuntimeSpec("replacement")
+	if err := supervisor.Start(context.Background(), replacement); err != nil {
+		t.Fatal(err)
+	}
+
+	close(oldProcess.done)
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		status := supervisor.Status()
+		if status.State != domain.CoreStateRunning || status.ProfileID != replacement.ProfileID || status.ErrorCode != "" {
+			t.Fatalf("old process exit overwrote replacement status: %+v", status)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if current, running := supervisor.Current(); !running || current != replacement {
+		t.Fatalf("replacement is no longer current: running=%v spec=%+v", running, current)
+	}
+	if err := supervisor.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForSupervisorStatus(t *testing.T, supervisor *Supervisor, condition func(CoreStatus) bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if condition(supervisor.Status()) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("supervisor status did not converge: %+v", supervisor.Status())
+}
+
 type managerFakeAdapter struct {
-	mu          sync.Mutex
-	readyErrors []error
-	startErrors []error
-	stopErrors  []error
-	exitErrors  []error
-	processes   []*managerFakeProcess
-	starts      int
-	runtimes    int
+	mu            sync.Mutex
+	readyErrors   []error
+	startErrors   []error
+	stopErrors    []error
+	exitErrors    []error
+	delayStopExit []bool
+	processes     []*managerFakeProcess
+	starts        int
+	runtimes      int
 }
 
 func (a *managerFakeAdapter) Type() domain.CoreType { return domain.CoreTypeMihomo }
@@ -382,6 +475,9 @@ func (a *managerFakeAdapter) Start(_ context.Context, _ core.RuntimeSpec) (core.
 	process := &managerFakeProcess{pid: 1000 + index, done: make(chan error, 1)}
 	if index < len(a.stopErrors) {
 		process.stopErr = a.stopErrors[index]
+	}
+	if index < len(a.delayStopExit) {
+		process.delayStopExit = a.delayStopExit[index]
 	}
 	if index < len(a.exitErrors) {
 		process.done <- a.exitErrors[index]
@@ -407,11 +503,12 @@ type managerFakeRuntime struct{ err error }
 func (r managerFakeRuntime) Ready(context.Context) error { return r.err }
 
 type managerFakeProcess struct {
-	pid       int
-	done      chan error
-	stopCalls int
-	stopOnce  sync.Once
-	stopErr   error
+	pid           int
+	done          chan error
+	stopCalls     int
+	stopOnce      sync.Once
+	stopErr       error
+	delayStopExit bool
 }
 
 func (p *managerFakeProcess) PID() int           { return p.pid }
@@ -421,7 +518,9 @@ func (p *managerFakeProcess) Stop(context.Context) error {
 	if p.stopErr != nil {
 		return p.stopErr
 	}
-	p.stopOnce.Do(func() { p.done <- nil; close(p.done) })
+	if !p.delayStopExit {
+		p.stopOnce.Do(func() { p.done <- nil; close(p.done) })
+	}
 	return nil
 }
 

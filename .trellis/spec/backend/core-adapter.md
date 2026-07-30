@@ -81,6 +81,7 @@ func (*store.Store) RestoreActiveProfile(context.Context, *domain.ProfileID, tim
 | `mihomo -t` 非零退出 | `core.ErrValidationFailed`，只报告退出码，不回显可能含秘密的 stderr |
 | `mihomo -t` 超时 | `core.ErrValidationTimeout` |
 | core 就绪前退出 | `core.ErrProcessExited`，状态 `failed` |
+| core 进入 running 后退出 | 只在同一受管进程仍为当前实例时清除 process/runtime spec，状态转为 `failed/PROCESS_EXITED`；显式 Stop 或旧实例迟到事件不得覆盖 stopped/新实例状态 |
 | controller 就绪超时 | `core.ErrReadinessTimeout`，停止新进程并恢复旧实例 |
 | runtime 非 2xx、超大或 JSON 不完整 | 就绪失败，不提交活动档案 |
 | runtime metadata 写入失败 | SQLite 活动档案补偿到切换前状态 |
@@ -99,7 +100,7 @@ func (*store.Store) RestoreActiveProfile(context.Context, *domain.ProfileID, tim
 - `internal/core`：generation ID 确定性、`0700/0600`、验证失败无发布、external 只读和摘要变化。
 - `internal/mihomo`：golden YAML、静态错误矩阵、`-t -d -f` 参数/超时/退出码、loopback、响应上限、Setsid、SIGTERM/SIGKILL、无关进程存活。
 - `internal/mihomo` routing runtime：HTTP method/path/body、三模式解析、rules/count/selection/close、非 2xx、超大和多 JSON 响应。
-- `internal/daemon`：成功切换、验证前旧实例不变、就绪失败恢复、恢复失败、metadata 提交补偿、Close 只停止所持进程。
+- `internal/daemon`：成功切换、验证前旧实例不变、就绪失败恢复、恢复失败、metadata 提交补偿、Close 只停止所持进程；running 后异常退出必须清除当前实例并进入 `failed/PROCESS_EXITED`，显式 Stop 和旧实例迟到退出不得覆盖 stopped/替换实例。
 - 全量：`go test ./...`、`go test -race ./...`、`go vet ./...`、Linux amd64/arm64 `CGO_ENABLED=0` build。
 
 ### 7. 错误与正确示例
