@@ -313,7 +313,7 @@ install_macos_dependencies() {
             curl) packages+=(curl) ;;
             gzip) packages+=(gzip) ;;
             tar) packages+=(gnu-tar) ;;
-            *) die "macOS 缺少系统命令 $command_name，安装器不会自动替换系统基础工具。" ;;
+            *) die "macOS 缺少系统命令 ${command_name}，安装器不会自动替换系统基础工具。" ;;
         esac
     done
     command -v brew >/dev/null 2>&1 || die "缺少 ${missing[*]} 且未安装 Homebrew；请先安装 Homebrew 后重试。"
@@ -820,7 +820,7 @@ install_mihomo_core() {
             if [[ "$previous_managed" == "1" && "$previous_path" == "$MIHOMO_BIN" ]]; then
                 CORE_MANAGED=1
             fi
-            info "保留现有 mihomo core: $current（目标 $requested）"
+            info "保留现有 mihomo core: ${current}（目标 ${requested}）"
             return 0
         fi
     fi
@@ -998,7 +998,7 @@ configure_daemon_and_migration() {
 
     if ((preserve_existing == 1)); then
         DAEMON_AVAILABLE=1
-        warn "受管 core 状态为 $DAEMON_PREVIOUS_CORE_STATE，已跳过 daemon stop/start；新 mm 将在后续 daemon 重启时加载。"
+        warn "受管 core 状态为 ${DAEMON_PREVIOUS_CORE_STATE}，已跳过 daemon stop/start；新 mm 将在后续 daemon 重启时加载。"
     elif [[ "$enabled" == "true" ]]; then
         if ((DAEMON_PREEXISTING == 1)); then
             info "core 已停止，重启 daemon 以加载新 mm..."
@@ -1028,7 +1028,7 @@ configure_daemon_and_migration() {
         core_state="$(jq -er '.data.core.state' "$status_file" 2>/dev/null || true)"
         [[ "$daemon_state" == "running" ]] || die "daemon 未进入 running 状态。"
         if ((preserve_existing == 0)) && [[ "$core_state" != "stopped" ]]; then
-            die "安装器未启动 core，但 daemon 报告 core 状态为 $core_state；请人工检查。"
+            die "安装器未启动 core，但 daemon 报告 core 状态为 ${core_state}；请人工检查。"
         fi
         success "manager daemon 已就绪，core 状态: $core_state"
     fi

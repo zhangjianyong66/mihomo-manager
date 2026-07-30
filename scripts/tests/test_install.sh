@@ -83,6 +83,14 @@ test_pure_helpers() {
     pass "架构与版本辅助函数"
 }
 
+test_variables_before_non_ascii_are_braced() {
+    local match
+    match="$(LC_ALL=C awk 'match($0, /\$[A-Za-z_][A-Za-z0-9_]*[^ -~]/) { print FNR ":" $0; exit }' \
+        "$PROJECT_DIR/scripts/install.sh")"
+    [[ -z "$match" ]] || fail "变量紧邻非 ASCII 字符时必须使用花括号: $match"
+    pass "安装脚本变量与非 ASCII 文本的 Bash 3.2 兼容性"
+}
+
 test_preflight_rejections_are_clean() {
     local root_home="$TEST_ROOT/root-home"
     mkdir -p "$root_home"
@@ -951,6 +959,7 @@ test_macos_uninstall_removes_only_verified_manager_plist() {
 }
 
 test_pure_helpers
+test_variables_before_non_ascii_are_braced
 test_preflight_rejections_are_clean
 test_macos_preflight_matrix
 test_macos_homebrew_installs_only_missing_packages
