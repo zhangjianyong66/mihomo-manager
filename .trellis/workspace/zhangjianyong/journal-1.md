@@ -841,3 +841,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 27: 修复 macOS core 监控冲突与状态同步
+
+**Date**: 2026-07-30
+**Task**: 修复 macOS core 监控冲突与状态同步
+**Branch**: `master`
+
+### Summary
+
+停用并隔离目标 Mac 的旧 com.mihomo.monitor，恢复并部署新版 mm；Supervisor 增加 running 后进程退出监听与实例隔离，补充并发回归测试和 core 托管规范。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b33e64c` | (see git log) |
+
+### Status
+
+[OK] **Completed**
