@@ -904,3 +904,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 30: 修复规则集引导启动
+
+**Date**: 2026-08-15
+**Task**: 修复规则集引导启动
+**Branch**: `master`
+
+### Summary
+
+规则集缺失时使用私有临时配置引导 Core 下载，成功后启动正式配置；补充回滚、错误阶段与规格契约。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c0b0796` | (see git log) |
+
+### Status
+
+[OK] **Completed**
