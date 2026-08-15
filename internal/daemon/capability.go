@@ -26,6 +26,11 @@ import (
 
 const legacySubscriptionID domain.SubscriptionID = "legacy-subscription"
 
+var (
+	ErrRuleSetBootstrapUnavailable = errors.New("ruleset bootstrap proxy is unavailable")
+	ErrRuleSetInstallFailed        = errors.New("ruleset install failed")
+)
+
 type CapabilityStore interface {
 	CoreRepository
 	GetProfile(context.Context, domain.ProfileID) (domain.Profile, error)
@@ -263,9 +268,6 @@ func (s *CapabilityService) InstallRuleSetsForProfile(ctx context.Context, profi
 			send("failed", nil, targetErr)
 			return
 		}
-		if strings.TrimSpace(selectedProxy) == "" {
-			selectedProxy = s.runningRuleSetProxy(ctx, profileID)
-		}
 		if !send("checking", nil, nil) {
 			return
 		}
@@ -289,6 +291,9 @@ func (s *CapabilityService) InstallRuleSetsForProfile(ctx context.Context, profi
 			send("succeeded", &status, nil)
 			return
 		}
+		if strings.TrimSpace(selectedProxy) == "" {
+			selectedProxy = s.runningRuleSetProxy(ctx, profileID)
+		}
 		dir := filepath.Dir(target.DomainPath)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			send("failed", &status, err)
@@ -298,55 +303,130 @@ func (s *CapabilityService) InstallRuleSetsForProfile(ctx context.Context, profi
 			send("failed", &status, err)
 			return
 		}
-		downloader := ruleset.Downloader{Proxy: selectedProxy}
-		if !send("downloading_domain", nil, nil) {
+		var published ruleset.Status
+		install := func(installCtx context.Context, proxyEndpoint string, reload func(context.Context) error, shouldReload bool) error {
+			downloader := ruleset.Downloader{Proxy: proxyEndpoint}
+			if !send("downloading_domain", nil, nil) {
+				return installCtx.Err()
+			}
+			domainTmp, ipTmp, downloadErr := downloader.Download(installCtx, target, dir, nil)
+			if downloadErr != nil {
+				return fmt.Errorf("%w: %v", ErrRuleSetInstallFailed, downloadErr)
+			}
+			defer os.Remove(domainTmp)
+			defer os.Remove(ipTmp)
+			if !send("downloading_ip", nil, nil) || !send("validating", nil, nil) || !send("waiting_to_publish", nil, nil) {
+				return installCtx.Err()
+			}
+			if err := installCtx.Err(); err != nil {
+				return err
+			}
+			if !send("publishing", nil, nil) {
+				return installCtx.Err()
+			}
+			transactionCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if shouldReload {
+				if !send("reloading", nil, nil) {
+					return installCtx.Err()
+				}
+			}
+			var publishErr error
+			published, publishErr = ruleset.PublishWithHook(transactionCtx, target, domainTmp, ipTmp, s.paths.MihomoBin, reload)
+			if publishErr != nil {
+				return publishErr
+			}
+			if shouldReload {
+				if !send("verifying", &published, nil) {
+					return installCtx.Err()
+				}
+			}
+			return nil
+		}
+
+		var bootstrapSnapshot core.ProfileSnapshot
+		var bootstrapProxy string
+		shouldBootstrap := false
+		var bootstrapErr error
+		if strings.TrimSpace(selectedProxy) == "" {
+			bootstrapSnapshot, bootstrapProxy, shouldBootstrap, bootstrapErr = s.ruleSetBootstrapSnapshot(ctx, profileID)
+			if bootstrapErr != nil {
+				send("failed", &status, bootstrapErr)
+				return
+			}
+		}
+		if strings.TrimSpace(selectedProxy) == "" && shouldBootstrap {
+			bootstrapErr = s.core.Bootstrap(ctx, bootstrapSnapshot, mihomo.BuildBootstrapConfig, func(phase string) {
+				send(phase, nil, nil)
+			}, func(bootstrapCtx context.Context, _ core.RuntimeSpec) error {
+				return install(bootstrapCtx, bootstrapProxy, nil, false)
+			})
+			if bootstrapErr != nil {
+				value := &status
+				if published.State == ruleset.StateInstalled {
+					value = &published
+				}
+				send("failed", value, bootstrapErr)
+				return
+			}
+			send("succeeded", &published, nil)
 			return
 		}
-		domainTmp, ipTmp, err := downloader.Download(ctx, target, dir, nil)
+
+		coordinator, newID := s.mutationDependencies()
+		release, err := coordinator.TryAcquire(ctx, newID("ruleset-install"), "ruleset.install")
 		if err != nil {
 			send("failed", &status, err)
 			return
 		}
-		defer os.Remove(domainTmp)
-		defer os.Remove(ipTmp)
-		if !send("downloading_ip", nil, nil) {
-			return
-		}
-		if !send("validating", nil, nil) {
-			return
-		}
-		if !send("waiting_to_publish", nil, nil) {
-			return
-		}
-		if err := ctx.Err(); err != nil {
-			return
-		}
-		if !send("publishing", nil, nil) {
-			return
-		}
-		transactionCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		sendCommitted := func(phase string, value *ruleset.Status, committedErr error) {
-			result <- RuleSetInstallEvent{Phase: phase, Status: value, Err: committedErr}
-		}
+		defer release()
 		reload, shouldReload := s.rulesetReloadHook(ctx, profileID)
-		if shouldReload {
-			sendCommitted("reloading", nil, nil)
-		}
-		published, err := ruleset.PublishWithHook(transactionCtx, target, domainTmp, ipTmp, s.paths.MihomoBin, reload)
-		if err != nil {
+		if err := install(ctx, selectedProxy, reload, shouldReload); err != nil {
 			if errors.Is(err, ruleset.ErrRestoreFailed) && s.core != nil && strings.TrimSpace(profileID) != "" {
 				s.core.markFailed(domain.ProfileID(profileID), "RESTORE_FAILED")
 			}
-			sendCommitted("failed", &status, err)
+			send("failed", &status, err)
 			return
 		}
-		if shouldReload {
-			sendCommitted("verifying", &published, nil)
-		}
-		sendCommitted("succeeded", &published, nil)
+		send("succeeded", &published, nil)
 	}()
 	return result
+}
+
+func (s *CapabilityService) ruleSetBootstrapSnapshot(ctx context.Context, profileID string) (core.ProfileSnapshot, string, bool, error) {
+	if s == nil || s.core == nil || s.legacy == nil || s.core.Status().State != domain.CoreStateStopped {
+		return core.ProfileSnapshot{}, "", false, nil
+	}
+	profile, restorePoint, err := s.profile(ctx, profileID)
+	if err != nil {
+		return core.ProfileSnapshot{}, "", false, err
+	}
+	if !profile.Active {
+		return core.ProfileSnapshot{}, "", false, fmt.Errorf("profile %s is not active: %w", profile.ID, ErrCapabilityUnsupported)
+	}
+	cfg, err := s.readLegacyConfig(ctx, restorePoint)
+	if err != nil {
+		return core.ProfileSnapshot{}, "", false, err
+	}
+	if !ruleset.ReferencesManagerProviders(cfg) {
+		return core.ProfileSnapshot{}, "", false, nil
+	}
+	ports, err := s.legacy.ListenerPorts(ctx, restorePoint)
+	if err != nil {
+		return core.ProfileSnapshot{}, "", false, err
+	}
+	controllerEndpoint, err := listenerControllerEndpoint(ports, "", 0)
+	if err != nil {
+		return core.ProfileSnapshot{}, "", false, err
+	}
+	proxyEndpoint := ruleSetProxyForListeners(ports)
+	if proxyEndpoint == "" {
+		return core.ProfileSnapshot{}, "", false, fmt.Errorf("%w: legacy config has no loopback mixed, HTTP, or SOCKS listener", ErrRuleSetBootstrapUnavailable)
+	}
+	return core.ProfileSnapshot{
+		ProfileID: profile.ID, Revision: profile.Revision, Mode: profile.Mode,
+		ExternalConfigPath: profile.ConfigPath, ControllerEndpoint: controllerEndpoint,
+	}, proxyEndpoint, true, nil
 }
 
 func (s *CapabilityService) runningRuleSetProxy(ctx context.Context, profileID string) string {
@@ -364,12 +444,20 @@ func (s *CapabilityService) runningRuleSetProxy(ctx context.Context, profileID s
 	if err != nil {
 		return ""
 	}
-	for _, field := range []string{"mixed-port", "port"} {
+	return ruleSetProxyForListeners(ports)
+}
+
+func ruleSetProxyForListeners(ports []mihomo.ListenerPort) string {
+	for _, field := range []string{"mixed-port", "port", "socks-port"} {
 		for _, listener := range ports {
 			if listener.Field != field || listener.Port <= 0 || !rulesetLoopbackHost(listener.Host) {
 				continue
 			}
-			return "http://" + net.JoinHostPort(listener.Host, strconv.Itoa(listener.Port))
+			scheme := "http"
+			if field == "socks-port" {
+				scheme = "socks5"
+			}
+			return scheme + "://" + net.JoinHostPort(listener.Host, strconv.Itoa(listener.Port))
 		}
 	}
 	return ""

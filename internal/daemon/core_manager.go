@@ -27,6 +27,10 @@ type ConfigStore interface {
 	MarkActive(core.RuntimeSpec) error
 }
 
+type BootstrapConfigStore interface {
+	PrepareBootstrap(context.Context, core.ProfileSnapshot, core.Adapter, core.BootstrapTransform) (core.RuntimeSpec, func() error, error)
+}
+
 type CoreRepository interface {
 	CreateOperation(context.Context, domain.Operation) error
 	UpdateOperation(context.Context, domain.Operation) error
@@ -305,6 +309,10 @@ func (m *CoreManager) Activate(ctx context.Context, snapshot core.ProfileSnapsho
 		return err
 	}
 	defer release()
+	return m.activateLocked(ctx, snapshot, opID)
+}
+
+func (m *CoreManager) activateLocked(ctx context.Context, snapshot core.ProfileSnapshot, opID string) error {
 	oldSpec, oldRunning := m.supervisor.Current()
 	previousActive, hasPreviousActive, err := m.repository.ActiveProfileID(ctx)
 	if err != nil {
@@ -375,6 +383,81 @@ func (m *CoreManager) Activate(ctx context.Context, snapshot core.ProfileSnapsho
 		return m.rollback(ctx, &operation, oldSpec, previousActivePtr, oldRunning, true, err)
 	}
 	return update(domain.OperationStateSucceeded, "commit", "")
+}
+
+// Bootstrap starts a private temporary generation, executes action while that
+// Core is ready, then stops it and activates the original external snapshot.
+// The caller receives lifecycle phases but never owns a process handle.
+func (m *CoreManager) Bootstrap(ctx context.Context, snapshot core.ProfileSnapshot, transform core.BootstrapTransform, phase func(string), action func(context.Context, core.RuntimeSpec) error) error {
+	if m == nil {
+		return errors.New("core bootstrap is not fully configured")
+	}
+	bootstrapStore, ok := m.configs.(BootstrapConfigStore)
+	if m.adapter == nil || !ok || m.repository == nil || m.supervisor == nil || transform == nil || action == nil {
+		return errors.New("core bootstrap is not fully configured")
+	}
+	m.operationMu.Lock()
+	defer m.operationMu.Unlock()
+	release, err := m.coordinator.TryAcquire(ctx, m.newID(), "core.bootstrap")
+	if err != nil {
+		return err
+	}
+	defer release()
+	if status := m.supervisor.Status(); status.State != domain.CoreStateStopped {
+		return ErrOperationConflict
+	}
+	emit := func(value string) {
+		if phase != nil {
+			phase(value)
+		}
+	}
+	emit("preparing_bootstrap")
+	spec, cleanup, err := bootstrapStore.PrepareBootstrap(ctx, snapshot, m.adapter, transform)
+	if err != nil {
+		_ = m.supervisor.Stop(context.Background())
+		return err
+	}
+	cleaned := false
+	cleanupGeneration := func() error {
+		if cleaned {
+			return nil
+		}
+		cleaned = true
+		return cleanup()
+	}
+	defer cleanupGeneration()
+
+	emit("starting_bootstrap")
+	if err := m.supervisor.Start(ctx, spec); err != nil {
+		stopErr := m.supervisor.Stop(context.Background())
+		return errors.Join(err, stopErr, cleanupGeneration())
+	}
+	if err := action(ctx, spec); err != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), reconfigureRestoreTimeout)
+		defer cancel()
+		stopErr := m.supervisor.Stop(stopCtx)
+		if stopErr != nil {
+			return errors.Join(err, stopErr)
+		}
+		return errors.Join(err, cleanupGeneration())
+	}
+	emit("stopping_bootstrap")
+	stopCtx, cancel := context.WithTimeout(context.Background(), reconfigureRestoreTimeout)
+	stopErr := m.supervisor.Stop(stopCtx)
+	cancel()
+	if stopErr != nil {
+		return stopErr
+	}
+	if err := cleanupGeneration(); err != nil {
+		return err
+	}
+	emit("starting_core")
+	if err := m.activateLocked(ctx, snapshot, m.newID()); err != nil {
+		_ = m.supervisor.Stop(context.Background())
+		return err
+	}
+	emit("verifying_core")
+	return nil
 }
 
 func (m *CoreManager) Reconfigure(ctx context.Context, snapshot core.ProfileSnapshot, mutate ConfigMutation) (bool, error) {

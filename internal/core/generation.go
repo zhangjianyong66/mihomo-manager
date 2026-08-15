@@ -32,6 +32,8 @@ type GenerationStore struct {
 	options GenerationStoreOptions
 }
 
+type BootstrapTransform func([]byte) ([]byte, error)
+
 type generationMetadata struct {
 	Version     int                `json:"version"`
 	ProfileID   domain.ProfileID   `json:"profileId"`
@@ -148,6 +150,81 @@ func (s *GenerationStore) prepareExternal(ctx context.Context, snapshot ProfileS
 		return RuntimeSpec{}, err
 	}
 	return spec, nil
+}
+
+// PrepareBootstrap creates a validated private generation derived from an
+// external configuration. It never publishes current runtime metadata and the
+// returned cleanup function removes the generation when the transaction ends.
+func (s *GenerationStore) PrepareBootstrap(ctx context.Context, snapshot ProfileSnapshot, adapter Adapter, transform BootstrapTransform) (RuntimeSpec, func() error, error) {
+	if err := snapshot.Validate(); err != nil {
+		return RuntimeSpec{}, nil, fmt.Errorf("prepare bootstrap config: %w", err)
+	}
+	if snapshot.Mode == domain.ProfileModeManaged {
+		return RuntimeSpec{}, nil, ErrUnsupportedProfile
+	}
+	if adapter == nil || transform == nil {
+		return RuntimeSpec{}, nil, errors.New("prepare bootstrap config: adapter and transform are required")
+	}
+	configPath := filepath.Clean(snapshot.ExternalConfigPath)
+	if !filepath.IsAbs(configPath) {
+		return RuntimeSpec{}, nil, fmt.Errorf("external config path: %w", platform.ErrUnsafePath)
+	}
+	sourceDigest, err := digestFile(configPath)
+	if err != nil {
+		return RuntimeSpec{}, nil, fmt.Errorf("read bootstrap source: %w", err)
+	}
+	source, err := os.ReadFile(configPath)
+	if err != nil {
+		return RuntimeSpec{}, nil, fmt.Errorf("read bootstrap source: %w", err)
+	}
+	if len(source) > maxConfigBytes {
+		return RuntimeSpec{}, nil, fmt.Errorf("config exceeds %d bytes", maxConfigBytes)
+	}
+	if digestBytes(source) != sourceDigest {
+		return RuntimeSpec{}, nil, ErrConfigChanged
+	}
+	content, err := transform(append([]byte(nil), source...))
+	if err != nil {
+		return RuntimeSpec{}, nil, err
+	}
+	if len(content) == 0 {
+		return RuntimeSpec{}, nil, fmt.Errorf("bootstrap config is empty: %w", ErrInvalidConfig)
+	}
+	if err := checkFileDigest(configPath, sourceDigest); err != nil {
+		return RuntimeSpec{}, nil, fmt.Errorf("check bootstrap source: %w", err)
+	}
+
+	profileDir := filepath.Join(s.options.GenerationsDir, profileDirectory(snapshot.ProfileID))
+	if err := platform.EnsurePrivateDir(profileDir); err != nil {
+		return RuntimeSpec{}, nil, err
+	}
+	tempDir, err := os.MkdirTemp(profileDir, ".bootstrap-")
+	if err != nil {
+		return RuntimeSpec{}, nil, fmt.Errorf("create bootstrap generation: %w", err)
+	}
+	cleanup := func() error { return os.RemoveAll(tempDir) }
+	fail := func(err error) (RuntimeSpec, func() error, error) {
+		_ = cleanup()
+		return RuntimeSpec{}, nil, err
+	}
+	if err := os.Chmod(tempDir, 0o700); err != nil {
+		return fail(fmt.Errorf("secure bootstrap generation: %w", err))
+	}
+	tempConfig := filepath.Join(tempDir, "config.yaml")
+	if err := writeSyncedFile(tempConfig, content); err != nil {
+		return fail(err)
+	}
+	if err := syncDirectory(tempDir); err != nil {
+		return fail(err)
+	}
+	digest := digestBytes(content)
+	// Keep mihomo's data directory anchored at the external config directory so
+	// unrelated relative proxy-provider and certificate paths continue to work.
+	spec := runtimeSpec(snapshot, "bootstrap-"+digest[:16], filepath.Dir(configPath), tempConfig, s.options.LogPath, snapshot.ControllerEndpoint, digest)
+	if err := adapter.Validate(ctx, spec); err != nil {
+		return fail(err)
+	}
+	return spec, cleanup, nil
 }
 
 func (s *GenerationStore) CheckSource(spec RuntimeSpec) error {

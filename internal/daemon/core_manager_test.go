@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -293,6 +294,74 @@ func TestCoreManager_CloseStopsOnlyManagedProcess(t *testing.T) {
 	}
 }
 
+func TestCoreManager_BootstrapRunsPrivateCoreThenActivatesFormalConfig(t *testing.T) {
+	adapter := &managerFakeAdapter{}
+	configs := &managerFakeBootstrapConfigs{
+		managerFakeConfigs: managerFakeConfigs{spec: newRuntimeSpec("formal")},
+		bootstrapSpec:      newRuntimeSpec("bootstrap"),
+	}
+	repository := &managerFakeRepository{}
+	manager := newTestCoreManager(adapter, configs, repository, NewSupervisor(adapter, time.Second))
+	var phases []string
+	actionCalled := false
+	err := manager.Bootstrap(context.Background(), newSnapshot("formal"), func(content []byte) ([]byte, error) { return content, nil }, func(phase string) {
+		phases = append(phases, phase)
+	}, func(_ context.Context, spec core.RuntimeSpec) error {
+		actionCalled = true
+		if spec.ProfileID != "bootstrap" || manager.Status().State != domain.CoreStateRunning {
+			t.Fatalf("unexpected bootstrap runtime: %+v %+v", spec, manager.Status())
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !actionCalled || !configs.cleaned || adapter.starts != 2 {
+		t.Fatalf("bootstrap lifecycle incomplete: action=%t cleaned=%t starts=%d", actionCalled, configs.cleaned, adapter.starts)
+	}
+	current, running := manager.supervisor.Current()
+	if !running || current.ProfileID != "formal" || repository.active != "formal" || configs.active.ProfileID != "formal" {
+		t.Fatalf("formal runtime was not activated: running=%t current=%+v active=%s", running, current, repository.active)
+	}
+	if got := strings.Join(phases, ","); got != "preparing_bootstrap,starting_bootstrap,stopping_bootstrap,starting_core,verifying_core" {
+		t.Fatalf("phases = %s", got)
+	}
+}
+
+func TestCoreManager_BootstrapActionFailureReturnsToStoppedAndCleans(t *testing.T) {
+	adapter := &managerFakeAdapter{}
+	configs := &managerFakeBootstrapConfigs{
+		managerFakeConfigs: managerFakeConfigs{spec: newRuntimeSpec("formal")},
+		bootstrapSpec:      newRuntimeSpec("bootstrap"),
+	}
+	manager := newTestCoreManager(adapter, configs, &managerFakeRepository{}, NewSupervisor(adapter, time.Second))
+	want := errors.New("download failed")
+	err := manager.Bootstrap(context.Background(), newSnapshot("formal"), func(content []byte) ([]byte, error) { return content, nil }, nil, func(context.Context, core.RuntimeSpec) error { return want })
+	if !errors.Is(err, want) {
+		t.Fatalf("expected action failure, got %v", err)
+	}
+	if manager.Status().State != domain.CoreStateStopped || !configs.cleaned || adapter.starts != 1 {
+		t.Fatalf("bootstrap failure leaked state: status=%+v cleaned=%t starts=%d", manager.Status(), configs.cleaned, adapter.starts)
+	}
+}
+
+func TestCoreManager_BootstrapFormalStartFailureReturnsToStopped(t *testing.T) {
+	want := errors.New("formal start failed")
+	adapter := &managerFakeAdapter{startErrors: []error{nil, want}}
+	configs := &managerFakeBootstrapConfigs{
+		managerFakeConfigs: managerFakeConfigs{spec: newRuntimeSpec("formal")},
+		bootstrapSpec:      newRuntimeSpec("bootstrap"),
+	}
+	manager := newTestCoreManager(adapter, configs, &managerFakeRepository{}, NewSupervisor(adapter, time.Second))
+	err := manager.Bootstrap(context.Background(), newSnapshot("formal"), func(content []byte) ([]byte, error) { return content, nil }, nil, func(context.Context, core.RuntimeSpec) error { return nil })
+	if !errors.Is(err, want) {
+		t.Fatalf("expected formal start failure, got %v", err)
+	}
+	if manager.Status().State != domain.CoreStateStopped || !configs.cleaned || adapter.starts != 2 {
+		t.Fatalf("formal failure leaked state: status=%+v cleaned=%t starts=%d", manager.Status(), configs.cleaned, adapter.starts)
+	}
+}
+
 func TestCapabilityMutationsShareCoreOperationCoordinator(t *testing.T) {
 	coordinator := NewCoordinator()
 	manager := NewCoreManager(CoreManagerOptions{Coordinator: coordinator})
@@ -530,6 +599,20 @@ type managerFakeConfigs struct {
 	checkErr   error
 	markErr    error
 	active     core.RuntimeSpec
+}
+
+type managerFakeBootstrapConfigs struct {
+	managerFakeConfigs
+	bootstrapSpec core.RuntimeSpec
+	bootstrapErr  error
+	cleaned       bool
+}
+
+func (f *managerFakeBootstrapConfigs) PrepareBootstrap(context.Context, core.ProfileSnapshot, core.Adapter, core.BootstrapTransform) (core.RuntimeSpec, func() error, error) {
+	if f.bootstrapErr != nil {
+		return core.RuntimeSpec{}, nil, f.bootstrapErr
+	}
+	return f.bootstrapSpec, func() error { f.cleaned = true; return nil }, nil
 }
 
 func (f *managerFakeConfigs) Prepare(context.Context, core.ProfileSnapshot, core.Adapter) (core.RuntimeSpec, error) {

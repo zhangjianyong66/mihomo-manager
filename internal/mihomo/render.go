@@ -180,7 +180,7 @@ func inspectStatic(content []byte) (string, error) {
 		return "", fmt.Errorf("external-controller conflicts with %s: %w", prior, core.ErrInvalidConfig)
 	}
 
-	known := map[string]bool{"DIRECT": true, "REJECT": true, "REJECT-DROP": true, "PASS": true, "COMPATIBLE": true}
+	known := map[string]bool{"DIRECT": true, "GLOBAL": true, "REJECT": true, "REJECT-DROP": true, "PASS": true, "COMPATIBLE": true}
 	for _, proxy := range config.Proxies {
 		if strings.TrimSpace(proxy.Name) != "" {
 			known[proxy.Name] = true

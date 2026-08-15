@@ -1,6 +1,7 @@
 package mihomo
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/zhangjianyong66/mihomo-manager/internal/config"
 	"github.com/zhangjianyong66/mihomo-manager/internal/domain"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -56,6 +58,67 @@ type RoutingPolicy struct {
 	Proxy           []string
 	DNS             map[string]any
 	Warnings        []string
+}
+
+// BuildBootstrapConfig returns a private, global-mode copy of a legacy
+// configuration suitable for fetching manager-owned rule sets. The source
+// bytes are never modified. Manager providers, owned rules and DNS policy
+// entries are removed while ordinary user providers/rules/listeners remain.
+func BuildBootstrapConfig(content []byte) ([]byte, error) {
+	var cfg map[string]any
+	if err := yaml.Unmarshal(content, &cfg); err != nil {
+		return nil, fmt.Errorf("decode bootstrap config: %w", err)
+	}
+	if cfg == nil {
+		return nil, errors.New("bootstrap config must be a mapping")
+	}
+	policy, err := ParseRoutingPolicyWithRules(cfg, RouteRules{})
+	if err != nil {
+		return nil, fmt.Errorf("parse bootstrap routing policy: %w", err)
+	}
+	policy.Mode = domain.RoutingModeGlobal
+	if err := ApplyRoutingPolicy(cfg, policy, config.Paths{}); err != nil {
+		return nil, fmt.Errorf("apply bootstrap routing policy: %w", err)
+	}
+
+	// Global mode must use the GLOBAL selector for the terminal rule. Custom
+	// rules are retained, but any manager-generated terminal match is replaced.
+	rules := anyToStrings(cfg["rules"])
+	filtered := make([]string, 0, len(rules)+1)
+	for _, rule := range rules {
+		if len(ruleParts(rule)) > 0 && strings.EqualFold(ruleParts(rule)[0], "MATCH") {
+			continue
+		}
+		filtered = append(filtered, rule)
+	}
+	filtered = append(filtered, "MATCH,GLOBAL")
+	cfg["rules"] = filtered
+
+	// Remove DNS fields owned by the manager. User DNS settings remain intact.
+	if dns, ok := cfg["dns"].(map[string]any); ok {
+		for _, key := range managerDNSPolicyKeys {
+			if key == "rule-set:"+CNDomainProviderName {
+				if policies, ok := dns["nameserver-policy"].(map[string]any); ok {
+					delete(policies, key)
+				}
+				continue
+			}
+			delete(dns, key)
+		}
+		if policies, ok := dns["nameserver-policy"].(map[string]any); ok {
+			for key := range policies {
+				if isManagerDNSPolicyKey(key) {
+					delete(policies, key)
+				}
+			}
+		}
+	}
+
+	result, err := yaml.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("encode bootstrap config: %w", err)
+	}
+	return bytes.TrimSpace(result), nil
 }
 
 func ParseRoutingPolicy(cfg map[string]any, whitelist []string) (RoutingPolicy, error) {

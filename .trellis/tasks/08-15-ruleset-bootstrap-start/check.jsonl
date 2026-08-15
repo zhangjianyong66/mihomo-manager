@@ -1,0 +1,3 @@
+{"file":".trellis/spec/backend/development-commands.md","reason":"本任务的质量门禁与真实环境隔离要求。"}
+{"file":".trellis/spec/backend/core-adapter.md","reason":"核验 external config、generation、受管进程和恢复行为。"}
+{"file":".trellis/spec/backend/cli-contract.md","reason":"核验 CLI 错误映射和 NDJSON 输出契约。"}

@@ -160,6 +160,52 @@ func TestRoutingPolicy_RejectsInvalidOwnedMappings(t *testing.T) {
 	}
 }
 
+func TestBuildBootstrapConfigRemovesManagerOwnershipAndUsesGlobal(t *testing.T) {
+	source := []byte("mode: rule\n" +
+		"mixed-port: 7890\n" +
+		"external-controller: 127.0.0.1:9090\n" +
+		"proxies:\n  - {name: node, type: socks5, server: 127.0.0.1, port: 1080}\n" +
+		"proxy-groups:\n  - {name: GLOBAL, type: select, proxies: [node]}\n" +
+		"rule-providers:\n  mm-cn-domain: {type: file, path: ./rulesets/cn-domain.mrs}\n  custom: {type: file, path: ./custom.yaml}\n" +
+		"rules:\n  - DOMAIN-SUFFIX,custom.example,DIRECT\n  - RULE-SET,mm-cn-domain,DIRECT\n  - MATCH,GLOBAL\n" +
+		"dns:\n  enable: true\n  nameserver-policy:\n    rule-set:mm-cn-domain: [223.5.5.5]\n    +.example: [1.1.1.1]\n")
+	got, err := BuildBootstrapConfig(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(got, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg["mode"] != "global" {
+		t.Fatalf("mode = %#v", cfg["mode"])
+	}
+	providers, _ := cfg["rule-providers"].(map[string]any)
+	if _, ok := providers[CNDomainProviderName]; ok {
+		t.Fatal("manager provider retained")
+	}
+	if _, ok := providers["custom"]; !ok {
+		t.Fatal("custom provider removed")
+	}
+	rules := anyToStrings(cfg["rules"])
+	for _, rule := range rules {
+		if strings.Contains(strings.ToLower(rule), "mm-cn-") {
+			t.Fatalf("manager rule retained: %s", rule)
+		}
+	}
+	if rules[len(rules)-1] != "MATCH,GLOBAL" {
+		t.Fatalf("terminal rule = %q", rules[len(rules)-1])
+	}
+	dns, _ := cfg["dns"].(map[string]any)
+	policy, _ := dns["nameserver-policy"].(map[string]any)
+	if _, ok := policy["rule-set:mm-cn-domain"]; ok {
+		t.Fatal("manager DNS policy retained")
+	}
+	if _, ok := policy["+.example"]; !ok {
+		t.Fatal("custom DNS policy removed")
+	}
+}
+
 func TestRoutingPolicy_MihomoNativeValidation(t *testing.T) {
 	if os.Getenv("MIHOMO_NATIVE_TEST") != "1" {
 		t.Skip("set MIHOMO_NATIVE_TEST=1 to run the installed mihomo validation")

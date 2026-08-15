@@ -772,7 +772,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if s == "ctrl+c" {
-			if m.actionCtx == "ruleset" && m.busy && m.rulesetCancel != nil && m.rulesetPhase != "publishing" && m.rulesetPhase != "reloading" && m.rulesetPhase != "verifying" {
+			if m.actionCtx == "ruleset" && m.busy && m.rulesetCancel != nil && rulesetPhaseCancelable(m.rulesetPhase) {
 				m.rulesetCancel()
 				m.rulesetCancel = nil
 				m.busy = false
@@ -782,7 +782,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		if m.busy {
-			if s == "esc" && m.actionCtx == "ruleset" && m.rulesetCancel != nil && m.rulesetPhase != "publishing" && m.rulesetPhase != "reloading" && m.rulesetPhase != "verifying" {
+			if s == "esc" && m.actionCtx == "ruleset" && m.rulesetCancel != nil && rulesetPhaseCancelable(m.rulesetPhase) {
 				m.rulesetCancel()
 				m.rulesetCancel = nil
 				m.busy = false
@@ -1546,6 +1546,15 @@ func (m Model) updateRuleSet(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+func rulesetPhaseCancelable(phase string) bool {
+	switch phase {
+	case "publishing", "reloading", "verifying", "stopping_bootstrap", "starting_core", "verifying_core":
+		return false
+	default:
+		return true
+	}
 }
 
 func (m Model) executeAction(cat, act string) (tea.Model, tea.Cmd) {

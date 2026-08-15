@@ -42,9 +42,11 @@ type RoutingRuntime interface {
 ```go
 func core.NewGenerationStore(core.GenerationStoreOptions) *core.GenerationStore
 func (*core.GenerationStore) Prepare(context.Context, core.ProfileSnapshot, core.Adapter) (core.RuntimeSpec, error)
+func (*core.GenerationStore) PrepareBootstrap(context.Context, core.ProfileSnapshot, core.Adapter, core.BootstrapTransform) (core.RuntimeSpec, func() error, error)
 func (*core.GenerationStore) CheckSource(core.RuntimeSpec) error
 func (*core.GenerationStore) MarkActive(core.RuntimeSpec) error
 func (*daemon.CoreManager) Activate(context.Context, core.ProfileSnapshot) error
+func (*daemon.CoreManager) Bootstrap(context.Context, core.ProfileSnapshot, core.BootstrapTransform, func(string), func(context.Context, core.RuntimeSpec) error) error
 func (*daemon.CoreManager) Close(context.Context) error
 ```
 
@@ -63,6 +65,8 @@ func (*store.Store) RestoreActiveProfile(context.Context, *domain.ProfileID, tim
 - generation profile 目录名由 profile ID 摘要生成，不能把未约束 ID 直接拼入路径。
 - managed generation 目录 `0700`，`config.yaml`、`metadata.json`、current/runtime JSON 为 `0600`；先在同目录临时写、fsync、原生验证，再 rename 发布。
 - external/legacy `ConfigPath` 必须为绝对普通文件，不接受符号链接；prepare 与 start 前均核对 SHA-256，绝不写回源文件。
+- ruleset 缺失且 stopped 的 legacy Core 可使用 `PrepareBootstrap` 创建私有临时 generation：转换后的 YAML 必须移除 manager CN providers、依赖规则及 DNS policy，并使用 global mode；源配置、runtime metadata、SQLite 活动档案均不得写入。
+- `CoreManager.Bootstrap` 持有同一 Coordinator，负责临时 Core 的 prepare/start/ready、下载动作、stop 和 generation 清理；临时进程停止后才可 `Activate` 正式配置。任一步失败都必须停止临时进程并回到 stopped，正式启动失败不回滚已原子发布的规则集。
 - mihomo 原生验证参数固定为 `-t -d <configDir> -f <configPath>`，默认超时 10 秒。
 - managed core 参数固定为 `-d <configDir> -f <configPath>`；Linux 使用 `Setsid`。停止只向所持 `Process` 发 SIGTERM，超时后 SIGKILL。
 - controller endpoint 只接受显式 `http://127.0.0.1:<port>` 或 `http://[::1]:<port>`；不接受 `0.0.0.0`、hostname、HTTPS、userinfo 或额外 path。
@@ -98,6 +102,7 @@ func (*store.Store) RestoreActiveProfile(context.Context, *domain.ProfileID, tim
 ### 6. 必需测试
 
 - `internal/core`：generation ID 确定性、`0700/0600`、验证失败无发布、external 只读和摘要变化。
+- ruleset bootstrap：临时 generation 为 `0700/0600` 且清理后不存在，源配置摘要不变；成功路径停止临时进程后启动正式配置，下载、验证、发布或正式启动失败均不遗留受管进程或临时目录。
 - `internal/mihomo`：golden YAML、静态错误矩阵、`-t -d -f` 参数/超时/退出码、loopback、响应上限、Setsid、SIGTERM/SIGKILL、无关进程存活。
 - `internal/mihomo` routing runtime：HTTP method/path/body、三模式解析、rules/count/selection/close、非 2xx、超大和多 JSON 响应。
 - `internal/daemon`：成功切换、验证前旧实例不变、就绪失败恢复、恢复失败、metadata 提交补偿、Close 只停止所持进程；running 后异常退出必须清除当前实例并进入 `failed/PROCESS_EXITED`，显式 Stop 和旧实例迟到退出不得覆盖 stopped/替换实例。
@@ -188,4 +193,66 @@ _ = supervisor.Start(ctx, oldSpec)
 if err := supervisor.Stop(ctx); err != nil {
     return failReconfigurationAfterStopError(restore, err)
 }
+```
+
+## 场景：CN 规则集引导 Core
+
+### 1. 范围 / 触发条件
+
+当活动 external/legacy 配置引用 `mm-cn-domain` 或 `mm-cn-ip`，规则集未就绪、
+Core 为 `stopped`，且 `mm ruleset install` 没有可用外部代理时适用。目标是使用
+现有订阅代理下载规则集，同时保持 external 源文件只读并在失败后回到 stopped。
+
+### 2. 签名
+
+```go
+type BootstrapTransform func([]byte) ([]byte, error)
+func (*core.GenerationStore) PrepareBootstrap(context.Context, core.ProfileSnapshot, core.Adapter, core.BootstrapTransform) (core.RuntimeSpec, func() error, error)
+func (*daemon.CoreManager) Bootstrap(context.Context, core.ProfileSnapshot, core.BootstrapTransform, func(string), func(context.Context, core.RuntimeSpec) error) error
+func mihomo.BuildBootstrapConfig([]byte) ([]byte, error)
+```
+
+### 3. 契约
+
+- bootstrap 仅允许 stopped Core，且使用 CoreManager 的 Coordinator；running/切换态绝不启动第二个进程。
+- 临时配置是私有 `0700/0600` generation：移除 manager CN providers、其规则和 DNS policy，设为 `global`，但保留节点、组、监听和用户自定义规则。
+- 临时 `ConfigPath` 指向 generation 副本，`ConfigDir` 仍为 external 配置目录，保证无关的相对 provider、证书等路径继续可用。
+- bootstrap 不调用 `MarkActive`，不更新 SQLite active profile 或正式 runtime metadata；下载后先停止并删除临时 generation，再通过普通 `Activate` 启动正式配置。
+- 下载、成对校验和发布继续由 `ruleset.PublishWithHook` 负责；错误须保留安全的连接、超时或 HTTP 原因，禁止回显秘密。
+
+### 4. 校验与错误矩阵
+
+| 条件 | 必须行为 |
+|---|---|
+| 无 loopback mixed/http/socks listener | `RULESET_BOOTSTRAP_UNAVAILABLE`，零进程、源配置不变 |
+| bootstrap 验证、启动、就绪或下载失败 | 停止受管进程、清理临时 generation，最终 `stopped` |
+| 两份规则集发布失败 | 复用规则集的成对恢复，停止 bootstrap，正式配置不启动 |
+| 正式 Core 启动失败 | 规则集可保留为已发布，停止 bootstrap，最终 `stopped` 并报告启动错误 |
+
+### 5. Good / Base / Bad
+
+- Good：没有外部代理的首次安装会依次发出 `preparing_bootstrap`、`starting_bootstrap`、下载、`stopping_bootstrap`、`starting_core`，最后运行正式 rule 配置。
+- Base：规则集已就绪、Core 已运行或外部下载代理存在时保持原安装路径。
+- Bad：直接修改 `config.yaml` 暂时删除 provider，或把临时 generation 写进 current runtime metadata；这会破坏外部配置只读和崩溃恢复契约。
+
+### 6. 必需测试
+
+- `internal/mihomo`：bootstrap YAML 移除 manager ownership、保留用户配置且终止规则为 `MATCH,GLOBAL`。
+- `internal/core`：源摘要不变、私有目录/文件权限、验证失败清理，ConfigDir 保持 external 目录。
+- `internal/daemon`：bootstrap 成功后启动正式 Core；下载或正式启动失败时无受管进程、无临时 generation 且状态为 stopped。
+
+### 7. 错误与正确示例
+
+错误：为了下载规则集直接改写 external 源文件。
+
+```go
+os.WriteFile(profile.ConfigPath, bootstrapYAML, 0o600)
+```
+
+正确：只写私有 generation，结束时清理并从原文件重新 Activate。
+
+```go
+spec, cleanup, err := generations.PrepareBootstrap(ctx, snapshot, adapter, transform)
+defer cleanup()
+err = manager.Bootstrap(ctx, snapshot, transform, phase, download)
 ```

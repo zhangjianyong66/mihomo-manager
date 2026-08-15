@@ -759,6 +759,10 @@ func classifyCapabilityError(err error) (int, string, string, bool) {
 		return http.StatusInternalServerError, "RESTORE_FAILED", "规则集发布恢复失败，Core 状态可能不确定", false
 	case errors.Is(err, ruleset.ErrProxyAuthUnsupported):
 		return http.StatusBadRequest, "RULESET_PROXY_AUTH_UNSUPPORTED", "规则集下载不支持带认证信息的代理", false
+	case errors.Is(err, ErrRuleSetBootstrapUnavailable):
+		return http.StatusUnprocessableEntity, "RULESET_BOOTSTRAP_UNAVAILABLE", err.Error(), false
+	case errors.Is(err, ErrRuleSetInstallFailed):
+		return http.StatusBadGateway, "RULESET_DOWNLOAD_FAILED", err.Error(), true
 	case errors.Is(err, ErrCapabilityNotFound), errors.Is(err, store.ErrNotFound):
 		return http.StatusNotFound, "NOT_FOUND", "资源不存在", false
 	case errors.Is(err, mihomo.ErrProxyNotFound):

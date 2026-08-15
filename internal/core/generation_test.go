@@ -124,6 +124,68 @@ func TestGenerationStore_RejectsExternalSymlink(t *testing.T) {
 	}
 }
 
+func TestGenerationStore_BootstrapIsPrivateValidatedAndCleaned(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "external.yaml")
+	source := []byte("mode: rule\n")
+	if err := os.WriteFile(path, source, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &fakeAdapter{}
+	store := testGenerationStore(root)
+	spec, cleanup, err := store.PrepareBootstrap(context.Background(), ProfileSnapshot{
+		ProfileID: "external", Revision: 1, Mode: domain.ProfileModeLegacy,
+		ExternalConfigPath: path, ControllerEndpoint: "http://127.0.0.1:19090",
+	}, adapter, func(content []byte) ([]byte, error) {
+		return append(content, []byte("mode: global\n")...), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.validateCalls != 1 || spec.GenerationID[:10] != "bootstrap-" {
+		t.Fatalf("unexpected bootstrap spec: %+v", spec)
+	}
+	bootstrapDir := filepath.Dir(spec.ConfigPath)
+	assertMode(t, bootstrapDir, 0o700)
+	assertMode(t, spec.ConfigPath, 0o600)
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != string(source) {
+		t.Fatalf("source changed: %q, %v", got, err)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(bootstrapDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("bootstrap generation still exists: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "state", "runtime.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("bootstrap unexpectedly published runtime metadata: %v", err)
+	}
+}
+
+func TestGenerationStore_BootstrapValidationFailureCleansPendingDirectory(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "external.yaml")
+	if err := os.WriteFile(path, []byte("mode: rule\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := testGenerationStore(root)
+	_, _, err := store.PrepareBootstrap(context.Background(), ProfileSnapshot{
+		ProfileID: "external", Revision: 1, Mode: domain.ProfileModeLegacy,
+		ExternalConfigPath: path, ControllerEndpoint: "http://127.0.0.1:19090",
+	}, &fakeAdapter{validateErr: errors.New("invalid")}, func(content []byte) ([]byte, error) { return content, nil })
+	if err == nil {
+		t.Fatal("expected validation failure")
+	}
+	entries, readErr := os.ReadDir(filepath.Join(root, "generations", profileDirectory("external")))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("bootstrap directory leaked: %v", entries)
+	}
+}
+
 type fakeAdapter struct {
 	rendered      RenderedConfig
 	validateErr   error
