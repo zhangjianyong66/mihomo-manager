@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 28
+- **Total Sessions**: 29
 - **Last Active**: 2026-08-15
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~885 | Active |
+| `journal-1.md` | ~906 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 29 | 2026-08-15 | 完成域名与IP分流规则 | `6112f60` | `master` |
 | 28 | 2026-08-15 | 高亮节点列表当前光标行 | `9df9382` | `master` |
 | 27 | 2026-07-30 | 修复 macOS core 监控冲突与状态同步 | `b33e64c` | `master` |
 | 26 | 2026-07-30 | 支持 CN 规则集延迟安装 | `9a422a7` | `master` |

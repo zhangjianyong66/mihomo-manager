@@ -883,3 +883,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 29: 完成域名与IP分流规则
+
+**Date**: 2026-08-15
+**Task**: 完成域名与IP分流规则
+**Branch**: `master`
+
+### Summary
+
+实现直连与代理域名/IP/CIDR 分流规则、旧白名单兼容、daemon IPC、CLI、TUI 重启确认，并完成全量与原生 mihomo 校验。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6112f60` | (see git log) |
+
+### Status
+
+[OK] **Completed**
