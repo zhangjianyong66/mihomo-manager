@@ -862,3 +862,24 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 28: 高亮节点列表当前光标行
+
+**Date**: 2026-08-15
+**Task**: 高亮节点列表当前光标行
+**Branch**: `master`
+
+### Summary
+
+为节点切换列表的当前光标行增加深青蓝整行背景和白色前景，保留已启用节点的 ✅ 标记；补充宽度和光标移动回归测试，并通过全量 Go 测试。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9df9382` | (see git log) |
+
+### Status
+
+[OK] **Completed**
