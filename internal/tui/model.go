@@ -70,6 +70,10 @@ const (
 	nodeTestBatch
 )
 
+var nodeCursorStyle = lipgloss.NewStyle().
+	Background(lipgloss.Color("#0B7285")).
+	Foreground(lipgloss.Color("#FFFFFF"))
+
 type Model struct {
 	client Capabilities
 	ctx    context.Context
@@ -1955,7 +1959,9 @@ func (m Model) View() string {
 	for i := start; i < end; i++ {
 		it := items[i]
 		if m.page == actionMenu && m.actionCtx == "group_nodes" {
-			it = m.renderSwitchNodeItem(it)
+			b.WriteString(m.renderNodeListRow(it, i == idx))
+			b.WriteString("\n")
+			continue
 		}
 		cursor := "  "
 		if i == idx {
@@ -2145,6 +2151,18 @@ func (m Model) renderSwitchNodeItem(node string) string {
 	label = truncateDisplayWidth(label, available)
 	padding := strings.Repeat(" ", max(0, available-lipgloss.Width(label)))
 	return label + padding + "  " + statusText
+}
+
+func (m Model) renderNodeListRow(node string, selected bool) string {
+	cursor := "  "
+	if selected {
+		cursor = "> "
+	}
+	row := cursor + m.renderSwitchNodeItem(node)
+	if !selected {
+		return row
+	}
+	return nodeCursorStyle.Render(row)
 }
 
 func truncateDisplayWidth(value string, width int) string {

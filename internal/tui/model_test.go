@@ -651,6 +651,52 @@ func TestNodeListNarrowRowsKeepStatusWithinTerminalWidth(t *testing.T) {
 	}
 }
 
+func TestNodeListCursorRowUsesDedicatedFullWidthHighlight(t *testing.T) {
+	model := New(&fakeTUIService{})
+	model.width = 80
+	model.currentNodeName = "node-a"
+
+	selected := model.renderNodeListRow("node-a", true)
+	plain := model.renderNodeListRow("node-b", false)
+	if got := nodeCursorStyle.GetBackground(); got != lipgloss.Color("#0B7285") {
+		t.Fatalf("cursor background = %v, want deep cyan", got)
+	}
+	if got := nodeCursorStyle.GetForeground(); got != lipgloss.Color("#FFFFFF") {
+		t.Fatalf("cursor foreground = %v, want white", got)
+	}
+	if lipgloss.Width(selected) != model.width-2 || lipgloss.Width(plain) != model.width-2 {
+		t.Fatalf("node row widths = %d, %d, want %d", lipgloss.Width(selected), lipgloss.Width(plain), model.width-2)
+	}
+}
+
+func TestNodeListCursorHighlightMovesWithActionIndex(t *testing.T) {
+	model := New(&fakeTUIService{})
+	model.width = 80
+	next, _ := model.enterLoadedGroup(app.Group{
+		ID:             "GLOBAL",
+		Name:           "GLOBAL",
+		SelectedNodeID: "node-a",
+		NodeIDs:        []domain.NodeID{"node-a", "node-b"},
+		NodeStates:     []app.GroupNodeState{{NodeID: "node-a", Testable: true}, {NodeID: "node-b", Testable: true}},
+	})
+	model = next.(Model)
+	if got := model.renderNodeListRow(model.actionItems[model.actionIndex], true); lipgloss.Width(got) != model.width-2 {
+		t.Fatalf("initial cursor row width = %d, want %d", lipgloss.Width(got), model.width-2)
+	}
+
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = next.(Model)
+	if model.actionIndex != 1 {
+		t.Fatalf("cursor index = %d, want 1", model.actionIndex)
+	}
+	if got := model.renderNodeListRow(model.actionItems[0], false); lipgloss.Width(got) != model.width-2 {
+		t.Fatalf("previous row width = %d, want %d", lipgloss.Width(got), model.width-2)
+	}
+	if got := model.renderNodeListRow(model.actionItems[model.actionIndex], true); lipgloss.Width(got) != model.width-2 {
+		t.Fatalf("new cursor row width = %d, want %d", lipgloss.Width(got), model.width-2)
+	}
+}
+
 func TestNodeListNarrowActiveFooterKeepsModeVisibleWithinTerminalWidth(t *testing.T) {
 	model := New(&fakeTUIService{})
 	model.width = 32
