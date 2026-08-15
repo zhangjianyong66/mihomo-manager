@@ -58,6 +58,10 @@ type CapabilityAPI interface {
 	AddWhitelist(context.Context, string, string) error
 	RemoveWhitelist(context.Context, string, string) error
 	EditWhitelist(context.Context, string, string, string) error
+	RouteRules(context.Context, string) (RouteRules, error)
+	AddRouteRule(context.Context, string, string, string) error
+	RemoveRouteRule(context.Context, string, string, string) error
+	EditRouteRule(context.Context, string, string, string, string) error
 	ApplyRoutePreset(context.Context, string, string) error
 	DiagnoseRoute(context.Context, string, string) (RouteDiagnosis, error)
 	Connections(context.Context, ConnectionRequest) ([]Connection, error)
@@ -74,6 +78,11 @@ type CapabilityAPI interface {
 	DisableProxy(context.Context, ProxyRequest) (ProxyConfigStatus, error)
 	TailLogs(context.Context, LogRequest) ([]LogLine, error)
 	FollowLogs(context.Context, LogRequest) <-chan LogEvent
+}
+
+type RouteRules struct {
+	Direct []string `json:"direct"`
+	Proxy  []string `json:"proxy"`
 }
 
 type PortConflict struct {
@@ -529,6 +538,25 @@ func (c *DaemonCapabilities) RemoveWhitelist(ctx context.Context, profileID, val
 }
 func (c *DaemonCapabilities) EditWhitelist(ctx context.Context, profileID, oldValue, newValue string) error {
 	return c.whitelistMutation(ctx, http.MethodPut, "edit", profileID, newValue, oldValue)
+}
+func (c *DaemonCapabilities) RouteRules(ctx context.Context, profileID string) (RouteRules, error) {
+	var value RouteRules
+	err := c.do(ctx, http.MethodGet, capabilityPath("/v1/routes/rules", profileID), "", nil, &value)
+	return value, err
+}
+func (c *DaemonCapabilities) AddRouteRule(ctx context.Context, profileID, target, value string) error {
+	return c.routeRuleMutation(ctx, http.MethodPost, profileID, target, "", value)
+}
+func (c *DaemonCapabilities) RemoveRouteRule(ctx context.Context, profileID, target, value string) error {
+	return c.routeRuleMutation(ctx, http.MethodDelete, profileID, target, "", value)
+}
+func (c *DaemonCapabilities) EditRouteRule(ctx context.Context, profileID, target, oldValue, value string) error {
+	return c.routeRuleMutation(ctx, http.MethodPut, profileID, target, oldValue, value)
+}
+func (c *DaemonCapabilities) routeRuleMutation(ctx context.Context, method, profileID, target, oldValue, value string) error {
+	var result map[string]any
+	request := map[string]string{"profileId": profileID, "target": target, "value": value, "oldValue": oldValue}
+	return c.do(ctx, method, "/v1/routes/rules", newRequestID("route-rule"), request, &result)
 }
 func (c *DaemonCapabilities) whitelistMutation(ctx context.Context, method, action, profileID, value, oldValue string) error {
 	var result map[string]any

@@ -37,6 +37,7 @@ func registerCapabilityRoutes(mux *http.ServeMux, service *CapabilityService) {
 	mux.HandleFunc("/v1/nodes/test", handler.nodeTest)
 	mux.HandleFunc("/v1/subscription", handler.subscription)
 	mux.HandleFunc("/v1/routes/whitelist", handler.whitelist)
+	mux.HandleFunc("/v1/routes/rules", handler.routeRules)
 	mux.HandleFunc("/v1/routes/preset", handler.routePreset)
 	mux.HandleFunc("/v1/routes/diagnose", handler.routeDiagnose)
 	mux.HandleFunc("/v1/connections", handler.connections)
@@ -530,6 +531,36 @@ func (h *capabilityHandler) whitelist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeCapabilityResult(w, "WhitelistMutation", map[string]string{"action": action, "domain": request.Domain}, err)
+}
+
+func (h *capabilityHandler) routeRules(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		value, err := h.service.RouteRules(r.Context(), profileQuery(r))
+		writeCapabilityResult(w, "RouteRules", value, err)
+		return
+	}
+	var request struct {
+		ProfileID string `json:"profileId,omitempty"`
+		Target    string `json:"target"`
+		Value     string `json:"value"`
+		OldValue  string `json:"oldValue,omitempty"`
+	}
+	if err := ipc.DecodeJSON(w, r, &request); err != nil {
+		return
+	}
+	var err error
+	switch r.Method {
+	case http.MethodPost:
+		err = h.service.AddRouteRule(r.Context(), request.ProfileID, request.Target, request.Value)
+	case http.MethodDelete:
+		err = h.service.RemoveRouteRule(r.Context(), request.ProfileID, request.Target, request.Value)
+	case http.MethodPut:
+		err = h.service.EditRouteRule(r.Context(), request.ProfileID, request.Target, request.OldValue, request.Value)
+	default:
+		requireMethod(w, r, http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete)
+		return
+	}
+	writeCapabilityResult(w, "RouteRuleMutation", map[string]string{"target": request.Target, "value": request.Value}, err)
 }
 
 func (h *capabilityHandler) routePreset(w http.ResponseWriter, r *http.Request) {

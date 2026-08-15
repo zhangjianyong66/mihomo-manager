@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -29,6 +30,18 @@ import (
 type Client struct {
 	paths config.Paths
 	http  *http.Client
+}
+
+type RouteRuleTarget string
+
+const (
+	RouteRuleDirect RouteRuleTarget = "direct"
+	RouteRuleProxy  RouteRuleTarget = "proxy"
+)
+
+type RouteRules struct {
+	Direct []string `json:"direct" yaml:"direct"`
+	Proxy  []string `json:"proxy" yaml:"proxy"`
 }
 
 func New(paths config.Paths) *Client {
@@ -446,11 +459,11 @@ func (c *Client) UpdateSubscriptionWithResult() (SubscriptionUpdateResult, error
 	if err != nil {
 		return SubscriptionUpdateResult{}, err
 	}
-	whitelistDomains, err := c.whitelistDomains(oldCfg)
+	routeRules, err := c.routeRules(oldCfg)
 	if err != nil {
 		return SubscriptionUpdateResult{}, err
 	}
-	policy, err := ParseRoutingPolicy(oldCfg, whitelistDomains)
+	policy, err := ParseRoutingPolicyWithRules(oldCfg, routeRules)
 	if err != nil {
 		return SubscriptionUpdateResult{}, err
 	}
@@ -1116,42 +1129,40 @@ func (c *Client) OpenConfigEditor() error {
 }
 
 func (c *Client) AddWhitelist(domain string) error {
-	cfg, err := c.readConfigMap()
-	if err != nil {
-		return err
-	}
-	domains, err := c.whitelistDomains(cfg)
-	if err != nil {
-		return err
-	}
-	oldDomains := append([]string(nil), domains...)
-	n := normalizeDomain(domain)
-	if n == "" {
-		return errors.New("empty whitelist domain")
-	}
-	domains = append(domains, n)
-	domains = normalizeDomainList(domains)
-	return c.applyWhitelistPolicy(cfg, oldDomains, domains)
+	return c.AddRouteRule(RouteRuleDirect, domain)
 }
 
 func (c *Client) RemoveWhitelist(domain string) error {
+	return c.RemoveRouteRule(RouteRuleDirect, domain)
+}
+
+func (c *Client) AddRouteRule(target RouteRuleTarget, value string) error {
 	cfg, err := c.readConfigMap()
 	if err != nil {
 		return err
 	}
-	n := normalizeDomain(domain)
-	domains, err := c.whitelistDomains(cfg)
+	rules, err := c.routeRules(cfg)
 	if err != nil {
 		return err
 	}
-	out := make([]string, 0, len(domains))
-	for _, d := range domains {
-		if !strings.EqualFold(d, n) {
-			out = append(out, d)
-		}
+	normalized, err := normalizeRouteRule(value)
+	if err != nil {
+		return err
 	}
-	out = normalizeDomainList(out)
-	return c.applyWhitelistPolicy(cfg, domains, out)
+	if target == RouteRuleDirect {
+		if containsRouteRule(rules.Proxy, normalized) {
+			return fmt.Errorf("route rule %q already routes through proxy", normalized)
+		}
+		rules.Direct = normalizeRouteRuleList(append(rules.Direct, normalized))
+	} else if target == RouteRuleProxy {
+		if containsRouteRule(rules.Direct, normalized) {
+			return fmt.Errorf("route rule %q already routes directly", normalized)
+		}
+		rules.Proxy = normalizeRouteRuleList(append(rules.Proxy, normalized))
+	} else {
+		return fmt.Errorf("unknown route rule target %q", target)
+	}
+	return c.applyRouteRules(cfg, rules)
 }
 
 func (c *Client) ListWhitelist() ([]string, error) {
@@ -1159,7 +1170,78 @@ func (c *Client) ListWhitelist() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.whitelistDomains(cfg)
+	rules, err := c.routeRules(cfg)
+	return rules.Direct, err
+}
+
+func (c *Client) RemoveRouteRule(target RouteRuleTarget, value string) error {
+	cfg, err := c.readConfigMap()
+	if err != nil {
+		return err
+	}
+	rules, err := c.routeRules(cfg)
+	if err != nil {
+		return err
+	}
+	normalized, err := normalizeRouteRule(value)
+	if err != nil {
+		return err
+	}
+	previous := rules
+	if target == RouteRuleDirect {
+		rules.Direct = removeRouteRule(rules.Direct, normalized)
+	} else if target == RouteRuleProxy {
+		rules.Proxy = removeRouteRule(rules.Proxy, normalized)
+	} else {
+		return fmt.Errorf("unknown route rule target %q", target)
+	}
+	stripManagedRouteRules(cfg, previous)
+	return c.applyRouteRules(cfg, rules)
+}
+
+func (c *Client) EditRouteRule(target RouteRuleTarget, oldValue, value string) error {
+	cfg, err := c.readConfigMap()
+	if err != nil {
+		return err
+	}
+	rules, err := c.routeRules(cfg)
+	if err != nil {
+		return err
+	}
+	oldRule, err := normalizeRouteRule(oldValue)
+	if err != nil {
+		return err
+	}
+	newRule, err := normalizeRouteRule(value)
+	if err != nil {
+		return err
+	}
+	previous := rules
+	if target == RouteRuleDirect {
+		rules.Direct = append(removeRouteRule(rules.Direct, oldRule), newRule)
+		rules.Direct = normalizeRouteRuleList(rules.Direct)
+		if containsRouteRule(rules.Proxy, newRule) {
+			return fmt.Errorf("route rule %q already routes through proxy", newRule)
+		}
+	} else if target == RouteRuleProxy {
+		rules.Proxy = append(removeRouteRule(rules.Proxy, oldRule), newRule)
+		rules.Proxy = normalizeRouteRuleList(rules.Proxy)
+		if containsRouteRule(rules.Direct, newRule) {
+			return fmt.Errorf("route rule %q already routes directly", newRule)
+		}
+	} else {
+		return fmt.Errorf("unknown route rule target %q", target)
+	}
+	stripManagedRouteRules(cfg, previous)
+	return c.applyRouteRules(cfg, rules)
+}
+
+func (c *Client) ListRouteRules() (RouteRules, error) {
+	cfg, err := c.readConfigMap()
+	if err != nil {
+		return RouteRules{}, err
+	}
+	return c.routeRules(cfg)
 }
 
 // ReadRoutingPolicy inspects routing state without creating a derived
@@ -1169,15 +1251,15 @@ func (c *Client) ReadRoutingPolicy() (RoutingPolicy, error) {
 	if err != nil {
 		return RoutingPolicy{}, err
 	}
-	domains, err := c.loadWhitelistDomains()
+	rules, err := c.loadRouteRules()
 	if errors.Is(err, os.ErrNotExist) {
-		domains = extractWhitelistDomains(anyToStrings(cfg["rules"]))
+		rules.Direct = extractWhitelistDomains(anyToStrings(cfg["rules"]))
 		err = nil
 	}
 	if err != nil {
 		return RoutingPolicy{}, err
 	}
-	return ParseRoutingPolicy(cfg, domains)
+	return ParseRoutingPolicyWithRules(cfg, rules)
 }
 
 // RoutingModeCandidate returns a complete M2 routing policy with only the
@@ -1210,11 +1292,11 @@ func (c *Client) ApplyRouteCN() error {
 	if err != nil {
 		return err
 	}
-	whitelistDomains, err := c.whitelistDomains(cfg)
+	routeRules, err := c.routeRules(cfg)
 	if err != nil {
 		return err
 	}
-	policy, err := ParseRoutingPolicy(cfg, whitelistDomains)
+	policy, err := ParseRoutingPolicyWithRules(cfg, routeRules)
 	if err != nil {
 		return err
 	}
@@ -1314,6 +1396,8 @@ func (c *Client) writeValidatedConfigMap(m map[string]any) error {
 
 type whitelistConfig struct {
 	Domains []string `yaml:"domains"`
+	Direct  []string `yaml:"direct"`
+	Proxy   []string `yaml:"proxy"`
 }
 
 func (c *Client) whitelistPath() string {
@@ -1330,37 +1414,51 @@ func (c *Client) whitelistPath() string {
 }
 
 func (c *Client) whitelistDomains(cfg map[string]any) ([]string, error) {
-	domains, err := c.loadWhitelistDomains()
-	if err == nil {
-		return domains, nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	domains = extractWhitelistDomains(anyToStrings(cfg["rules"]))
-	if len(domains) == 0 {
-		return []string{}, nil
-	}
-	if err := c.saveWhitelistDomains(domains); err != nil {
-		return nil, err
-	}
-	return domains, nil
+	rules, err := c.routeRules(cfg)
+	return rules.Direct, err
 }
 
 func (c *Client) loadWhitelistDomains() ([]string, error) {
-	b, err := os.ReadFile(c.whitelistPath())
-	if err != nil {
-		return nil, err
-	}
-	var cfg whitelistConfig
-	if err := yaml.Unmarshal(b, &cfg); err != nil {
-		return nil, err
-	}
-	return normalizeDomainList(cfg.Domains), nil
+	rules, err := c.loadRouteRules()
+	return rules.Direct, err
 }
 
 func (c *Client) saveWhitelistDomains(domains []string) error {
-	out := whitelistConfig{Domains: normalizeDomainList(domains)}
+	return c.saveRouteRules(RouteRules{Direct: domains})
+}
+
+func (c *Client) routeRules(cfg map[string]any) (RouteRules, error) {
+	rules, err := c.loadRouteRules()
+	if err == nil {
+		return rules, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return RouteRules{}, err
+	}
+	rules.Direct = extractWhitelistDomains(anyToStrings(cfg["rules"]))
+	if len(rules.Direct) > 0 {
+		if err := c.saveRouteRules(rules); err != nil {
+			return RouteRules{}, err
+		}
+	}
+	return rules, nil
+}
+
+func (c *Client) loadRouteRules() (RouteRules, error) {
+	b, err := os.ReadFile(c.whitelistPath())
+	if err != nil {
+		return RouteRules{}, err
+	}
+	var stored whitelistConfig
+	if err := yaml.Unmarshal(b, &stored); err != nil {
+		return RouteRules{}, err
+	}
+	return RouteRules{Direct: normalizeRouteRuleList(append(stored.Domains, stored.Direct...)), Proxy: normalizeRouteRuleList(stored.Proxy)}, nil
+}
+
+func (c *Client) saveRouteRules(rules RouteRules) error {
+	direct := normalizeRouteRuleList(rules.Direct)
+	out := whitelistConfig{Domains: direct, Direct: direct, Proxy: normalizeRouteRuleList(rules.Proxy)}
 	b, err := yaml.Marshal(out)
 	if err != nil {
 		return err
@@ -1370,6 +1468,75 @@ func (c *Client) saveWhitelistDomains(domains []string) error {
 		mode = info.Mode().Perm()
 	}
 	return writeFileAtomic(c.whitelistPath(), b, mode)
+}
+
+func (c *Client) applyRouteRules(cfg map[string]any, rules RouteRules) error {
+	policy, err := ParseRoutingPolicyWithRules(cfg, rules)
+	if err != nil {
+		return err
+	}
+	if err := ApplyRoutingPolicy(cfg, policy, c.paths); err != nil {
+		return err
+	}
+	if err := c.writeValidatedConfigMap(cfg); err != nil {
+		return err
+	}
+	if err := c.saveRouteRules(rules); err != nil {
+		_ = c.RestoreConfig()
+		return err
+	}
+	return nil
+}
+
+func normalizeRouteRule(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", errors.New("empty route rule")
+	}
+	if address, err := netip.ParseAddr(value); err == nil {
+		return netip.PrefixFrom(address, address.BitLen()).String(), nil
+	}
+	if prefix, err := netip.ParsePrefix(value); err == nil {
+		return prefix.Masked().String(), nil
+	}
+	domain := normalizeDomain(value)
+	if domain == "" || strings.ContainsAny(domain, " :/") {
+		return "", fmt.Errorf("invalid route rule %q", value)
+	}
+	return domain, nil
+}
+
+func normalizeRouteRuleList(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized, err := normalizeRouteRule(value)
+		if err != nil || seen[strings.ToLower(normalized)] {
+			continue
+		}
+		seen[strings.ToLower(normalized)] = true
+		out = append(out, normalized)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func containsRouteRule(values []string, value string) bool {
+	for _, candidate := range values {
+		if strings.EqualFold(candidate, value) {
+			return true
+		}
+	}
+	return false
+}
+func removeRouteRule(values []string, value string) []string {
+	out := make([]string, 0, len(values))
+	for _, candidate := range values {
+		if !strings.EqualFold(candidate, value) {
+			out = append(out, candidate)
+		}
+	}
+	return out
 }
 
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {

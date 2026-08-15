@@ -3,7 +3,9 @@ package mihomo
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/zhangjianyong66/mihomo-manager/internal/config"
@@ -50,11 +52,17 @@ type RoutingPolicy struct {
 	CustomRules     []string
 	CustomProviders map[string]any
 	Whitelist       []string
+	Direct          []string
+	Proxy           []string
 	DNS             map[string]any
 	Warnings        []string
 }
 
 func ParseRoutingPolicy(cfg map[string]any, whitelist []string) (RoutingPolicy, error) {
+	return ParseRoutingPolicyWithRules(cfg, RouteRules{Direct: whitelist})
+}
+
+func ParseRoutingPolicyWithRules(cfg map[string]any, managed RouteRules) (RoutingPolicy, error) {
 	if cfg == nil {
 		return RoutingPolicy{}, errors.New("routing config must not be nil")
 	}
@@ -66,10 +74,11 @@ func ParseRoutingPolicy(cfg map[string]any, whitelist []string) (RoutingPolicy, 
 		return RoutingPolicy{}, err
 	}
 
-	domains := normalizeDomainList(whitelist)
+	managed.Direct = normalizeRouteRuleList(managed.Direct)
+	managed.Proxy = normalizeRouteRuleList(managed.Proxy)
 	customRules := make([]string, 0)
 	for _, rule := range anyToStrings(cfg["rules"]) {
-		if isManagerOwnedRule(rule, domains) {
+		if isManagerOwnedRule(rule, managed) {
 			continue
 		}
 		customRules = append(customRules, rule)
@@ -102,7 +111,9 @@ func ParseRoutingPolicy(cfg map[string]any, whitelist []string) (RoutingPolicy, 
 		Mode:            mode,
 		CustomRules:     customRules,
 		CustomProviders: customProviders,
-		Whitelist:       domains,
+		Whitelist:       append([]string(nil), managed.Direct...),
+		Direct:          append([]string(nil), managed.Direct...),
+		Proxy:           append([]string(nil), managed.Proxy...),
 		DNS:             cloneStringMap(dns),
 		Warnings:        warnings,
 	}, nil
@@ -136,18 +147,16 @@ func ApplyRoutingPolicy(cfg map[string]any, policy RoutingPolicy, paths config.P
 	}
 	cfg["rule-providers"] = providers
 
-	rules := make([]string, 0, len(managerLocalRules)+len(policy.CustomRules)+len(policy.Whitelist)+3)
+	rules := make([]string, 0, len(managerLocalRules)+len(policy.CustomRules)+len(policy.Direct)+len(policy.Proxy)+3)
 	if policy.Mode == domain.RoutingModeRule {
 		rules = append(rules, managerLocalRules...)
 	}
 	for _, rule := range policy.CustomRules {
-		if !isManagerOwnedRule(rule, policy.Whitelist) {
+		if !isManagerOwnedRule(rule, RouteRules{Direct: policy.Direct, Proxy: policy.Proxy}) {
 			rules = append(rules, rule)
 		}
 	}
-	for _, domainName := range normalizeDomainList(policy.Whitelist) {
-		rules = append(rules, "DOMAIN-SUFFIX,"+domainName+",DIRECT")
-	}
+	rules = append(rules, renderManagedRules(policy.Direct, policy.Proxy)...)
 	if policy.Mode == domain.RoutingModeRule {
 		rules = append(rules,
 			"RULE-SET,"+CNDomainProviderName+",DIRECT",
@@ -227,7 +236,7 @@ func applyManagerDNS(existing map[string]any) (map[string]any, error) {
 	return dns, nil
 }
 
-func isManagerOwnedRule(rule string, whitelist []string) bool {
+func isManagerOwnedRule(rule string, managed RouteRules) bool {
 	parts := ruleParts(rule)
 	if len(parts) == 0 {
 		return false
@@ -245,15 +254,64 @@ func isManagerOwnedRule(rule string, whitelist []string) bool {
 	if (typ == "GEOSITE" || typ == "GEOIP") && len(parts) >= 3 && strings.EqualFold(parts[1], "CN") && isDirectTarget(parts[2]) {
 		return true
 	}
-	if len(parts) >= 3 && (typ == "DOMAIN" || typ == "DOMAIN-SUFFIX" || typ == "DOMAIN-WILDCARD") && isDirectTarget(parts[2]) {
-		domainName := normalizeDomain(parts[1])
-		for _, managedDomain := range whitelist {
-			if strings.EqualFold(domainName, normalizeDomain(managedDomain)) {
-				return true
-			}
+	if len(parts) >= 3 && (typ == "DOMAIN" || typ == "DOMAIN-SUFFIX" || typ == "DOMAIN-WILDCARD" || typ == "IP-CIDR" || typ == "IP-CIDR6") {
+		value, err := normalizeRouteRule(parts[1])
+		if err != nil {
+			return false
+		}
+		if isDirectTarget(parts[2]) {
+			return containsRouteRule(managed.Direct, value)
+		}
+		if strings.TrimSpace(parts[2]) == ProxyGroupName {
+			return containsRouteRule(managed.Proxy, value)
 		}
 	}
 	return false
+}
+
+type renderedManagedRule struct {
+	value  string
+	target string
+	prefix int
+	domain bool
+}
+
+func renderManagedRules(direct, proxy []string) []string {
+	items := make([]renderedManagedRule, 0, len(direct)+len(proxy))
+	appendRules := func(values []string, target string) {
+		for _, value := range values {
+			if prefix, err := netip.ParsePrefix(value); err == nil {
+				items = append(items, renderedManagedRule{value: prefix.String(), target: target, prefix: prefix.Bits()})
+				continue
+			}
+			items = append(items, renderedManagedRule{value: value, target: target, prefix: strings.Count(value, ".") + 1, domain: true})
+		}
+	}
+	appendRules(direct, "DIRECT")
+	appendRules(proxy, ProxyGroupName)
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].domain != items[j].domain {
+			return items[i].domain
+		}
+		if items[i].prefix != items[j].prefix {
+			return items[i].prefix > items[j].prefix
+		}
+		if items[i].value != items[j].value {
+			return items[i].value < items[j].value
+		}
+		return items[i].target < items[j].target
+	})
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.domain {
+			out = append(out, "DOMAIN-SUFFIX,"+item.value+","+item.target)
+		} else if strings.Contains(item.value, ":") {
+			out = append(out, "IP-CIDR6,"+item.value+","+item.target+",no-resolve")
+		} else {
+			out = append(out, "IP-CIDR,"+item.value+","+item.target+",no-resolve")
+		}
+	}
+	return out
 }
 
 func stripWhitelistRules(cfg map[string]any, domains []string) {
@@ -264,6 +322,17 @@ func stripWhitelistRules(cfg map[string]any, domains []string) {
 			continue
 		}
 		result = append(result, rule)
+	}
+	cfg["rules"] = result
+}
+
+func stripManagedRouteRules(cfg map[string]any, managed RouteRules) {
+	rules := anyToStrings(cfg["rules"])
+	result := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		if !isManagerOwnedRule(rule, managed) {
+			result = append(result, rule)
+		}
 	}
 	cfg["rules"] = result
 }

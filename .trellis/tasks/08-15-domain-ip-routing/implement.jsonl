@@ -1,0 +1,7 @@
+{"file":".trellis/spec/backend/index.md","reason":"后端分层、开发前检查和质量门禁索引。"}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"路由合成器、daemon、CLI 和 TUI 的正确包边界。"}
+{"file":".trellis/spec/backend/code-style.md","reason":"配置写入恢复、TUI 异步副作用与测试约定。"}
+{"file":".trellis/spec/backend/cli-contract.md","reason":"新增 CLI/API DTO、JSON/table、退出码及 daemon capability 契约。"}
+{"file":".trellis/spec/backend/daemon-ipc.md","reason":"Unix IPC、请求幂等和受管 Core 操作约束。"}
+{"file":".trellis/spec/backend/core-adapter.md","reason":"Core restart 与 legacy/external 配置安全边界。"}
+{"file":".trellis/spec/backend/project-conventions.md","reason":"路由规则、订阅保留及真实网络配置隔离约定。"}

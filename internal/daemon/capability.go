@@ -78,6 +78,11 @@ type RouteInfo struct {
 	Note        string `json:"note,omitempty"`
 }
 
+type RouteRules struct {
+	Direct []string `json:"direct"`
+	Proxy  []string `json:"proxy"`
+}
+
 type ConfigDocument struct {
 	Content []byte `json:"content"`
 	SHA256  string `json:"sha256"`
@@ -823,6 +828,50 @@ func (s *CapabilityService) EditWhitelist(ctx context.Context, profileID, oldVal
 		return err
 	}
 	return s.withMutation(ctx, "routing.whitelist.edit", func() error { return s.legacy.EditWhitelist(ctx, restorePoint, oldValue, newValue) })
+}
+
+func (s *CapabilityService) RouteRules(ctx context.Context, profileID string) (RouteRules, error) {
+	_, restorePoint, err := s.profile(ctx, profileID)
+	if err != nil {
+		return RouteRules{}, err
+	}
+	rules, err := s.legacy.ListRouteRules(ctx, restorePoint)
+	if err != nil {
+		return RouteRules{}, err
+	}
+	return RouteRules{Direct: rules.Direct, Proxy: rules.Proxy}, nil
+}
+func (s *CapabilityService) AddRouteRule(ctx context.Context, profileID, target, value string) error {
+	return s.mutateRouteRule(ctx, "add", profileID, target, "", value)
+}
+func (s *CapabilityService) RemoveRouteRule(ctx context.Context, profileID, target, value string) error {
+	return s.mutateRouteRule(ctx, "remove", profileID, target, "", value)
+}
+func (s *CapabilityService) EditRouteRule(ctx context.Context, profileID, target, oldValue, value string) error {
+	return s.mutateRouteRule(ctx, "edit", profileID, target, oldValue, value)
+}
+func (s *CapabilityService) mutateRouteRule(ctx context.Context, action, profileID, target, oldValue, value string) error {
+	_, restorePoint, err := s.profile(ctx, profileID)
+	if err != nil {
+		return err
+	}
+	if err := s.ensureRuleSetForRoutingMutation(ctx, restorePoint); err != nil {
+		return err
+	}
+	targetValue := mihomo.RouteRuleTarget(target)
+	if targetValue != mihomo.RouteRuleDirect && targetValue != mihomo.RouteRuleProxy {
+		return fmt.Errorf("unknown route rule target %q", target)
+	}
+	return s.withMutation(ctx, "routing.rule."+action, func() error {
+		switch action {
+		case "add":
+			return s.legacy.AddRouteRule(ctx, restorePoint, targetValue, value)
+		case "remove":
+			return s.legacy.RemoveRouteRule(ctx, restorePoint, targetValue, value)
+		default:
+			return s.legacy.EditRouteRule(ctx, restorePoint, targetValue, oldValue, value)
+		}
+	})
 }
 
 func (s *CapabilityService) ApplyRoutePreset(ctx context.Context, profileID, preset string) error {

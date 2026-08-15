@@ -98,6 +98,16 @@ func (f *fakeCapabilityAPI) RemoveWhitelist(context.Context, string, string) err
 func (f *fakeCapabilityAPI) EditWhitelist(context.Context, string, string, string) error {
 	return f.err
 }
+func (f *fakeCapabilityAPI) RouteRules(context.Context, string) (app.RouteRules, error) {
+	return app.RouteRules{Direct: []string{"example.com"}}, f.err
+}
+func (f *fakeCapabilityAPI) AddRouteRule(context.Context, string, string, string) error { return f.err }
+func (f *fakeCapabilityAPI) RemoveRouteRule(context.Context, string, string, string) error {
+	return f.err
+}
+func (f *fakeCapabilityAPI) EditRouteRule(context.Context, string, string, string, string) error {
+	return f.err
+}
 func (f *fakeCapabilityAPI) ApplyRoutePreset(context.Context, string, string) error { return f.err }
 func (f *fakeCapabilityAPI) DiagnoseRoute(context.Context, string, string) (app.RouteDiagnosis, error) {
 	return f.route, f.err

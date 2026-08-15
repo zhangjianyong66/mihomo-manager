@@ -354,6 +354,7 @@ func newRouteCommand(deps Dependencies) *cobra.Command {
 		return capabilityMutation(command, editOptions, "whitelist edit", func() error { return deps.Capabilities.EditWhitelist(command.Context(), editProfile, args[0], args[1]) })
 	}
 	whitelist.AddCommand(list, add, remove, edit)
+	command.AddCommand(newRouteRuleCommand(deps, "direct"), newRouteRuleCommand(deps, "proxy"))
 	preset := &cobra.Command{Use: "preset <name>", Short: "应用路由预设（cn）", Args: exactArgs(1)}
 	var presetProfile string
 	var presetOptions OutputOptions
@@ -376,6 +377,68 @@ func newRouteCommand(deps Dependencies) *cobra.Command {
 		}})
 	}
 	command.AddCommand(whitelist, preset, diagnose, newRouteConnectionsCommand(deps))
+	return command
+}
+
+func newRouteRuleCommand(deps Dependencies, target string) *cobra.Command {
+	command := &cobra.Command{Use: target, Short: "管理" + map[string]string{"direct": "直连", "proxy": "代理"}[target] + "分流规则", Args: noArgs}
+	list := &cobra.Command{Use: "list", Short: "列出分流规则", Args: noArgs}
+	var profile string
+	var options OutputOptions
+	bindCapabilityOptions(list, &profile, &options)
+	list.RunE = func(command *cobra.Command, _ []string) error {
+		rules, err := deps.Capabilities.RouteRules(command.Context(), profile)
+		if err != nil {
+			return err
+		}
+		values := rules.Direct
+		if target == "proxy" {
+			values = rules.Proxy
+		}
+		return capabilityResult(command, options, Result{Kind: "RouteRules", Data: func(bool) any { return values }, Table: func(w io.Writer, _ bool) error {
+			for _, value := range values {
+				if _, err := fmt.Fprintln(w, value); err != nil {
+					return err
+				}
+			}
+			return nil
+		}})
+	}
+	for _, action := range []string{"add", "remove", "edit"} {
+		action := action
+		use := action + " <value>"
+		if action == "edit" {
+			use = "edit <old-value> <value>"
+		}
+		child := &cobra.Command{Use: use, Short: "修改分流规则", Args: exactArgs(map[string]int{"add": 1, "remove": 1, "edit": 2}[action])}
+		var childProfile string
+		var childOptions OutputOptions
+		var restart bool
+		bindCapabilityOptions(child, &childProfile, &childOptions)
+		child.Flags().BoolVar(&restart, "restart", false, "保存后重启 Core")
+		child.RunE = func(command *cobra.Command, args []string) error {
+			var err error
+			switch action {
+			case "add":
+				err = deps.Capabilities.AddRouteRule(command.Context(), childProfile, target, args[0])
+			case "remove":
+				err = deps.Capabilities.RemoveRouteRule(command.Context(), childProfile, target, args[0])
+			default:
+				err = deps.Capabilities.EditRouteRule(command.Context(), childProfile, target, args[0], args[1])
+			}
+			if err != nil {
+				return err
+			}
+			if restart {
+				if err := deps.Capabilities.CoreAction(command.Context(), childProfile, "restart"); err != nil {
+					return err
+				}
+			}
+			return capabilityMutation(command, childOptions, "route "+target+" "+action, func() error { return nil })
+		}
+		command.AddCommand(child)
+	}
+	command.AddCommand(list)
 	return command
 }
 

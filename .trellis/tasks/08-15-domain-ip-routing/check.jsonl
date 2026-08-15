@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/index.md","reason":"检查范围和质量门禁。"}
+{"file":".trellis/spec/backend/code-style.md","reason":"配置恢复、TUI 副作用与测试审查标准。"}
+{"file":".trellis/spec/backend/cli-contract.md","reason":"CLI/API 输出、错误和退出码审查标准。"}
+{"file":".trellis/spec/backend/daemon-ipc.md","reason":"IPC、Coordinator 和 request ID 审查标准。"}
+{"file":".trellis/spec/backend/core-adapter.md","reason":"Core restart 与配置安全审查标准。"}
+{"file":".trellis/spec/backend/project-conventions.md","reason":"路由合成和订阅兼容审查标准。"}

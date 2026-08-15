@@ -106,6 +106,21 @@ func (c *Compatibility) EditWhitelist(ctx context.Context, id domain.RestorePoin
 	})
 }
 
+func (c *Compatibility) ListRouteRules(ctx context.Context, id domain.RestorePointID) (mihomo.RouteRules, error) {
+	var result mihomo.RouteRules
+	err := c.inspect(ctx, id, func(client *mihomo.Client) error { var err error; result, err = client.ListRouteRules(); return err })
+	return result, err
+}
+func (c *Compatibility) AddRouteRule(ctx context.Context, id domain.RestorePointID, target mihomo.RouteRuleTarget, value string) error {
+	return c.mutate(ctx, id, true, func(client *mihomo.Client) error { return client.AddRouteRule(target, value) })
+}
+func (c *Compatibility) RemoveRouteRule(ctx context.Context, id domain.RestorePointID, target mihomo.RouteRuleTarget, value string) error {
+	return c.mutate(ctx, id, true, func(client *mihomo.Client) error { return client.RemoveRouteRule(target, value) })
+}
+func (c *Compatibility) EditRouteRule(ctx context.Context, id domain.RestorePointID, target mihomo.RouteRuleTarget, oldValue, value string) error {
+	return c.mutate(ctx, id, true, func(client *mihomo.Client) error { return client.EditRouteRule(target, oldValue, value) })
+}
+
 func (c *Compatibility) BackupConfig(ctx context.Context, id domain.RestorePointID) error {
 	return c.mutate(ctx, id, false, func(client *mihomo.Client) error { return client.BackupConfig() })
 }

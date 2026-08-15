@@ -44,6 +44,19 @@ type fakeTUIService struct {
 	restartResult    app.DaemonRestartResult
 	restartErr       error
 	coreActions      []string
+	coreActionErr    error
+	coreStatus       app.CoreStatus
+	coreStatusErr    error
+	routeRules       app.RouteRules
+	routeRulesErr    error
+	routeMutations   []routeRuleMutation
+}
+
+type routeRuleMutation struct {
+	action string
+	target string
+	old    string
+	value  string
 }
 
 func (f *fakeTUIService) RestartDaemon(_ context.Context, progress app.DaemonRestartProgressFunc) (app.DaemonRestartResult, error) {
@@ -58,7 +71,35 @@ func (f *fakeTUIService) RestartDaemon(_ context.Context, progress app.DaemonRes
 
 func (f *fakeTUIService) CoreAction(_ context.Context, _ string, action string) error {
 	f.coreActions = append(f.coreActions, action)
-	return nil
+	return f.coreActionErr
+}
+
+func (f *fakeTUIService) CoreStatus(context.Context, string) (app.CoreStatus, error) {
+	return f.coreStatus, f.coreStatusErr
+}
+
+func (f *fakeTUIService) RouteRules(context.Context, string) (app.RouteRules, error) {
+	return f.routeRules, f.routeRulesErr
+}
+
+func (f *fakeTUIService) AddRouteRule(_ context.Context, _ string, target, value string) error {
+	f.routeMutations = append(f.routeMutations, routeRuleMutation{action: "add", target: target, value: value})
+	if target == "proxy" {
+		f.routeRules.Proxy = append(f.routeRules.Proxy, value)
+	} else {
+		f.routeRules.Direct = append(f.routeRules.Direct, value)
+	}
+	return f.routeRulesErr
+}
+
+func (f *fakeTUIService) RemoveRouteRule(_ context.Context, _ string, target, value string) error {
+	f.routeMutations = append(f.routeMutations, routeRuleMutation{action: "remove", target: target, value: value})
+	return f.routeRulesErr
+}
+
+func (f *fakeTUIService) EditRouteRule(_ context.Context, _ string, target, oldValue, value string) error {
+	f.routeMutations = append(f.routeMutations, routeRuleMutation{action: "edit", target: target, old: oldValue, value: value})
+	return f.routeRulesErr
 }
 
 func (f *fakeTUIService) ModeStatus(context.Context, string) (app.RoutingModeStatus, error) {
@@ -1063,4 +1104,97 @@ func TestConfigMenuIncludesRuleSetEntry(t *testing.T) {
 		}
 	}
 	t.Fatalf("CN 规则集 entry missing: %v", items)
+}
+
+func TestDomainRoutingOpensDirectAndProxyRuleLists(t *testing.T) {
+	fake := &fakeTUIService{routeRules: app.RouteRules{Direct: []string{"direct.example", "10.0.0.0/8"}, Proxy: []string{"proxy.example"}}}
+	model := New(fake)
+	model.mainIndex = 5
+	next, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = next.(Model)
+	if command != nil || model.actionCtx != "route_rules_targets" || !strings.Contains(model.View(), "直连规则") || !strings.Contains(model.View(), "代理规则") {
+		t.Fatalf("domain routing target menu missing: command=%v model=%+v view=%s", command != nil, model, model.View())
+	}
+	next, command = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = next.(Model)
+	if command == nil || model.routeRuleTarget != "direct" || !model.busy {
+		t.Fatalf("direct rule list was not deferred: command=%v target=%s busy=%t", command != nil, model.routeRuleTarget, model.busy)
+	}
+	next, _ = model.Update(command())
+	model = next.(Model)
+	if model.actionCtx != "route_rules_direct" || !strings.Contains(model.View(), "direct.example") || !strings.Contains(model.View(), "10.0.0.0/8") {
+		t.Fatalf("direct rules were not rendered: model=%+v view=%s", model, model.View())
+	}
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = next.(Model)
+	if model.page != mainMenu {
+		t.Fatalf("route list escape should return main menu: %+v", model)
+	}
+}
+
+func TestDomainRoutingRunningCoreConfirmsRestartAndCanCancel(t *testing.T) {
+	fake := &fakeTUIService{
+		routeRules: app.RouteRules{Direct: []string{"old.example"}},
+		coreStatus: app.CoreStatus{State: domain.CoreStateRunning},
+	}
+	model := New(fake)
+	message := mutateRouteRuleCmd(context.Background(), fake, "direct", "add", "", "203.0.113.7")()
+	next, _ := model.Update(message)
+	model = next.(Model)
+	if model.actionCtx != "route_rule_restart_confirm" || model.page != actionMenu || len(fake.routeMutations) != 1 || len(fake.coreActions) != 0 {
+		t.Fatalf("running core should require a restart confirmation: model=%+v mutations=%+v actions=%v", model, fake.routeMutations, fake.coreActions)
+	}
+	if view := model.View(); !strings.Contains(view, "Enter 重启 Core") || !strings.Contains(view, "取消不会撤销") {
+		t.Fatalf("restart confirmation is incomplete: %s", view)
+	}
+	next, command := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = next.(Model)
+	if command != nil || model.page != resultView || len(fake.coreActions) != 0 || !strings.Contains(model.result, "Core 未重启") {
+		t.Fatalf("restart cancellation did not preserve the saved rule: command=%v model=%+v actions=%v", command != nil, model, fake.coreActions)
+	}
+}
+
+func TestDomainRoutingRunningCoreRestartsOnlyAfterConfirmation(t *testing.T) {
+	fake := &fakeTUIService{}
+	model := New(fake)
+	model.page = actionMenu
+	model.actionCtx = "route_rule_restart_confirm"
+	model.routeRuleTarget = "proxy"
+	model.routeRuleSavedResult = "已新增代理规则"
+	model.routeRules.Proxy = []string{"proxy.example"}
+	next, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = next.(Model)
+	if command == nil || !model.busy || len(fake.coreActions) != 0 {
+		t.Fatalf("restart should be deferred until the command runs: command=%v model=%+v actions=%v", command != nil, model, fake.coreActions)
+	}
+	next, _ = model.Update(command())
+	model = next.(Model)
+	if model.page != resultView || model.actionCtx != "route_rules_proxy" || !reflect.DeepEqual(fake.coreActions, []string{"restart"}) || !strings.Contains(model.result, "已生效") {
+		t.Fatalf("confirmed restart did not complete: model=%+v actions=%v", model, fake.coreActions)
+	}
+}
+
+func TestDomainRoutingStoppedCoreDoesNotAskToRestart(t *testing.T) {
+	fake := &fakeTUIService{coreStatus: app.CoreStatus{State: domain.CoreStateStopped}}
+	model := New(fake)
+	message := mutateRouteRuleCmd(context.Background(), fake, "proxy", "add", "", "2001:db8::/32")()
+	next, _ := model.Update(message)
+	model = next.(Model)
+	if model.page != resultView || model.actionCtx != "route_rules_proxy" || len(fake.coreActions) != 0 || !strings.Contains(model.result, "下次启动") {
+		t.Fatalf("stopped core should not prompt for a restart: model=%+v actions=%v", model, fake.coreActions)
+	}
+	if len(fake.routeMutations) != 1 || fake.routeMutations[0].target != "proxy" || fake.routeMutations[0].value != "2001:db8::/32" {
+		t.Fatalf("proxy IP rule was not sent through the capability: %+v", fake.routeMutations)
+	}
+}
+
+func TestModeViewWarnsWhenDomainRoutingIsInactive(t *testing.T) {
+	model := New(&fakeTUIService{})
+	model.page = actionMenu
+	model.actionCtx = "mode"
+	model.actionItems = modeActionItems()
+	model.modeStatus.ConfigMode = domain.RoutingModeGlobal
+	if view := model.View(); !strings.Contains(view, "当前模式下，域名分流规则不生效") {
+		t.Fatalf("mode view should describe inactive domain routing: %s", view)
+	}
 }

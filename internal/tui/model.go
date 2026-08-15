@@ -38,6 +38,10 @@ type Capabilities interface {
 	AddWhitelist(context.Context, string, string) error
 	RemoveWhitelist(context.Context, string, string) error
 	EditWhitelist(context.Context, string, string, string) error
+	RouteRules(context.Context, string) (app.RouteRules, error)
+	AddRouteRule(context.Context, string, string, string) error
+	RemoveRouteRule(context.Context, string, string, string) error
+	EditRouteRule(context.Context, string, string, string, string) error
 	ApplyRoutePreset(context.Context, string, string) error
 	DiagnoseRoute(context.Context, string, string) (app.RouteDiagnosis, error)
 	FollowConnections(context.Context, app.ConnectionRequest) <-chan app.ConnectionEvent
@@ -113,8 +117,10 @@ type Model struct {
 	currentGroupID         string
 	currentGroupName       string
 	groups                 []app.Group
-	whitelistItems         []string
-	selectedWhitelist      string
+	routeRules             app.RouteRules
+	routeRuleTarget        string
+	selectedRouteRule      string
+	routeRuleSavedResult   string
 	logLines               []string
 	logRawLines            []string
 	logFilter              string
@@ -188,6 +194,18 @@ type whitelistLoadedMsg struct {
 	result string
 	err    error
 }
+
+type routeRulesLoadedMsg struct {
+	rules      app.RouteRules
+	target     string
+	result     string
+	saved      bool
+	coreStatus app.CoreStatus
+	coreErr    error
+	err        error
+}
+
+type routeRuleRestartedMsg struct{ err error }
 
 type routeDiagnosisMsg struct {
 	value app.RouteDiagnosis
@@ -281,7 +299,7 @@ func NewWithContext(ctx context.Context, client Capabilities) Model {
 	ti.Prompt = "> "
 	ti.CharLimit = 200
 	ti.Width = 70
-	return Model{client: client, ctx: ctx, page: mainMenu, returnPage: actionMenu, input: ti, now: time.Now, mainItems: []string{"运行模式", "实时连接", "服务管理", "节点管理", "订阅管理", "白名单管理", "路由诊断", "配置管理", "退出"}}
+	return Model{client: client, ctx: ctx, page: mainMenu, returnPage: actionMenu, input: ti, now: time.Now, mainItems: []string{"运行模式", "实时连接", "服务管理", "节点管理", "订阅管理", "域名分流", "路由诊断", "配置管理", "退出"}}
 }
 
 func (m Model) Init() tea.Cmd { return nil }
@@ -451,15 +469,89 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.result, m.err, m.returnPage, m.page = result, msg.err, returnPage, resultView
 			return m, nil
 		}
-		m.whitelistItems = sortUniqueDomains(msg.items)
-		m.actionCtx = "whitelist_list"
-		m.actionItems = m.whitelistActionItems()
+		m.routeRules.Direct = sortUniqueRouteRules(msg.items)
+		m.routeRuleTarget = "direct"
+		m.actionCtx = "route_rules_direct"
+		m.actionItems = m.routeRuleActionItems()
 		m.actionIndex = 0
 		if msg.result != "" {
 			m.result, m.err, m.returnPage, m.page = msg.result, nil, actionMenu, resultView
 		} else {
 			m.page = actionMenu
 		}
+		return m, nil
+	case routeRulesLoadedMsg:
+		m.busy = false
+		if msg.err != nil {
+			if msg.saved {
+				m.routeRuleTarget = msg.target
+				m.actionCtx = "route_rules_" + msg.target
+				m.actionItems = m.routeRuleActionItems()
+				m.actionIndex = 0
+				m.result = msg.result + "\n规则已保存，但刷新列表失败；请重新进入分流规则确认。"
+				m.err = msg.err
+				m.returnPage = actionMenu
+				m.page = resultView
+				return m, nil
+			}
+			result := "读取分流规则失败"
+			returnPage := mainMenu
+			if msg.result != "" {
+				result = msg.result + "失败"
+				returnPage = actionMenu
+			}
+			m.result, m.err, m.returnPage, m.page = result, msg.err, returnPage, resultView
+			return m, nil
+		}
+		m.routeRules.Direct = sortUniqueRouteRules(msg.rules.Direct)
+		m.routeRules.Proxy = sortUniqueRouteRules(msg.rules.Proxy)
+		m.routeRuleTarget = msg.target
+		m.actionCtx = "route_rules_" + msg.target
+		m.actionItems = m.routeRuleActionItems()
+		m.actionIndex = 0
+		if !msg.saved {
+			m.page = actionMenu
+			return m, nil
+		}
+		m.routeRuleSavedResult = msg.result
+		if msg.coreErr != nil {
+			m.result = msg.result + "\n规则已保存，但读取 Core 状态失败；请在服务管理中确认后手动重启。"
+			m.err = msg.coreErr
+			m.returnPage = actionMenu
+			m.page = resultView
+			return m, nil
+		}
+		switch msg.coreStatus.State {
+		case domain.CoreStateRunning:
+			m.actionCtx = "route_rule_restart_confirm"
+			m.actionItems = nil
+			m.page = actionMenu
+		case domain.CoreStateStopped:
+			m.result = msg.result + "\n规则已保存，将在下次启动 mihomo 时生效。"
+			m.err = nil
+			m.returnPage = actionMenu
+			m.page = resultView
+		default:
+			m.result = fmt.Sprintf("%s\n规则已保存，但 Core 当前为 %s，未尝试自动重启。", msg.result, coreStateLabel(msg.coreStatus.State))
+			m.err = nil
+			m.returnPage = actionMenu
+			m.page = resultView
+		}
+		return m, nil
+	case routeRuleRestartedMsg:
+		m.busy = false
+		m.actionCtx = "route_rules_" + m.routeRuleTarget
+		m.actionItems = m.routeRuleActionItems()
+		m.actionIndex = 0
+		m.returnPage = actionMenu
+		m.page = resultView
+		if msg.err != nil {
+			m.result = m.routeRuleSavedResult + "\n规则已保存，但 Core 重启失败；请在服务管理中重试。"
+			m.err = msg.err
+			return m, nil
+		}
+		m.result = m.routeRuleSavedResult + "\nCore 已重启，规则已生效。"
+		m.err = nil
 		return m, nil
 	case routeDiagnosisMsg:
 		m.busy = false
@@ -660,6 +752,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		if m.actionCtx == "route_rule_restart_confirm" {
+			switch s {
+			case "esc":
+				m.actionCtx = "route_rules_" + m.routeRuleTarget
+				m.actionItems = m.routeRuleActionItems()
+				m.actionIndex = 0
+				m.result = m.routeRuleSavedResult + "\nCore 未重启，规则将在下次启动 mihomo 时生效。"
+				m.err = nil
+				m.returnPage = actionMenu
+				m.page = resultView
+				return m, nil
+			case "enter":
+				m.busy = true
+				m.actionCtx = "route_rule_restart_progress"
+				return m, restartRouteRuleCoreCmd(context.WithoutCancel(m.ctx), m.client)
+			default:
+				return m, nil
+			}
+		}
 		if s == "ctrl+c" {
 			if m.actionCtx == "ruleset" && m.busy && m.rulesetCancel != nil && m.rulesetPhase != "publishing" && m.rulesetPhase != "reloading" && m.rulesetPhase != "verifying" {
 				m.rulesetCancel()
@@ -757,13 +868,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.page = mainMenu
 				return m, nil
 			}
-			if m.page == actionMenu && m.actionCtx == "whitelist_item_menu" {
-				m.actionCtx = "whitelist_list"
-				m.actionItems = m.whitelistActionItems()
-				m.actionIndex = m.findWhitelistIndex(m.selectedWhitelist)
+			if m.page == actionMenu && m.actionCtx == "route_rule_item_menu" {
+				m.actionCtx = "route_rules_" + m.routeRuleTarget
+				m.actionItems = m.routeRuleActionItems()
+				m.actionIndex = m.findRouteRuleIndex(m.selectedRouteRule)
 				return m, nil
 			}
-			if m.page == actionMenu && m.actionCtx == "whitelist_list" {
+			if m.page == actionMenu && strings.HasPrefix(m.actionCtx, "route_rules_") {
 				m.actionCtx = ""
 				m.actionItems = nil
 				m.actionIndex = 0
@@ -936,9 +1047,12 @@ func (m Model) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.busy = true
 			return m, loadGroupsCmd(m.ctx, m.client)
 		}
-		if choice == "白名单管理" {
-			m.busy = true
-			return m, loadWhitelistCmd(m.ctx, m.client, "")
+		if choice == "域名分流" {
+			m.actionCtx = "route_rules_targets"
+			m.actionItems = []string{"直连规则", "代理规则", "返回"}
+			m.actionIndex = 0
+			m.page = actionMenu
+			return m, nil
 		}
 		if choice == "路由诊断" {
 			m.inputTitle = "输入 URL 或域名"
@@ -979,10 +1093,10 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.nodeTestQueue = nil
 			return m.startNodeTest(app.NodeTestRequest{GroupID: domain.GroupID(m.currentGroupID), Concurrency: 5, Limit: 0}, nodeTestBatch)
 		}
-		if m.actionCtx == "whitelist_list" {
-			m.inputTitle = "新增白名单域名"
+		if m.isRouteRuleList() {
+			m.inputTitle = "新增分流规则（域名、IP 或 CIDR）"
 			m.inputDo = func(v string) tea.Cmd {
-				return mutateWhitelistCmd(m.ctx, m.client, "add", "", v)
+				return mutateRouteRuleCmd(m.ctx, m.client, m.routeRuleTarget, "add", "", v)
 			}
 			m.input.SetValue("")
 			m.input.Focus()
@@ -1029,11 +1143,11 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.actionIndex++
 		}
 	case "left":
-		if (m.actionCtx == "group_list" || m.actionCtx == "group_nodes" || m.actionCtx == "switch_nodes" || m.actionCtx == "whitelist_list") && len(m.actionItems) > 0 {
+		if (m.actionCtx == "group_list" || m.actionCtx == "group_nodes" || m.actionCtx == "switch_nodes" || m.isRouteRuleList()) && len(m.actionItems) > 0 {
 			m.actionIndex = m.pageMove(-1)
 		}
 	case "right":
-		if (m.actionCtx == "group_list" || m.actionCtx == "group_nodes" || m.actionCtx == "switch_nodes" || m.actionCtx == "whitelist_list") && len(m.actionItems) > 0 {
+		if (m.actionCtx == "group_list" || m.actionCtx == "group_nodes" || m.actionCtx == "switch_nodes" || m.isRouteRuleList()) && len(m.actionItems) > 0 {
 			m.actionIndex = m.pageMove(1)
 		}
 	case "enter":
@@ -1098,7 +1212,25 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.busy = true
 			return m, selectNodeCmd(m.ctx, m.client, m.currentGroupID, act)
 		}
-		if m.actionCtx == "whitelist_list" {
+		if m.actionCtx == "route_rules_targets" {
+			switch act {
+			case "返回":
+				m.actionCtx = ""
+				m.actionItems = nil
+				m.actionIndex = 0
+				m.page = mainMenu
+				return m, nil
+			case "直连规则":
+				m.routeRuleTarget = "direct"
+			case "代理规则":
+				m.routeRuleTarget = "proxy"
+			default:
+				return m, nil
+			}
+			m.busy = true
+			return m, loadRouteRulesCmd(m.ctx, m.client, m.routeRuleTarget)
+		}
+		if m.isRouteRuleList() {
 			if act == "返回" {
 				m.actionCtx = ""
 				m.actionItems = nil
@@ -1106,27 +1238,27 @@ func (m Model) updateAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.page = mainMenu
 				return m, nil
 			}
-			m.selectedWhitelist = act
-			m.actionCtx = "whitelist_item_menu"
+			m.selectedRouteRule = act
+			m.actionCtx = "route_rule_item_menu"
 			m.actionItems = []string{"修改", "删除", "返回"}
 			m.actionIndex = 0
 			return m, nil
 		}
-		if m.actionCtx == "whitelist_item_menu" {
+		if m.actionCtx == "route_rule_item_menu" {
 			switch act {
 			case "返回":
-				m.actionCtx = "whitelist_list"
-				m.actionItems = m.whitelistActionItems()
-				m.actionIndex = m.findWhitelistIndex(m.selectedWhitelist)
+				m.actionCtx = "route_rules_" + m.routeRuleTarget
+				m.actionItems = m.routeRuleActionItems()
+				m.actionIndex = m.findRouteRuleIndex(m.selectedRouteRule)
 				return m, nil
 			case "删除":
 				m.busy = true
-				return m, mutateWhitelistCmd(m.ctx, m.client, "remove", m.selectedWhitelist, "")
+				return m, mutateRouteRuleCmd(m.ctx, m.client, m.routeRuleTarget, "remove", m.selectedRouteRule, "")
 			case "修改":
-				old := m.selectedWhitelist
-				m.inputTitle = "修改白名单域名"
+				old := m.selectedRouteRule
+				m.inputTitle = "修改分流规则（域名、IP 或 CIDR）"
 				m.inputDo = func(v string) tea.Cmd {
-					return mutateWhitelistCmd(m.ctx, m.client, "edit", old, v)
+					return mutateRouteRuleCmd(m.ctx, m.client, m.routeRuleTarget, "edit", old, v)
 				}
 				m.input.SetValue(old)
 				m.input.Focus()
@@ -1479,7 +1611,7 @@ func (m Model) executeAction(cat, act string) (tea.Model, tea.Cmd) {
 			m.busy = true
 			return m, actionCmd("订阅更新完成", func() error { return m.client.UpdateSubscription(m.ctx, "") })
 		}
-	case "白名单管理":
+	case "域名分流":
 		return m, nil
 	case "配置管理":
 		switch act {
@@ -1536,7 +1668,7 @@ func menuActions(main string) []string {
 		return []string{"返回"}
 	case "订阅管理":
 		return []string{"保存订阅URL", "查看订阅URL", "更新订阅", "返回"}
-	case "白名单管理":
+	case "域名分流":
 		return []string{"返回"}
 	case "配置管理":
 		return []string{"监听端口", "CN 规则集", "系统代理", "Bash 环境代理", "备份配置", "恢复配置", "编辑配置", "应用分流规则（大陆直连/其他走GLOBAL）", "返回"}
@@ -1675,6 +1807,57 @@ func mutateWhitelistCmd(ctx context.Context, service Capabilities, action, oldVa
 		items, err := service.Whitelist(ctx, "")
 		return whitelistLoadedMsg{items: items, result: result, err: err}
 	}
+}
+
+func loadRouteRulesCmd(ctx context.Context, service Capabilities, target string) tea.Cmd {
+	return func() tea.Msg {
+		rules, err := service.RouteRules(ctx, "")
+		return routeRulesLoadedMsg{rules: rules, target: target, err: err}
+	}
+}
+
+func mutateRouteRuleCmd(ctx context.Context, service Capabilities, target, action, oldValue, value string) tea.Cmd {
+	return func() tea.Msg {
+		value = strings.TrimSpace(value)
+		if value == "" && action != "remove" {
+			return routeRulesLoadedMsg{target: target, result: routeRuleMutationResult(target, action), err: fmt.Errorf("规则不能为空")}
+		}
+		var err error
+		switch action {
+		case "add":
+			err = service.AddRouteRule(ctx, "", target, value)
+		case "remove":
+			err = service.RemoveRouteRule(ctx, "", target, oldValue)
+		case "edit":
+			err = service.EditRouteRule(ctx, "", target, oldValue, value)
+		default:
+			err = fmt.Errorf("未知分流规则操作")
+		}
+		result := routeRuleMutationResult(target, action)
+		if err != nil {
+			return routeRulesLoadedMsg{target: target, result: result, err: err}
+		}
+		rules, err := service.RouteRules(ctx, "")
+		if err != nil {
+			return routeRulesLoadedMsg{target: target, result: result, saved: true, err: err}
+		}
+		status, coreErr := service.CoreStatus(ctx, "")
+		return routeRulesLoadedMsg{rules: rules, target: target, result: result, saved: true, coreStatus: status, coreErr: coreErr}
+	}
+}
+
+func restartRouteRuleCoreCmd(ctx context.Context, service Capabilities) tea.Cmd {
+	return func() tea.Msg {
+		return routeRuleRestartedMsg{err: service.CoreAction(ctx, "", "restart")}
+	}
+}
+
+func routeRuleMutationResult(target, action string) string {
+	verb := map[string]string{"add": "已新增", "remove": "已删除", "edit": "已修改"}[action]
+	if verb == "" {
+		verb = "已保存"
+	}
+	return verb + routeRuleTargetLabel(target)
 }
 
 func selectNodeCmd(ctx context.Context, service Capabilities, groupID, nodeID string) tea.Cmd {
@@ -1916,11 +2099,14 @@ func (m Model) View() string {
 		if m.actionCtx == "group_nodes" {
 			header = fmt.Sprintf("代理组: %s（当前: %s）", m.currentGroupName, strings.TrimSpace(m.currentNodeName))
 		}
-		if m.actionCtx == "whitelist_list" {
-			header = "白名单管理 / 列表"
+		if m.isRouteRuleList() {
+			header = "域名分流 / " + routeRuleTargetLabel(m.routeRuleTarget)
 		}
-		if m.actionCtx == "whitelist_item_menu" {
-			header = fmt.Sprintf("白名单操作: %s", m.selectedWhitelist)
+		if m.actionCtx == "route_rule_item_menu" {
+			header = fmt.Sprintf("分流规则操作: %s", m.selectedRouteRule)
+		}
+		if m.actionCtx == "route_rules_targets" {
+			header = "域名分流"
 		}
 		if m.actionCtx == "log_live" {
 			header = "服务管理 / 实时日志"
@@ -1951,6 +2137,12 @@ func (m Model) View() string {
 	}
 	if m.page == actionMenu && m.actionCtx == "daemon_restart_confirm" {
 		return m.renderDaemonRestartConfirm(title)
+	}
+	if m.page == actionMenu && m.actionCtx == "route_rule_restart_confirm" {
+		return m.renderRouteRuleRestartConfirm(title)
+	}
+	if m.page == actionMenu && m.actionCtx == "route_rule_restart_progress" {
+		return m.renderRouteRuleRestartProgress(title)
 	}
 	if m.page == actionMenu && m.actionCtx == "daemon_restart_progress" {
 		return m.renderDaemonRestartProgress(title)
@@ -1990,7 +2182,7 @@ func (m Model) View() string {
 			footer = navigation + "\n" + fitFooter(action, m.width)
 		} else if m.actionCtx == "group_list" {
 			footer = fmt.Sprintf("%s | ←/→ 翻页", footer)
-		} else if m.actionCtx == "whitelist_list" {
+		} else if m.isRouteRuleList() {
 			footer = fmt.Sprintf("%s | ←/→ 翻页 | a 新增", footer)
 		}
 	}
@@ -2371,20 +2563,52 @@ func likelyTestableNode(node string) bool {
 	return value != "" && !strings.EqualFold(value, "DIRECT") && !strings.EqualFold(value, "REJECT") && !strings.HasPrefix(value, "官网") && !strings.HasPrefix(value, "有效期")
 }
 
-func (m Model) whitelistActionItems() []string {
-	out := make([]string, 0, len(m.whitelistItems)+1)
-	out = append(out, m.whitelistItems...)
+func (m Model) routeRuleActionItems() []string {
+	items := m.routeRules.Direct
+	if m.routeRuleTarget == "proxy" {
+		items = m.routeRules.Proxy
+	}
+	out := make([]string, 0, len(items)+1)
+	out = append(out, items...)
 	out = append(out, "返回")
 	return out
 }
 
-func (m Model) findWhitelistIndex(domain string) int {
-	for i, d := range m.whitelistItems {
-		if strings.EqualFold(strings.TrimSpace(d), strings.TrimSpace(domain)) {
+func (m Model) findRouteRuleIndex(value string) int {
+	for i, rule := range m.routeRuleActionItems() {
+		if strings.EqualFold(strings.TrimSpace(rule), strings.TrimSpace(value)) {
 			return i
 		}
 	}
 	return 0
+}
+
+func (m Model) isRouteRuleList() bool {
+	return m.actionCtx == "route_rules_direct" || m.actionCtx == "route_rules_proxy"
+}
+
+func routeRuleTargetLabel(target string) string {
+	if target == "proxy" {
+		return "代理规则"
+	}
+	return "直连规则"
+}
+
+func sortUniqueRouteRules(items []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		value := strings.TrimSpace(item)
+		if value == "" || seen[strings.ToLower(value)] {
+			continue
+		}
+		seen[strings.ToLower(value)] = true
+		out = append(out, value)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return strings.ToLower(out[i]) < strings.ToLower(out[j])
+	})
+	return out
 }
 
 func sortUniqueDomains(items []string) []string {
@@ -2648,6 +2872,9 @@ func (m Model) renderModeView(title string) string {
 		if m.modeStatus.NextStart {
 			body.WriteString("生效状态：配置已保存，下次启动生效\n")
 		}
+		if m.modeStatus.ConfigMode != domain.RoutingModeRule {
+			body.WriteString("警告：当前模式下，域名分流规则不生效\n")
+		}
 	}
 	body.WriteString("\n")
 	modes := []domain.RoutingMode{domain.RoutingModeGlobal, domain.RoutingModeRule, domain.RoutingModeDirect}
@@ -2840,6 +3067,20 @@ func (m Model) renderDaemonRestartConfirm(title string) string {
 	warning := wrapDisplayText("重启全部会先停止 Core，再重启 mihomo-manager daemon，并按当前状态恢复 Core。代理连接会短暂中断，测速历史、实时连接等 Core 内存状态会丢失。", width)
 	footer := fitFooter("Enter 确认重启  Esc 取消", m.width)
 	return fmt.Sprintf("%s\n\n服务管理 / 重启全部\n%s\n\n%s", title, warning, footer)
+}
+
+func (m Model) renderRouteRuleRestartConfirm(title string) string {
+	width := 76
+	if m.width > 0 {
+		width = max(20, m.width-4)
+	}
+	message := wrapDisplayText("规则已保存。Core 正在运行，重启后新分流规则才会立即生效；取消不会撤销已保存的规则。", width)
+	footer := fitFooter("Enter 重启 Core  Esc 暂不重启", m.width)
+	return fmt.Sprintf("%s\n\n域名分流 / %s\n%s\n\n%s", title, routeRuleTargetLabel(m.routeRuleTarget), message, footer)
+}
+
+func (m Model) renderRouteRuleRestartProgress(title string) string {
+	return fmt.Sprintf("%s\n\n域名分流 / %s\n正在重启 Core 以应用已保存的规则...\n\n%s", title, routeRuleTargetLabel(m.routeRuleTarget), fitFooter("操作进行中，不可取消", m.width))
 }
 
 func (m Model) renderDaemonRestartProgress(title string) string {
